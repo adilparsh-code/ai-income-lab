@@ -1,0 +1,169 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Opportunity {
+  id                    String   @id @default(cuid())
+  title                 String
+  category              String
+  businessModel         String
+  targetAudience        String
+  problemSolved         String
+  monetizationMethod    String
+  estimatedStartupCost  Float    @default(0)
+  
+  // Scores (0-100)
+  demandScore           Int      @default(0)
+  competitionScore      Int      @default(0)
+  commercialIntentScore Int      @default(0)
+  automationScore       Int      @default(0)
+  differentiationScore  Int      @default(0)
+  monetizationScore     Int      @default(0)
+  halalConfidenceScore  Int      @default(100)
+  overallScore          Int      @default(0)
+  
+  halalStatus           String   @default("HALAL")    // HALAL, REVIEW_REQUIRED, NOT_ALLOWED
+  confidenceLevel       String   @default("MEDIUM")   // VERY_HIGH, HIGH, MEDIUM, LOW, VERY_LOW, SAMPLE_DATA
+  status                String   @default("IDEA")     // IDEA, RESEARCHING, VALIDATING, VALIDATED, BUILDING, PUBLISHED, EARNING, SCALING, PAUSED, REJECTED
+  
+  evidenceNotes         String   @default("")
+  risks                 String   @default("")
+  nextAction            String   @default("")
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  lastReviewedAt        DateTime?
+  
+  products              Product[]
+  experiments           Experiment[]
+  revenues              Revenue[]
+  contents              Content[]
+}
+
+model Product {
+  id              String   @id @default(cuid())
+  name            String
+  type            String
+  targetAudience  String   @default("")
+  status          String   @default("IDEA")
+  price           Float    @default(0)
+  cost            Float    @default(0)
+  revenue         Float    @default(0)
+  platform        String   @default("")
+  productUrl      String   @default("")
+  affiliateUrl    String   @default("")
+  notes           String   @default("")
+  
+  opportunityId   String?
+  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  publishedAt     DateTime?
+  
+  revenues        Revenue[]
+  contents        Content[]
+}
+
+model Experiment {
+  id              String   @id @default(cuid())
+  hypothesis      String
+  target          String   @default("")
+  budget          Float    @default(0)
+  startDate       DateTime?
+  endDate         DateTime?
+  expectedResult  String   @default("")
+  actualResult    String   @default("")
+  
+  visitors        Int      @default(0)
+  leads           Int      @default(0)
+  clicks          Int      @default(0)
+  sales           Int      @default(0)
+  revenue         Float    @default(0)
+  profit          Float    @default(0)
+  conversionRate  Float    @default(0)
+  
+  decision        String?  // SCALE, ITERATE, PAUSE, KILL
+  
+  opportunityId   String?
+  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Revenue {
+  id              String   @id @default(cuid())
+  date            DateTime
+  revenueSource   String
+  grossRevenue    Float    @default(0)
+  fees            Float    @default(0)
+  advertisingCost Float    @default(0)
+  otherCosts      Float    @default(0)
+  netRevenue      Float    @default(0)
+  currency        String   @default("USD")
+  referenceNote   String   @default("")
+  
+  productId       String?
+  product         Product? @relation(fields: [productId], references: [id])
+  
+  opportunityId   String?
+  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Affiliate {
+  id              String   @id @default(cuid())
+  merchant        String
+  product         String
+  category        String   @default("")
+  affiliateProgram String  @default("")
+  commissionType  String   @default("")
+  commissionRate  Float    @default(0)
+  affiliateUrl    String   @default("")
+  productUrl      String   @default("")
+  lastChecked     DateTime?
+  linkStatus      String   @default("ACTIVE")
+  disclosureStatus String  @default("REQUIRED")
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Content {
+  id              String   @id @default(cuid())
+  title           String
+  type            String
+  body            String   @default("")
+  seoTitle        String   @default("")
+  metaDescription String   @default("")
+  status          String   @default("DRAFT")
+  
+  opportunityId   String?
+  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
+  
+  productId       String?
+  product         Product? @relation(fields: [productId], references: [id])
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model AgentLog {
+  id              String   @id @default(cuid())
+  agentType       String
+  action          String
+  input           String   @default("")
+  output          String   @default("")
+  reasoning       String   @default("")
+  evidenceType    String   @default("AI_INFERENCE")  // AI_INFERENCE, VERIFIED_DATA, USER_ENTERED
+  
+  createdAt       DateTime @default(now())
+}

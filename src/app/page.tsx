@@ -1,69 +1,62 @@
-import Image from "next/image";
+import { getDashboardStats, getNextBestAction, getRevenueChartData } from '@/actions/dashboard';
+import { getOpportunities } from '@/actions/opportunities';
+import { StatsCards } from '@/components/dashboard/stats-cards';
+import { NextBestAction } from '@/components/dashboard/next-best-action';
+import { RevenueChart } from '@/components/dashboard/revenue-chart';
+import { TopOpportunities } from '@/components/dashboard/top-opportunities';
+import { PageHeader } from '@/components/shared/page-header';
+import Link from 'next/link';
+import { Plus, Search } from 'lucide-react';
 
-export default function Home() {
+export default async function DashboardPage() {
+  const [stats, nextAction, revenueData, opportunities] = await Promise.all([
+    getDashboardStats(),
+    getNextBestAction(),
+    getRevenueChartData(),
+    getOpportunities({ sortBy: 'overallScore', sortOrder: 'desc' }),
+  ]);
+
+  const topOpportunities = opportunities.slice(0, 5);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="p-6 lg:p-8 space-y-8">
+      <PageHeader
+        title="Dashboard"
+        description="Your AI-powered halal business command center."
+      >
+        <Link
+          href="/opportunities/new"
+          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 transition-colors"
+        >
+          <Search className="h-4 w-4" />
+          Find New Income Opportunities
+        </Link>
+      </PageHeader>
+
+      {/* Stats Cards */}
+      <StatsCards stats={stats} />
+
+      {/* Next Best Action */}
+      <section>
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+          Recommended Next Action
+        </h2>
+        <NextBestAction action={nextAction} />
+      </section>
+
+      {/* Charts and Top Opportunities */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <RevenueChart data={revenueData} />
+        <TopOpportunities opportunities={topOpportunities} />
+      </div>
+
+      {/* Sample Data Notice */}
+      {opportunities.some(o => o.confidenceLevel === 'SAMPLE_DATA') && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <strong>Note:</strong> The dashboard currently displays sample data for demonstration purposes.
+          Sample opportunities are clearly labelled. Replace them with real research to get accurate recommendations.
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+      )}
     </div>
   );
 }
