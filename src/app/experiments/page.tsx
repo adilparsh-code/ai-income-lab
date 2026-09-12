@@ -1,25 +1,48 @@
+import { getExperiments } from '@/actions/experiments';
+import { getOpportunities } from '@/actions/opportunities';
 import { PageHeader } from '@/components/shared/page-header';
 import { EmptyState } from '@/components/shared/empty-state';
+import { ExperimentCard } from '@/components/experiments/experiment-card';
+import { ExperimentForm } from '@/components/experiments/experiment-form';
 import { FlaskConical } from 'lucide-react';
 
-export default function ExperimentsPage() {
+export default async function ExperimentsPage() {
+  const [experiments, opportunities] = await Promise.all([
+    getExperiments(),
+    getOpportunities(),
+  ]);
+
   return (
-    <div className="p-6 lg:p-8 space-y-6">
+    <div className="p-6 lg:p-8 space-y-8">
       <PageHeader
         title="Experiments"
         description="Test business ideas with measurable experiments."
-      />
+      >
+        <span className="rounded-lg bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
+          LIVE PERSISTENCE
+        </span>
+      </PageHeader>
 
-      <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-800 inline-flex items-center gap-2">
-        <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold">PHASE 2</span>
-        Coming soon — Experiment tracking will help you validate ideas with real data.
+      {/* New Experiment Form */}
+      <ExperimentForm opportunities={opportunities} />
+
+      {/* Experiments List */}
+      <div className="space-y-4">
+        <h2 className="text-lg font-semibold">Active & Completed Experiments ({experiments.length})</h2>
+        {experiments.length === 0 ? (
+          <EmptyState
+            icon={FlaskConical}
+            title="No experiments created yet"
+            description="Create your first experiment using the form above to track hypotheses, traffic, leads, sales, and conversion decisions."
+          />
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2">
+            {experiments.map((exp) => (
+              <ExperimentCard key={exp.id} experiment={exp} />
+            ))}
+          </div>
+        )}
       </div>
-
-      <EmptyState
-        icon={FlaskConical}
-        title="Experiment Engine"
-        description="Every business idea should become a measurable experiment. Track hypotheses, budgets, visitors, leads, clicks, sales, revenue, profit, and conversion rates. Make data-driven decisions: SCALE what works, ITERATE on promising ideas, PAUSE uncertain ones, and KILL what doesn't work. The system encourages killing weak ideas rather than endlessly investing in them."
-      />
     </div>
   );
 }

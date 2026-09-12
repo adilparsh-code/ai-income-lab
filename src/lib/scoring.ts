@@ -105,10 +105,10 @@ function generateExplanation(
     explanation += 'This opportunity has substantial risks. ';
   }
 
-  explanation += `Key strengths: ${topStrengths.map(s => \`\${s.label} (\${s.rawScore})\`).join(', ')}. `;
+  explanation += `Key strengths: ${topStrengths.map(s => `${s.label} (${s.rawScore})`).join(', ')}. `;
 
   if (weaknesses.length > 0) {
-    explanation += `Areas of concern: ${weaknesses.map(s => \`\${s.label} (\${s.rawScore})\`).join(', ')}. `;
+    explanation += `Areas of concern: ${weaknesses.map(s => `${s.label} (${s.rawScore})`).join(', ')}. `;
   }
 
   if (halalStatus === 'REVIEW_REQUIRED') {

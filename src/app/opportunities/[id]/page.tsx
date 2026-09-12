@@ -7,6 +7,7 @@ import { PageHeader } from '@/components/shared/page-header';
 import Link from 'next/link';
 import { ArrowLeft, Edit, Clock, AlertTriangle, Target, Users, Coins, BarChart3 } from 'lucide-react';
 import { formatDate, formatCurrency } from '@/lib/utils';
+import { DeleteOpportunityButton } from '@/components/opportunities/delete-button';
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -47,6 +48,7 @@ export default async function OpportunityDetailPage({ params }: Props) {
           <Edit className="h-4 w-4" />
           Edit
         </Link>
+        <DeleteOpportunityButton id={opportunity.id} title={opportunity.title} />
       </PageHeader>
 
       {/* Status badges */}
