@@ -39,7 +39,8 @@ export default function AgentsPage() {
           const isResearchAgent = agent.id === 'research-agent';
           const isValidationAgent = agent.id === 'validation-agent';
           const isProductAgent = agent.id === 'product-agent';
-          const isClickable = isResearchAgent || isValidationAgent || isProductAgent;
+          const isAnalyticsAgent = agent.id === 'analytics-agent';
+          const isClickable = isResearchAgent || isValidationAgent || isProductAgent || isAnalyticsAgent;
           
           const cardContent = (
             <div key={agent.id} className={`rounded-xl border bg-card p-5 shadow-sm ${isClickable ? 'hover:shadow-md transition-shadow cursor-pointer' : ''}`}>
@@ -110,6 +111,14 @@ export default function AgentsPage() {
           if (isProductAgent) {
             return (
               <Link href="/agents/product" key={agent.id}>
+                {cardContent}
+              </Link>
+            );
+          }
+
+          if (isAnalyticsAgent) {
+            return (
+              <Link href="/agents/analytics" key={agent.id}>
                 {cardContent}
               </Link>
             );

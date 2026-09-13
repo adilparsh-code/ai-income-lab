@@ -268,6 +268,122 @@ export interface ProductResult {
   agentLogId?: string;
 }
 
+// Analytics Agent specific types
+export type AnalyticsScope =
+  | 'OVERVIEW'
+  | 'EXPERIMENTS'
+  | 'PRODUCTS'
+  | 'REVENUE'
+  | 'OPPORTUNITIES'
+  | 'FULL_BUSINESS';
+
+export interface AnalyticsRequest {
+  opportunityId?: string;
+  productId?: string;
+  experimentId?: string;
+  startDate?: string;
+  endDate?: string;
+  analysisObjective: string;
+  analysisScope: AnalyticsScope;
+}
+
+export interface KpiMetric {
+  id: string;
+  label: string;
+  value: string;
+  evidenceType: EvidenceType;
+  isCalculated: boolean;
+  unit?: string;
+}
+
+export interface TrendItem {
+  id: string;
+  label: string;
+  direction: 'INCREASING' | 'DECREASING' | 'STABLE';
+  description: string;
+  evidenceType: EvidenceType;
+  dataPoints?: number;
+}
+
+export interface AnomalyItem {
+  id: string;
+  severity: 'LOW' | 'MEDIUM' | 'HIGH';
+  description: string;
+  evidenceType: EvidenceType;
+}
+
+export interface NextBestActionItem {
+  id: string;
+  action: string;
+  reason: string;
+  priority: number;
+  evidenceType: EvidenceType;
+}
+
+export interface ExperimentInsight {
+  id: string;
+  label: string;
+  description: string;
+  evidenceType: EvidenceType;
+}
+
+export interface ProductInsight {
+  id: string;
+  label: string;
+  description: string;
+  evidenceType: EvidenceType;
+}
+
+export interface RevenueInsight {
+  id: string;
+  label: string;
+  description: string;
+  evidenceType: EvidenceType;
+}
+
+export interface OpportunityInsight {
+  id: string;
+  label: string;
+  description: string;
+  evidenceType: EvidenceType;
+}
+
+export interface DataAvailability {
+  opportunities: number;
+  experiments: number;
+  products: number;
+  revenues: number;
+  insufficientDataWarnings: string[];
+}
+
+export interface AnalyticsResult {
+  analysisScope: AnalyticsScope;
+  period: {
+    startDate?: string;
+    endDate?: string;
+    label: string;
+  };
+  dataSummary: DataAvailability;
+  kpiMetrics: KpiMetric[];
+  experimentInsights: ExperimentInsight[];
+  productInsights: ProductInsight[];
+  revenueInsights: RevenueInsight[];
+  opportunityInsights: OpportunityInsight[];
+  trends: TrendItem[];
+  anomalies: AnomalyItem[];
+  risks: string[];
+  assumptions: string[];
+  recommendations: string[];
+  nextBestActions: NextBestActionItem[];
+  evidence: EvidenceItem[];
+  confidence: number;
+  halalStatus: string;
+  humanReviewRequired: boolean;
+  recommendation: string;
+  capabilityStatus: AgentStatus;
+  agentLogId?: string;
+}
+
 export interface AgentLogEntry {
   id: string;
   agentType: string;
