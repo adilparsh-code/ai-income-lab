@@ -57,7 +57,7 @@ export function calculateOpportunityScore(input: ScoreInput): ScoringResult {
   return {
     overallScore,
     breakdown,
-    isInvestable: overallScore > 0 && input.halalStatus !== 'NOT_ALLOWED',
+    isInvestable: overallScore > 0,
     warnings,
     explanation,
   };

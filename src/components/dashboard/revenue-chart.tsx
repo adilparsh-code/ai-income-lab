@@ -42,7 +42,10 @@ export function RevenueChart({ data }: RevenueChartProps) {
               tickFormatter={(value) => `$${value}`}
             />
             <Tooltip
-              formatter={(value: any) => [`$${Number(value).toFixed(2)}`, 'Revenue']}
+              formatter={(value) => {
+                const num = typeof value === 'number' ? value : 0;
+                return [`$${num.toFixed(2)}`, 'Revenue'];
+              }}
               contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0' }}
             />
             <Bar dataKey="revenue" fill="#6366f1" radius={[4, 4, 0, 0]} />

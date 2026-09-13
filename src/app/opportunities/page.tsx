@@ -1,5 +1,6 @@
 import { Suspense } from 'react';
 import { getOpportunities } from '@/actions/opportunities';
+import type { OpportunityFilters as OpportunityFiltersType } from '@/actions/opportunities';
 import { OpportunityCard } from '@/components/opportunities/opportunity-card';
 import { OpportunityFilters } from '@/components/opportunities/filters';
 import { PageHeader } from '@/components/shared/page-header';
@@ -31,7 +32,7 @@ export default async function OpportunitiesPage({ searchParams }: Props) {
     status: toArray(params.status),
     category: toArray(params.category),
     halalStatus: toArray(params.halal),
-    sortBy: (params.sortBy as any) || 'overallScore',
+        sortBy: (params.sortBy as OpportunityFiltersType['sortBy']) ?? 'overallScore',
     sortOrder: (params.sortOrder as 'asc' | 'desc') || 'desc',
   });
 

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createOpportunity, updateOpportunity } from '@/actions/opportunities';
-import { OPPORTUNITY_CATEGORIES, BUSINESS_MODELS, OPPORTUNITY_STATUSES, HALAL_STATUSES, CONFIDENCE_LEVELS, SCORING_LABELS, SCORING_WEIGHTS } from '@/lib/constants';
+import { OPPORTUNITY_CATEGORIES, BUSINESS_MODELS, OPPORTUNITY_STATUSES, HALAL_STATUSES, CONFIDENCE_LEVELS } from '@/lib/constants';
 import { ArrowLeft, Save, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -204,25 +204,25 @@ export function OpportunityForm({ opportunity, mode }: OpportunityFormProps) {
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           {[
-            { key: 'demandScore', label: 'Demand Score', weight: '20%' },
-            { key: 'commercialIntentScore', label: 'Commercial Intent', weight: '20%' },
-            { key: 'competitionScore', label: 'Competition Opportunity', weight: '15%', hint: 'Higher = less competition' },
-            { key: 'automationScore', label: 'Automation Potential', weight: '10%' },
-            { key: 'differentiationScore', label: 'Differentiation', weight: '10%' },
-            { key: 'monetizationScore', label: 'Monetization Strength', weight: '10%' },
-            { key: 'halalConfidenceScore', label: 'Halal/Compliance Confidence', weight: '5%' },
+                                    { key: 'demandScore' as const, label: 'Demand Score', weight: '20%' },
+            { key: 'commercialIntentScore' as const, label: 'Commercial Intent', weight: '20%' },
+            { key: 'competitionScore' as const, label: 'Competition Opportunity', weight: '15%', hint: 'Higher = less competition' },
+            { key: 'automationScore' as const, label: 'Automation Potential', weight: '10%' },
+            { key: 'differentiationScore' as const, label: 'Differentiation', weight: '10%' },
+            { key: 'monetizationScore' as const, label: 'Monetization Strength', weight: '10%' },
+            { key: 'halalConfidenceScore' as const, label: 'Halal/Compliance Confidence', weight: '5%' },
           ].map(({ key, label, weight, hint }) => (
             <div key={key}>
               <label className="flex items-center justify-between text-sm font-medium mb-1">
                 <span>{label}</span>
-                <span className="text-xs text-muted-foreground">{weight} • {(formData as any)[key]}/100</span>
+                                                <span className="text-xs text-muted-foreground">{weight} • {formData[key]}/100</span>
               </label>
               {hint && <p className="text-xs text-muted-foreground mb-1">{hint}</p>}
               <input
                 type="range"
                 min={0}
                 max={100}
-                value={(formData as any)[key]}
+                                                value={formData[key]}
                 onChange={(e) => handleChange(key, parseInt(e.target.value))}
                 className="w-full accent-indigo-600"
               />

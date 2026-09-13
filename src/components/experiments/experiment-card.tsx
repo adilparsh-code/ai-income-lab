@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import { updateExperiment } from '@/actions/experiments';
+import type { UpdateExperimentInput } from '@/actions/experiments';
 import { formatCurrency, formatDate } from '@/lib/utils';
-import { FlaskConical, TrendingUp, Users, Target, CheckCircle2, AlertCircle, Edit, Trash2 } from 'lucide-react';
+import { FlaskConical, Edit, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 
 interface ExperimentCardProps {
@@ -61,7 +62,7 @@ export function ExperimentCard({ experiment, onDelete }: ExperimentCardProps) {
         revenue: Number(metrics.revenue) || 0,
         profit: Number(metrics.profit) || 0,
         actualResult: metrics.actualResult,
-        decision: (metrics.decision as any) || null,
+                        decision: (metrics.decision as UpdateExperimentInput['decision']) || null,
       });
       setIsEditingMetrics(false);
     } catch (err) {

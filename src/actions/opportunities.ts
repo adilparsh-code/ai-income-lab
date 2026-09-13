@@ -1,6 +1,7 @@
 'use server';
 
 import { db } from '@/lib/db';
+import type { Prisma } from '@prisma/client';
 import { calculateOpportunityScore } from '@/lib/scoring';
 import { screenForHalalCompliance } from '@/lib/halal-filter';
 import { revalidatePath } from 'next/cache';
@@ -21,7 +22,7 @@ export interface OpportunityFilters {
 export async function getOpportunities(filters: OpportunityFilters = {}) {
   const { search, status, category, halalStatus, sortBy = 'overallScore', sortOrder = 'desc' } = filters;
   
-  const where: any = {};
+    const where: Prisma.OpportunityWhereInput = {};
   
   if (search) {
     where.OR = [
