@@ -84,6 +84,86 @@ export interface ResearchResult {
   agentLogId?: string;
 }
 
+// Validation Agent specific types
+export type ValidationMethod = 
+  | 'LANDING_PAGE'
+  | 'SURVEY'
+  | 'INTERVIEW'
+  | 'PREORDER'
+  | 'CONTENT_TEST'
+  | 'PRICE_TEST'
+  | 'EXPERIMENT'
+  | 'MANUAL_RESEARCH';
+
+export type ValidationDecision =
+  | 'PROMISING'
+  | 'NEEDS_VALIDATION'
+  | 'WEAK_SIGNAL'
+  | 'BLOCKED';
+
+export interface ValidationRequest {
+  opportunityId?: string;
+  validationObjective: string;
+  targetAudience?: string;
+  keyAssumptions?: string[];
+  validationConstraints?: string[];
+  preferredValidationMethod?: ValidationMethod;
+  halalRequirements?: string[];
+}
+
+export interface ValidationTest {
+  id: string;
+  name: string;
+  method: ValidationMethod;
+  description: string;
+  estimatedEffort: 'LOW' | 'MEDIUM' | 'HIGH';
+  priority: number;
+}
+
+export interface ExperimentRecommendation {
+  id: string;
+  experimentName: string;
+  hypothesis: string;
+  method: ValidationMethod;
+  metric: string;
+  successThreshold: number;
+  failureThreshold: number;
+  estimatedEffort: 'LOW' | 'MEDIUM' | 'HIGH';
+  priority: number;
+  evidenceNeeded: string[];
+}
+
+export interface EvidenceItem {
+  id: string;
+  type: EvidenceType;
+  content: string;
+  source?: string;
+}
+
+export interface ValidationResult {
+  opportunityContext?: {
+    id: string;
+    title: string;
+    problemSolved?: string;
+    overallScore?: number;
+  };
+  validationObjective: string;
+  assumptions: string[];
+  prioritizedRisks: { id: string; risk: string; severity: 'LOW' | 'MEDIUM' | 'HIGH'; likelihood: number }[];
+  validationTests: ValidationTest[];
+  experimentRecommendations: ExperimentRecommendation[];
+  successCriteria: string[];
+  failureCriteria: string[];
+  evidenceRequirements: string[];
+  currentEvidence: EvidenceItem[];
+  confidence: number;
+  halalStatus: string;
+  humanReviewRequired: boolean;
+  recommendation: ValidationDecision;
+  capabilityStatus: AgentStatus;
+  agentLogId?: string;
+}
+
 export interface AgentLogEntry {
   id: string;
   agentType: string;

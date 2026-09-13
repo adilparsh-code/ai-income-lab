@@ -37,9 +37,11 @@ export default function AgentsPage() {
           const StatusIcon = statusConfig[agent.status].icon;
           
           const isResearchAgent = agent.id === 'research-agent';
+          const isValidationAgent = agent.id === 'validation-agent';
+          const isClickable = isResearchAgent || isValidationAgent;
           
           const cardContent = (
-            <div key={agent.id} className={`rounded-xl border bg-card p-5 shadow-sm ${isResearchAgent ? 'hover:shadow-md transition-shadow cursor-pointer' : ''}`}>
+            <div key={agent.id} className={`rounded-xl border bg-card p-5 shadow-sm ${isClickable ? 'hover:shadow-md transition-shadow cursor-pointer' : ''}`}>
               <div className="flex items-start justify-between mb-3">
                 <div className="rounded-lg bg-muted p-2">
                   <Icon className="h-5 w-5 text-muted-foreground" />
@@ -54,7 +56,7 @@ export default function AgentsPage() {
                       UNSAFE
                     </span>
                   )}
-                  {isResearchAgent && (
+                  {isClickable && (
                     <ArrowRight className="h-4 w-4 text-muted-foreground" />
                   )}
                 </div>
@@ -91,6 +93,14 @@ export default function AgentsPage() {
           if (isResearchAgent) {
             return (
               <Link href="/agents/research" key={agent.id}>
+                {cardContent}
+              </Link>
+            );
+          }
+
+          if (isValidationAgent) {
+            return (
+              <Link href="/agents/validation" key={agent.id}>
                 {cardContent}
               </Link>
             );
