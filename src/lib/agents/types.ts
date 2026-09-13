@@ -164,6 +164,110 @@ export interface ValidationResult {
   agentLogId?: string;
 }
 
+// Product Agent specific types
+export type ProductType =
+  | 'DIGITAL_PRODUCT'
+  | 'SAAS'
+  | 'WEB_APP'
+  | 'MOBILE_APP'
+  | 'TEMPLATE'
+  | 'PRINTABLE'
+  | 'COURSE'
+  | 'TOOL'
+  | 'SERVICE_PRODUCT';
+
+export type MonetizationModel =
+  | 'ONE_TIME_PURCHASE'
+  | 'SUBSCRIPTION'
+  | 'FREEMIUM'
+  | 'SERVICE'
+  | 'LICENSE'
+  | 'AFFILIATE'
+  | 'AD_SUPPORTED';
+
+export interface ProductRequest {
+  opportunityId?: string;
+  productObjective: string;
+  productType: ProductType;
+  targetAudience?: string;
+  customerProblem?: string;
+  preferredPlatform?: string;
+  constraints?: string[];
+  budgetConstraints?: string;
+  monetizationPreference?: MonetizationModel;
+  halalRequirements?: string[];
+}
+
+export interface ProductConcept {
+  productNameHypothesis: string;
+  oneLineDescription: string;
+  customer: string;
+  problem: string;
+  proposedSolution: string;
+  coreValueProposition: string;
+  differentiationHypothesis: string;
+  productFormat: string;
+  primaryUseCase: string;
+  evidenceType: EvidenceType;
+}
+
+export interface MVPFeature {
+  id: string;
+  name: string;
+  description: string;
+  priority: 'ESSENTIAL' | 'IMPORTANT' | 'DEFERRED';
+}
+
+export interface BuildPhase {
+  phase: number;
+  name: string;
+  tasks: string[];
+  dependencies: string[];
+  expectedOutput: string;
+  risk: string;
+}
+
+export interface ProductResult {
+  opportunityContext?: {
+    id: string;
+    title: string;
+    problemSolved?: string;
+    overallScore?: number;
+  };
+  productConcept: ProductConcept;
+  productType: ProductType;
+  targetCustomer: string;
+  problemBeingSolved: string;
+  valueProposition: string;
+  mvpFeatures: MVPFeature[];
+  optionalFutureFeatures: string[];
+  userWorkflow: string[];
+  productRequirements: string[];
+  technicalRequirements: string[];
+  buildPhases: BuildPhase[];
+  monetizationModel: MonetizationModel | string;
+  monetizationRationale: string;
+  pricingHypothesis: string;
+  monetizationAssumptions: string[];
+  monetizationRisks: string[];
+  evidenceNeeded: string[];
+  distributionChannels: string[];
+  contentStrategy: string;
+  landingPageConcept: string;
+  conversionPath: string[];
+  risks: string[];
+  assumptions: string[];
+  evidence: EvidenceItem[];
+  researchContext: string;
+  validationContext: string;
+  confidence: number;
+  halalStatus: string;
+  humanReviewRequired: boolean;
+  recommendation: string;
+  capabilityStatus: AgentStatus;
+  agentLogId?: string;
+}
+
 export interface AgentLogEntry {
   id: string;
   agentType: string;
