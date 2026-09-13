@@ -257,7 +257,7 @@ export class AnalyticsAgent extends BaseAgent {
     kpiMetrics.push({ id: 'kpi-' + kpiIndex++, label: 'Total Visitors (experiments)', value: experiments.length > 0 ? String(totalVisitors) : 'Insufficient data', evidenceType: 'VERIFIED_DATA' as EvidenceType, isCalculated: true });
     kpiMetrics.push({ id: 'kpi-' + kpiIndex++, label: 'Total Sales (experiments)', value: experiments.length > 0 ? String(totalSales) : 'Insufficient data', evidenceType: 'VERIFIED_DATA' as EvidenceType, isCalculated: true });
     const expConvRate = this.safeDivide(totalSales, totalVisitors);
-    kpiMetrics.push({ id: 'kpi-' + kpiIndex++, label: 'Experiment Conversion Rate', value: expConvRate !== null ? expConvRate.toFixed(2) + '%' : 'Insufficient data', evidenceType: 'VERIFIED_DATA' as EvidenceType, isCalculated: true });
+    kpiMetrics.push({ id: 'kpi-' + kpiIndex++, label: 'Experiment Conversion Rate', value: expConvRate !== null ? (expConvRate * 100).toFixed(2) + '%' : 'Insufficient data', evidenceType: 'VERIFIED_DATA' as EvidenceType, isCalculated: true });
     const expCompletionRate = this.safeDivide(completedExps, experiments.length);
     kpiMetrics.push({ id: 'kpi-' + kpiIndex++, label: 'Experiment Completion Rate', value: expCompletionRate !== null ? (expCompletionRate * 100).toFixed(1) + '%' : 'Insufficient data', evidenceType: 'VERIFIED_DATA' as EvidenceType, isCalculated: true });
 

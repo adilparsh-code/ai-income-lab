@@ -384,6 +384,93 @@ export interface AnalyticsResult {
   agentLogId?: string;
 }
 
+// Business Manager Agent specific types
+export type BusinessManagerScope =
+  | 'OPPORTUNITY_SELECTION'
+  | 'VALIDATION_DECISION'
+  | 'PRODUCT_DECISION'
+  | 'EXPERIMENT_DECISION'
+  | 'REVENUE_IMPROVEMENT'
+  | 'FULL_BUSINESS_REVIEW';
+
+export type ActionType =
+  | 'RESEARCH'
+  | 'VALIDATE'
+  | 'BUILD_PRODUCT'
+  | 'RUN_EXPERIMENT'
+  | 'ANALYZE'
+  | 'IMPROVE_PRODUCT'
+  | 'REVIEW_REVENUE'
+  | 'COLLECT_DATA'
+  | 'HUMAN_REVIEW'
+  | 'NO_ACTION';
+
+export type DecisionState =
+  | 'PROCEED'
+  | 'VALIDATE_FIRST'
+  | 'IMPROVE'
+  | 'COLLECT_MORE_DATA'
+  | 'HUMAN_REVIEW'
+  | 'BLOCKED'
+  | 'NO_ACTION';
+
+export interface NextBestAction {
+  action: ActionType;
+  reason: string;
+  evidence: string;
+  evidenceType: EvidenceType;
+  priority: number;
+  expectedPurpose: string;
+  blockers: string[];
+  humanApprovalRequired: boolean;
+  executionEligible: boolean;
+}
+
+export interface BusinessManagerRequest {
+  opportunityId?: string;
+  productId?: string;
+  experimentId?: string;
+  objective: string;
+  decisionScope: BusinessManagerScope;
+  riskTolerance?: 'LOW' | 'MEDIUM' | 'HIGH';
+  preferredActionType?: ActionType;
+  halalRequirements?: string[];
+}
+
+export interface BusinessManagerResult {
+  decision: DecisionState;
+  decisionRationale: string;
+  nextBestAction: NextBestAction;
+  alternativeActionsConsidered: { action: ActionType; reasonRejected: string; evidenceType: EvidenceType }[];
+  confidence: number;
+  opportunityContext?: {
+    id: string;
+    title: string;
+    overallScore?: number;
+    status: string;
+    halalStatus: string;
+  };
+  researchSummary: string;
+  researchEvidenceType: EvidenceType;
+  validationSummary: string;
+  validationEvidenceType: EvidenceType;
+  productSummary: string;
+  productEvidenceType: EvidenceType;
+  analyticsSummary: string;
+  analyticsEvidenceType: EvidenceType;
+  evidence: EvidenceItem[];
+  assumptions: string[];
+  risks: string[];
+  blockers: string[];
+  missingInformation: string[];
+  halalStatus: string;
+  humanReviewRequired: boolean;
+  executionEligible: boolean;
+  recommendation: string;
+  capabilityStatus: AgentStatus;
+  agentLogId?: string;
+}
+
 export interface AgentLogEntry {
   id: string;
   agentType: string;
