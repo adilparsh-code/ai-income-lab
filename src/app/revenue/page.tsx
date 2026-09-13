@@ -1,6 +1,5 @@
 import { getRevenues, getRevenueSummary } from '@/actions/revenue';
 import { getOpportunities } from '@/actions/opportunities';
-import { db } from '@/lib/db';
 import { PageHeader } from '@/components/shared/page-header';
 import { EmptyState } from '@/components/shared/empty-state';
 import { RevenueForm } from '@/components/revenue/revenue-form';
@@ -9,11 +8,10 @@ import { DollarSign, TrendingUp, Receipt, Wallet, Trash2 } from 'lucide-react';
 import { deleteRevenue } from '@/actions/revenue';
 
 export default async function RevenuePage() {
-  const [revenues, summary, opportunities, products] = await Promise.all([
+  const [revenues, summary, opportunities] = await Promise.all([
     getRevenues(),
     getRevenueSummary(),
     getOpportunities(),
-    db.product.findMany({ select: { id: true, name: true } }),
   ]);
 
   return (
@@ -69,7 +67,7 @@ export default async function RevenuePage() {
       </div>
 
       {/* Entry Form */}
-      <RevenueForm opportunities={opportunities} products={products} />
+      <RevenueForm opportunities={opportunities} />
 
       {/* Transactions Table */}
       <div className="space-y-4">

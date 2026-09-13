@@ -2,13 +2,13 @@
 
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useTransition } from 'react';
-import { Search, SlidersHorizontal, X } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { OPPORTUNITY_STATUSES, OPPORTUNITY_CATEGORIES, HALAL_STATUSES } from '@/lib/constants';
 
 export function OpportunityFilters() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [isPending, startTransition] = useTransition();
+  const [, startTransition] = useTransition();
 
   const search = searchParams.get('search') || '';
   const statuses = searchParams.getAll('status');

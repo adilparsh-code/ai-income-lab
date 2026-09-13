@@ -1,5 +1,5 @@
 import { PageHeader } from '@/components/shared/page-header';
-import { Settings, Key, Database, Palette, Bell } from 'lucide-react';
+import { Key, Database, Palette, Bell } from 'lucide-react';
 
 export default function SettingsPage() {
   return (

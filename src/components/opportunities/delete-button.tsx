@@ -7,10 +7,9 @@ import { Trash2, Loader2 } from 'lucide-react';
 
 interface DeleteOpportunityButtonProps {
   id: string;
-  title: string;
 }
 
-export function DeleteOpportunityButton({ id, title }: DeleteOpportunityButtonProps) {
+export function DeleteOpportunityButton({ id }: DeleteOpportunityButtonProps) {
   const router = useRouter();
   const [isDeleting, setIsDeleting] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);

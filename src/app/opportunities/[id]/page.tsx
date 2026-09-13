@@ -48,7 +48,7 @@ export default async function OpportunityDetailPage({ params }: Props) {
           <Edit className="h-4 w-4" />
           Edit
         </Link>
-        <DeleteOpportunityButton id={opportunity.id} title={opportunity.title} />
+        <DeleteOpportunityButton id={opportunity.id} />
       </PageHeader>
 
       {/* Status badges */}

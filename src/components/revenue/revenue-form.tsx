@@ -7,12 +7,11 @@ import { Save, Loader2, X } from 'lucide-react';
 
 interface RevenueFormProps {
   opportunities: Array<{ id: string; title: string }>;
-  products: Array<{ id: string; name: string }>;
   onSuccess?: () => void;
   onCancel?: () => void;
 }
 
-export function RevenueForm({ opportunities, products, onSuccess, onCancel }: RevenueFormProps) {
+export function RevenueForm({ opportunities, onSuccess, onCancel }: RevenueFormProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);

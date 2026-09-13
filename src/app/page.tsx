@@ -6,7 +6,7 @@ import { RevenueChart } from '@/components/dashboard/revenue-chart';
 import { TopOpportunities } from '@/components/dashboard/top-opportunities';
 import { PageHeader } from '@/components/shared/page-header';
 import Link from 'next/link';
-import { Plus, Search } from 'lucide-react';
+import { Search } from 'lucide-react';
 
 export default async function DashboardPage() {
   const [stats, nextAction, revenueData, opportunities] = await Promise.all([
