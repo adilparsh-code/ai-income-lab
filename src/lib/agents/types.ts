@@ -35,11 +35,53 @@ export interface AgentRequest {
 
 export interface AgentResult {
   success: boolean;
-  output: Record<string, unknown>;
+  output: unknown;
   reasoning: string;
   evidenceType: EvidenceType;
   error?: string;
   executionTime: number;
+}
+
+// Research Agent specific types
+export interface ResearchRequest {
+  opportunityId?: string;
+  researchObjective: string;
+  targetAudience?: string;
+  marketCategory?: string;
+  geography?: string;
+  constraints?: string[];
+  halalRequirements?: string[];
+}
+
+export interface ResearchFinding {
+  id: string;
+  content: string;
+  evidenceType: EvidenceType;
+}
+
+export interface ResearchSignal {
+  id: string;
+  type: 'demand' | 'risk' | 'monetization' | 'competitor';
+  content: string;
+  confidence: number;
+  evidenceType: EvidenceType;
+  isMocked: boolean;
+}
+
+export interface ResearchResult {
+  researchObjective: string;
+  findings: ResearchFinding[];
+  signals: ResearchSignal[];
+  assumptions: string[];
+  risks: string[];
+  competitors: string[];
+  demandIndicators: string[];
+  monetizationObservations: string[];
+  halalConsiderations: string[];
+  overallConfidence: number;
+  evidenceItems: { id: string; type: EvidenceType; content: string }[];
+  capabilityStatus: AgentStatus;
+  agentLogId?: string;
 }
 
 export interface AgentLogEntry {

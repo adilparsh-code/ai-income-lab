@@ -1,6 +1,7 @@
 import { PageHeader } from '@/components/shared/page-header';
 import { agentRegistry } from '@/lib/agents/agent-registry';
-import { Search, CheckCircle2, Package, BarChart3, Crown, AlertCircle, CheckCircle } from 'lucide-react';
+import { Search, CheckCircle2, Package, BarChart3, Crown, AlertCircle, CheckCircle, ArrowRight } from 'lucide-react';
+import Link from 'next/link';
 
 const iconMap: Record<string, React.ElementType> = {
   Search,
@@ -35,8 +36,10 @@ export default function AgentsPage() {
           const Icon = iconMap[agent.icon] || AlertCircle;
           const StatusIcon = statusConfig[agent.status].icon;
           
-          return (
-            <div key={agent.id} className="rounded-xl border bg-card p-5 shadow-sm">
+          const isResearchAgent = agent.id === 'research-agent';
+          
+          const cardContent = (
+            <div key={agent.id} className={`rounded-xl border bg-card p-5 shadow-sm ${isResearchAgent ? 'hover:shadow-md transition-shadow cursor-pointer' : ''}`}>
               <div className="flex items-start justify-between mb-3">
                 <div className="rounded-lg bg-muted p-2">
                   <Icon className="h-5 w-5 text-muted-foreground" />
@@ -50,6 +53,9 @@ export default function AgentsPage() {
                     <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-600">
                       UNSAFE
                     </span>
+                  )}
+                  {isResearchAgent && (
+                    <ArrowRight className="h-4 w-4 text-muted-foreground" />
                   )}
                 </div>
               </div>
@@ -81,6 +87,16 @@ export default function AgentsPage() {
               </div>
             </div>
           );
+
+          if (isResearchAgent) {
+            return (
+              <Link href="/agents/research" key={agent.id}>
+                {cardContent}
+              </Link>
+            );
+          }
+          
+          return cardContent;
         })}
       </div>
     </div>

@@ -30,6 +30,10 @@ class AgentRegistry {
     return Array.from(this.agents.values());
   }
 
+  getAgentById(id: string): BaseAgent | undefined {
+    return Array.from(this.agents.values()).find(agent => agent.id === id);
+  }
+
   async executeAgent(request: AgentRequest): Promise<AgentResult> {
     const agent = this.getAgent(request.agentType);
     
