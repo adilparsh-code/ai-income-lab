@@ -142,6 +142,33 @@ export class BusinessManagerAgent extends BaseAgent {
       }
     }
 
+    // 3.5 AGENT COORDINATION (consume existing agents' last executions from AgentLog)
+    const agentTypesToCoordinate = ['research', 'validation', 'product', 'analytics'];
+    const agentLastExecutions: { agentType: string; summary: string; evidenceType: EvidenceType; executedAt: Date | null }[] = [];
+    try {
+      const recentLogs = await db.agentLog.findMany({
+        where: { agentType: { in: agentTypesToCoordinate } },
+        orderBy: { createdAt: 'desc' },
+        take: 40,
+      });
+      for (const agentType of agentTypesToCoordinate) {
+        const last = recentLogs.find(l => l.agentType === agentType);
+        agentLastExecutions.push({
+          agentType,
+          summary: last
+            ? 'Last ' + agentType + ' execution recorded: ' + (last.reasoning || '(no reasoning text)').slice(0, 200) + '. Output is ' + (last.evidenceType === 'VERIFIED_DATA' ? 'VERIFIED_DATA from real records' : 'AI_INFERENCE (not independently verified)') + '.'
+            : 'No recorded ' + agentType + ' agent execution yet. Its capability has not been used for this context.',
+          evidenceType: last && last.evidenceType === 'VERIFIED_DATA' ? 'VERIFIED_DATA' as EvidenceType : 'AI_INFERENCE' as EvidenceType,
+          executedAt: last ? last.createdAt : null,
+        });
+      }
+    } catch (coordError) {
+      console.error('Agent coordination lookup failed:', coordError);
+      for (const agentType of agentTypesToCoordinate) {
+        agentLastExecutions.push({ agentType, summary: 'No recorded ' + agentType + ' agent execution available (lookup failed).', evidenceType: 'AI_INFERENCE' as EvidenceType, executedAt: null });
+      }
+    }
+
     // 4. OPPORTUNITY SELECTION (when no specific opportunity provided)
     if (!selectedOpportunity && ['OPPORTUNITY_SELECTION', 'FULL_BUSINESS_REVIEW'].includes(bmRequest.decisionScope)) {
       const eligibleOpps = opportunities.filter(o =>
@@ -170,6 +197,12 @@ export class BusinessManagerAgent extends BaseAgent {
     const productRevenues = oppProducts.length > 0
       ? revenues.filter(r => oppProducts.some(p => p.id === r.productId))
       : [];
+    // Combined, deduplicated revenue set linked to this opportunity (directly or via its products)
+    const combinedRevenues = Array.from(
+      new Map<string, typeof revenues[number]>(
+        [...oppRevenues, ...productRevenues].map(r => [r.id, r])
+      ).values()
+    );
 
     // Evidence flags based on REAL database state
     const hasOpportunity = !!selectedOpportunity;
@@ -178,8 +211,8 @@ export class BusinessManagerAgent extends BaseAgent {
     const hasPositiveExperiment = oppExperiments.some(e => e.decision === 'SCALE');
     const hasProduct = oppProducts.length > 0;
     const hasPublishedProduct = oppProducts.some(p => ['PUBLISHED', 'EARNING', 'IMPROVING'].includes(p.status));
-    const hasRevenue = oppRevenues.length > 0 || productRevenues.length > 0;
-    const totalNetRevenue = [...oppRevenues, ...productRevenues].reduce((s, r) => s + r.netRevenue, 0);
+    const hasRevenue = combinedRevenues.length > 0;
+    const totalNetRevenue = combinedRevenues.reduce((s, r) => s + r.netRevenue, 0);
     const hasProfitData = oppProducts.some(p => p.cost > 0);
     const isResearching = selectedOpportunity?.status === 'RESEARCHING';
     const isValidating = selectedOpportunity?.status === 'VALIDATING';
@@ -205,7 +238,7 @@ export class BusinessManagerAgent extends BaseAgent {
         : 'No opportunity selected for product assessment.';
 
     const analyticsSummary = hasRevenue
-      ? 'Revenue data exists: $' + totalNetRevenue.toFixed(2) + ' net revenue from ' + (oppRevenues.length + productRevenues.length) + ' record(s). ' + (hasProfitData ? 'Cost data available for profitability analysis.' : 'Cost data unavailable; profitability cannot be determined.')
+      ? 'Revenue data exists: $' + totalNetRevenue.toFixed(2) + ' net revenue from ' + combinedRevenues.length + ' record(s). ' + (hasProfitData ? 'Cost data available for profitability analysis.' : 'Cost data unavailable; profitability cannot be determined.')
       : hasOpportunity
         ? 'No revenue data for this opportunity. Record revenue entries to enable financial analysis.'
         : 'No opportunity selected for analytics.';
@@ -320,7 +353,7 @@ export class BusinessManagerAgent extends BaseAgent {
         decision = 'IMPROVE';
         primaryAction = 'IMPROVE_PRODUCT';
         primaryReason = 'Product is published but generating no revenue. Improve offer, distribution, or discovery.';
-        primaryEvidence: primaryEvidence = 'Product published but $0.00 net revenue recorded.';
+        primaryEvidence = 'Product published but $0.00 net revenue recorded.';
         primaryPurpose = 'Increase product revenue through improvements.';
         executionEligible = true;
         alternativeActionsConsidered.push({ action: 'REVIEW_REVENUE', reasonRejected: 'No revenue to review yet', evidenceType: 'VERIFIED_DATA' });
@@ -329,7 +362,7 @@ export class BusinessManagerAgent extends BaseAgent {
         decision = 'IMPROVE';
         primaryAction = 'REVIEW_REVENUE';
         primaryReason = 'Revenue exists but net revenue is $' + totalNetRevenue.toFixed(2) + '. Review fees, costs, and pricing.';
-        primaryEvidence = 'Net revenue: $' + totalNetRevenue.toFixed(2) + ' from ' + (oppRevenues.length + productRevenues.length) + ' records.';
+        primaryEvidence = 'Net revenue: $' + totalNetRevenue.toFixed(2) + ' from ' + combinedRevenues.length + ' records.';
         primaryPurpose = 'Improve unit economics.';
         executionEligible = true;
       } else if (hasRevenue && totalNetRevenue > 0) {
@@ -393,6 +426,11 @@ export class BusinessManagerAgent extends BaseAgent {
       evidence.push({ id: uuidv4(), type: 'VERIFIED_DATA' as EvidenceType, content: 'Selected opportunity: "' + selectedOpportunity.title + '" (score: ' + selectedOpportunity.overallScore + ', status: ' + selectedOpportunity.status + ', halal: ' + selectedOpportunity.halalStatus + ')', source: 'Prisma db.opportunity' });
     }
     evidence.push({ id: uuidv4(), type: 'AI_INFERENCE' as EvidenceType, content: 'Next-best-action and decision rationale are AI-generated inferences.', source: 'Business Manager Agent' });
+
+    // Agent coordination context (orchestrated agent outputs, provenance preserved)
+    for (const coord of agentLastExecutions) {
+      evidence.push({ id: uuidv4(), type: coord.evidenceType, content: 'Agent coordination [' + coord.agentType + ']: ' + coord.summary, source: 'AgentLog (existing agent architecture)' });
+    }
 
     // 12. RECOMMENDATION
     let recommendation: string;

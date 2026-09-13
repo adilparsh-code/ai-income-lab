@@ -11,6 +11,14 @@ const iconMap: Record<string, React.ElementType> = {
   Crown,
 };
 
+const agentLinkMap: Record<string, string> = {
+  'research-agent': '/agents/research',
+  'validation-agent': '/agents/validation',
+  'product-agent': '/agents/product',
+  'analytics-agent': '/agents/analytics',
+  'business-manager-agent': '/agents/business-manager',
+};
+
 const statusConfig = {
   LIVE: { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-200', icon: CheckCircle },
   MOCKED: { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200', icon: AlertCircle },
@@ -36,11 +44,8 @@ export default function AgentsPage() {
           const Icon = iconMap[agent.icon] || AlertCircle;
           const StatusIcon = statusConfig[agent.status].icon;
           
-          const isResearchAgent = agent.id === 'research-agent';
-          const isValidationAgent = agent.id === 'validation-agent';
-          const isProductAgent = agent.id === 'product-agent';
-          const isAnalyticsAgent = agent.id === 'analytics-agent';
-          const isClickable = isResearchAgent || isValidationAgent || isProductAgent || isAnalyticsAgent;
+          const agentHref = agentLinkMap[agent.id];
+          const isClickable = !!agentHref;
           
           const cardContent = (
             <div key={agent.id} className={`rounded-xl border bg-card p-5 shadow-sm ${isClickable ? 'hover:shadow-md transition-shadow cursor-pointer' : ''}`}>
@@ -92,33 +97,9 @@ export default function AgentsPage() {
             </div>
           );
 
-          if (isResearchAgent) {
+          if (agentHref) {
             return (
-              <Link href="/agents/research" key={agent.id}>
-                {cardContent}
-              </Link>
-            );
-          }
-
-          if (isValidationAgent) {
-            return (
-              <Link href="/agents/validation" key={agent.id}>
-                {cardContent}
-              </Link>
-            );
-          }
-
-          if (isProductAgent) {
-            return (
-              <Link href="/agents/product" key={agent.id}>
-                {cardContent}
-              </Link>
-            );
-          }
-
-          if (isAnalyticsAgent) {
-            return (
-              <Link href="/agents/analytics" key={agent.id}>
+              <Link href={agentHref} key={agent.id}>
                 {cardContent}
               </Link>
             );

@@ -6,7 +6,7 @@ import { RevenueChart } from '@/components/dashboard/revenue-chart';
 import { TopOpportunities } from '@/components/dashboard/top-opportunities';
 import { PageHeader } from '@/components/shared/page-header';
 import Link from 'next/link';
-import { Search, BarChart3 } from 'lucide-react';
+import { Search, BarChart3, Crown } from 'lucide-react';
 
 export default async function DashboardPage() {
   const [stats, nextAction, revenueData, opportunities] = await Promise.all([
@@ -25,6 +25,13 @@ export default async function DashboardPage() {
         description="Your AI-powered halal business command center."
       >
         <div className="flex items-center gap-3">
+          <Link
+            href="/agents/business-manager"
+            className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-4 py-2.5 text-sm font-medium text-indigo-700 shadow-sm hover:bg-indigo-50 transition-colors"
+          >
+            <Crown className="h-4 w-4" />
+            Get Next Best Action
+          </Link>
           <Link
             href="/agents/analytics"
             className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-4 py-2.5 text-sm font-medium text-indigo-700 shadow-sm hover:bg-indigo-50 transition-colors"

@@ -367,6 +367,90 @@ export default function BusinessManagerPage() {
                   </div>
                 </div>
               </div>
+
+              {/* AGENT COORDINATION SUMMARIES */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-white border border-gray-200 rounded-lg p-4">
+                  <div className="flex justify-between items-start">
+                    <h4 className="font-semibold text-sm text-gray-800">Research Summary</h4>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${getEvidenceBadgeColor(result.researchEvidenceType)}`}>{result.researchEvidenceType}</span>
+                  </div>
+                  <p className="text-sm text-gray-600 mt-1">{result.researchSummary}</p>
+                </div>
+                <div className="bg-white border border-gray-200 rounded-lg p-4">
+                  <div className="flex justify-between items-start">
+                    <h4 className="font-semibold text-sm text-gray-800">Validation Summary</h4>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${getEvidenceBadgeColor(result.validationEvidenceType)}`}>{result.validationEvidenceType}</span>
+                  </div>
+                  <p className="text-sm text-gray-600 mt-1">{result.validationSummary}</p>
+                </div>
+                <div className="bg-white border border-gray-200 rounded-lg p-4">
+                  <div className="flex justify-between items-start">
+                    <h4 className="font-semibold text-sm text-gray-800">Product Summary</h4>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${getEvidenceBadgeColor(result.productEvidenceType)}`}>{result.productEvidenceType}</span>
+                  </div>
+                  <p className="text-sm text-gray-600 mt-1">{result.productSummary}</p>
+                </div>
+                <div className="bg-white border border-gray-200 rounded-lg p-4">
+                  <div className="flex justify-between items-start">
+                    <h4 className="font-semibold text-sm text-gray-800">Analytics Summary</h4>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${getEvidenceBadgeColor(result.analyticsEvidenceType)}`}>{result.analyticsEvidenceType}</span>
+                  </div>
+                  <p className="text-sm text-gray-600 mt-1">{result.analyticsSummary}</p>
+                </div>
+              </div>
+
+              {/* ALTERNATIVE ACTIONS CONSIDERED */}
+              {result.alternativeActionsConsidered.length > 0 && (
+                <div className="bg-white border border-gray-200 rounded-lg p-4">
+                  <h4 className="font-semibold text-sm text-gray-800 mb-2">Alternative Actions Considered (Why Not)</h4>
+                  <div className="space-y-2">
+                    {result.alternativeActionsConsidered.map((alt, i) => (
+                      <div key={i} className="flex items-start gap-2">
+                        <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium whitespace-nowrap">{alt.action}</span>
+                        <span className="text-sm text-gray-600">Not selected: {alt.reasonRejected}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${getEvidenceBadgeColor(alt.evidenceType)} whitespace-nowrap`}>{alt.evidenceType}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* RISKS AND ASSUMPTIONS */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                  <h4 className="font-semibold text-sm text-red-800 mb-2">Risks</h4>
+                  <ul className="text-sm text-red-700 list-disc list-inside space-y-1">
+                    {result.risks.map((r, i) => <li key={i}>{r}</li>)}
+                  </ul>
+                </div>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h4 className="font-semibold text-sm text-blue-800 mb-2">Assumptions</h4>
+                  <ul className="text-sm text-blue-700 list-disc list-inside space-y-1">
+                    {result.assumptions.map((a, i) => <li key={i}>{a}</li>)}
+                  </ul>
+                </div>
+              </div>
+
+              {/* EVIDENCE PROVENANCE */}
+              <div className="bg-white border border-gray-200 rounded-lg p-4">
+                <h4 className="font-semibold text-sm text-gray-800 mb-2">Evidence Provenance</h4>
+                <div className="space-y-2">
+                  {result.evidence.map(e => (
+                    <div key={e.id} className="flex items-start gap-2">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${getEvidenceBadgeColor(e.type)}`}>{e.type}</span>
+                      <div>
+                        <span className="text-sm text-gray-700">{e.content}</span>
+                        {e.source && <span className="text-xs text-gray-500 ml-1">({e.source})</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-600">
+                <span className="font-medium">AgentLog ID:</span> {result.agentLogId || 'not recorded'}
+              </div>
             </div>
           )}
         </div>
