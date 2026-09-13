@@ -163,6 +163,12 @@ model AgentLog {
   output          String   @default("")
   reasoning       String   @default("")
   evidenceType    String   @default("AI_INFERENCE")  // AI_INFERENCE, VERIFIED_DATA, USER_ENTERED
+  aiProvider      String?
+  aiModel         String?
+  inputTokens     Int?
+  outputTokens    Int?
+  estimatedCostUsd Float?
+  fallbackUsed    Boolean  @default(false)
   
   createdAt       DateTime @default(now())
 }

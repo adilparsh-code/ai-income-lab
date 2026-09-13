@@ -40,6 +40,25 @@ export interface AgentResult {
   evidenceType: EvidenceType;
   error?: string;
   executionTime: number;
+  // Phase 4.2.1: optional AI provider metadata. Absent for deterministic/mock
+  // executions. Provider output is always classified as AI_INFERENCE — this
+  // metadata can never promote output to VERIFIED_DATA.
+  capabilityStatus?: AgentStatus;
+  fallbackUsed?: boolean;
+  aiUsage?: AiUsageMetadata;
+}
+
+// Phase 4.2.1: token/cost attribution for a single real-AI provider call.
+// All costs are estimates from an isolated price table (see src/lib/ai/models.ts)
+// and must never be presented as verified billing data.
+export interface AiUsageMetadata {
+  provider: string;
+  model: string;
+  purpose: string;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number;
+  latencyMs: number;
 }
 
 // Research Agent specific types

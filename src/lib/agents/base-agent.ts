@@ -42,6 +42,13 @@ export abstract class BaseAgent implements Agent {
           output: JSON.stringify(result.output),
           reasoning: result.reasoning,
           evidenceType: result.evidenceType,
+          // Phase 4.2.1: optional AI attribution. Nulls when deterministic/mock.
+          aiProvider: result.aiUsage?.provider ?? null,
+          aiModel: result.aiUsage?.model ?? null,
+          inputTokens: result.aiUsage?.inputTokens ?? null,
+          outputTokens: result.aiUsage?.outputTokens ?? null,
+          estimatedCostUsd: result.aiUsage?.estimatedCostUsd ?? null,
+          fallbackUsed: result.fallbackUsed ?? false,
         },
       });
     } catch (error) {
