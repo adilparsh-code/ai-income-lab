@@ -70,3 +70,70 @@ export function resolveProviderId(): AiProviderId {
 export function isRealProvider(id: AiProviderId): boolean {
   return id === 'gemini' || id === 'openai';
 }
+
+// --- Error classification (Phase 4.2.2) ------------------------------------
+// Shared, provider-agnostic error model. Concrete adapters throw AiProviderError
+// and the orchestrator (generate.ts) can classify ANY unknown error generically.
+// This keeps a future "openai" or "anthropic" adapter working with zero changes
+// to the research agent or orchestrator.
+
+export type AiErrorCategory =
+  | 'authentication'
+  | 'authorization'
+  | 'rate_limit'
+  | 'quota'
+  | 'timeout'
+  | 'network'
+  | 'provider_unavailable'
+  | 'invalid_response'
+  | 'http'
+  | 'unknown';
+
+export const RETRYABLE_CATEGORIES: ReadonlySet<AiErrorCategory> = new Set<AiErrorCategory>([
+  'rate_limit',
+  'quota',
+  'timeout',
+  'network',
+  'provider_unavailable',
+]);
+
+export interface AiProviderErrorOptions {
+  category: AiErrorCategory;
+  status?: number;
+  retryable?: boolean;
+  code?: string;
+}
+
+export class AiProviderError extends Error {
+  readonly category: AiErrorCategory;
+  readonly status?: number;
+  readonly retryable: boolean;
+  readonly code?: string;
+
+  constructor(message: string, options: AiProviderErrorOptions) {
+    super(message);
+    this.name = 'AiProviderError';
+    this.category = options.category;
+    this.status = options.status;
+    this.retryable = options.retryable ?? RETRYABLE_CATEGORIES.has(options.category);
+    this.code = options.code;
+  }
+}
+
+export function isAiProviderError(error: unknown): error is AiProviderError {
+  return error instanceof AiProviderError;
+}
+
+/**
+ * Best-effort generic classification of any thrown value. Provider adapters may
+ * throw typed AiProviderError; everything else is mapped heuristically so the
+ * orchestrator can record an error category without depending on a concrete
+ * provider implementation.
+ */
+export function classifyGenericError(error: unknown): AiErrorCategory {
+  if (isAiProviderError(error)) return error.category;
+  const err = error instanceof Error ? error : new Error(String(error));
+  if (err.name === 'AbortError') return 'timeout';
+  if (err instanceof TypeError) return 'network';
+  return 'unknown';
+}

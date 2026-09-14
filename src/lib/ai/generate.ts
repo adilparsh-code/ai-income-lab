@@ -1,8 +1,9 @@
-// Server-only AI generation orchestration (Phase 4.2.1 foundation).
+// Server-only AI generation orchestration.
+// Phase 4.2.1: foundation. Phase 4.2.2: real Gemini adapter wired in.
 // Default behavior is safe: AI_PROVIDER=mock resolves a deterministic in-process
-// provider, so no API key or network is required. Real providers (gemini/openai)
-// adapters are NOT implemented yet — requesting them is an explicit config error,
-// never a silent mock fallback.
+// provider, so no API key or network is required. Setting AI_PROVIDER=gemini
+// with a valid AI_PROVIDER_API_KEY resolves the Gemini adapter; openai is still
+// NOT implemented and is an explicit config error — never a silent mock fallback.
 //
 // Provenance rule: everything produced here is AI_INFERENCE. Callers must never
 // classify it as VERIFIED_DATA.
@@ -10,17 +11,21 @@
 import { requireEnv } from '@/lib/config';
 import { logger } from '@/lib/server-log';
 import {
+  AiErrorCategory,
   AiGenerateOptions,
   AiGenerateResult,
   AiProvider,
   AiProviderId,
+  classifyGenericError,
   isRealProvider,
   resolveProviderId,
 } from './provider';
-import { clampMaxOutputTokens, clampTemperature, estimateCostUsd, getDailyBudgetUsd } from './models';
+import { clampMaxOutputTokens, clampTemperature, estimateCostUsd, estimateTokens, getDailyBudgetUsd } from './models';
+import { buildGeminiProvider } from './gemini';
 import { parseAndValidate } from './schemas';
 
 export type { AiGenerateOptions, AiGenerateResult };
+export { estimateTokens } from './models';
 
 function readPositiveInt(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -63,30 +68,43 @@ class MockProvider implements AiProvider {
   }
 }
 
-/** Rough token estimate (~4 chars/token) for budget guarding. */
-export function estimateTokens(text: string): number {
-  if (!text) return 0;
-  return Math.max(1, Math.ceil(text.length / 4));
-}
-
 const mockProvider = new MockProvider();
 
 /**
  * Resolve the configured provider. Mock works with no key. Real provider ids
- * are rejected until adapters land (Phase 4.2.2+); a missing key is an
- * explicit error via requireEnv — never a silent fallback to mock.
+ * are validated explicitly: gemini requires a key and returns the adapter;
+ * openai is not yet implemented (explicit error). A missing key is a loud
+ * configuration error — never a silent fallback to mock.
  */
 export function getProvider(): AiProvider {
   const id = resolveProviderId();
   if (id === 'mock') return mockProvider;
-  if (isRealProvider(id)) {
+  if (id === 'gemini') {
+    const apiKey = requireEnv('AI_PROVIDER_API_KEY');
+    return buildGeminiProvider(apiKey);
+  }
+  if (id === 'openai') {
     requireEnv('AI_PROVIDER_API_KEY');
     throw new Error(
-      `AI provider "${id}" is not enabled yet. Adapters land in Phase 4.2.2+. ` +
-        `Set AI_PROVIDER="mock" (default) until then.`
+      `AI provider "openai" is not enabled yet. Only "mock" and "gemini" are implemented in this phase. ` +
+        `Set AI_PROVIDER to "mock" or "gemini" (or set the fallback).`
     );
   }
   throw new Error(`Unknown AI provider "${id}".`);
+}
+
+/**
+ * Describe how the current environment will execute AI calls, WITHOUT forcing a
+ * provider construction (so it never throws on a missing key or performs I/O).
+ * Used by agents to label results MOCKED vs LIVE / PLANNED.
+ */
+export function identifyExecutionMode(): { provider: AiProviderId; isLive: boolean; isMocked: boolean } {
+  const provider = resolveProviderId();
+  return {
+    provider,
+    isLive: isRealProvider(provider),
+    isMocked: provider === 'mock',
+  };
 }
 
 /** Enforce a timeout around a promise. */
@@ -120,6 +138,8 @@ export interface FailedGeneration {
   errors: string[];
   fallbackUsed: true;
   attempts: number;
+  /** Provider-agnostic error categories observed (Phase 4.2.2). Empty when unknown. */
+  categories?: AiErrorCategory[];
 }
 
 export type GenerationOutcome<T> = ValidatedGeneration<T> | FailedGeneration;
@@ -159,6 +179,7 @@ export async function generateValidated<T extends Record<string, unknown>>(
   if (overrides?.cacheKey) opts.cacheKey = overrides.cacheKey;
 
   const errors: string[] = [];
+  const categories: AiErrorCategory[] = [];
   const maxAttempts = maxRetries + 1;
   let attempts = 0;
 
@@ -184,8 +205,10 @@ export async function generateValidated<T extends Record<string, unknown>>(
         };
       }
       errors.push(`Attempt ${attempt}: schema validation failed: ${validated.errors.join('; ')}`);
+      categories.push('invalid_response');
     } catch (error) {
       errors.push(`Attempt ${attempt} failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+      categories.push(classifyGenericError(error));
     }
     if (attempt < maxAttempts) {
       await sleep(Math.min(4000, 250 * 2 ** (attempt - 1)));
@@ -214,11 +237,13 @@ export async function generateValidated<T extends Record<string, unknown>>(
       };
     }
     errors.push(`Repair attempt: schema validation failed: ${revalidated.errors.join('; ')}`);
+    categories.push('invalid_response');
   } catch (repairError) {
     errors.push(`Repair attempt failed: ${repairError instanceof Error ? repairError.message : 'unknown error'}`);
+    categories.push(classifyGenericError(repairError));
   }
 
   // Fail closed: no partial/trusted output. Log server-side only (no secrets).
   logger.warn('AI generation failed closed after retries', { purpose, attempts });
-  return { ok: false, errors, fallbackUsed: true, attempts };
+  return { ok: false, errors, fallbackUsed: true, attempts, categories };
 }

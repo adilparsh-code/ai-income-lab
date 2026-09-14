@@ -111,7 +111,7 @@ describe('AI Provider Resolution (Phase 4.2.1)', () => {
     });
   });
 
-  describe('real provider rejection (never silent mock)', () => {
+  describe('real provider resolution (gemini live, openai not-enabled)', () => {
     const original = process.env.AI_PROVIDER;
     const originalKey = process.env.AI_PROVIDER_API_KEY;
 
@@ -121,13 +121,19 @@ describe('AI Provider Resolution (Phase 4.2.1)', () => {
       assert.throws(() => getProvider(), /required but not set/i);
     });
 
-    it('gemini WITH API key throws capability error (not mock)', () => {
+    it('gemini WITH API key resolves a real provider (not mock)', () => {
       process.env.AI_PROVIDER = 'gemini';
       process.env.AI_PROVIDER_API_KEY = 'fake-key-for-testing';
-      assert.throws(
-        () => getProvider(),
-        /not enabled yet.*Phase 4\.2\.2/
-      );
+      const provider = getProvider();
+      assert.equal(provider.id, 'gemini');
+      assert.notEqual(provider.id, 'mock');
+    });
+
+    it('gemini provider avoids returning mock', () => {
+      process.env.AI_PROVIDER = 'gemini';
+      process.env.AI_PROVIDER_API_KEY = 'fake-key-for-testing';
+      const provider = getProvider();
+      assert.equal(provider.id, 'gemini');
     });
 
     it('openai WITH API key throws capability error (not mock)', () => {
@@ -135,16 +141,16 @@ describe('AI Provider Resolution (Phase 4.2.1)', () => {
       process.env.AI_PROVIDER_API_KEY = 'fake-key-for-testing';
       assert.throws(
         () => getProvider(),
-        /not enabled yet.*Phase 4\.2\.2/
+        /not enabled yet/i
       );
     });
 
-    it('real provider throws rather than returning mock', () => {
+    it('gemini provider advertises as a real provider', () => {
       process.env.AI_PROVIDER = 'gemini';
       process.env.AI_PROVIDER_API_KEY = 'fake-key-for-testing';
-      let threw = false;
-      try { getProvider(); } catch { threw = true; }
-      assert.ok(threw, 'Must throw rather than return mock provider');
+      const provider = getProvider();
+      assert.notEqual(provider.id, 'mock');
+      assert.equal(isRealProvider(provider.id), true);
     });
 
     after(() => {

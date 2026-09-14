@@ -86,6 +86,16 @@ export function estimateCostUsd(model: string, inputTokens: number, outputTokens
   return Math.round(cost * 1_000_000) / 1_000_000;
 }
 
+/**
+ * Rough token estimate (~4 chars/token) for budget guarding and for providers
+ * that do not report usage. Centralized here so adapters and the orchestrator
+ * share one implementation (avoids a provider <-> orchestrator import cycle).
+ */
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
 /** Daily spend cap in USD. Defaults to $2.00; invalid values fall back safely. */
 export function getDailyBudgetUsd(): number {
   const raw = process.env.AI_DAILY_BUDGET_USD;

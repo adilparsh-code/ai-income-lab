@@ -1,8 +1,40 @@
 import { db } from '@/lib/db';
-import { BaseAgent } from './base-agent';
-import { AgentRequest, AgentResult, EvidenceType, ResearchRequest, ResearchResult, ResearchFinding, ResearchSignal } from './types';
-import { v4 as uuidv4 } from 'uuid';
+import { BaseAgent, buildAgentLogData } from './base-agent';
+import {
+  AgentRequest,
+  AgentResult,
+  EvidenceType,
+  ResearchRequest,
+  ResearchResult,
+  AiUsageMetadata,
+} from './types';
+import { generateValidated, identifyExecutionMode } from '@/lib/ai/generate';
+import { getModelPolicy } from '@/lib/ai/models';
+import {
+  RESEARCH_SCHEMA,
+  ResearchAiOutput,
+  buildResearchPrompt,
+  buildResearchResult,
+  buildMockResearchOutput,
+  evaluateHalalGate,
+} from '@/lib/ai/research';
 
+const INFERENCE: EvidenceType = 'AI_INFERENCE';
+// Neutral screening defaults, clearly documented: AI screening does not measure
+// confidence, so these never promote output above AI_INFERENCE.
+const MOCK_CONFIDENCE = 0.6;
+const LIVE_CONFIDENCE = 0.5;
+const PURPOSE = 'research.findings';
+
+/**
+ * Research Agent (Phase 4.2.2).
+ *
+ * Provider-agnostic by design: this agent NEVER imports a concrete AI provider.
+ * It depends only on the generic generation layer (generateValidated) plus the
+ * provider-agnostic research helpers. The configured provider (mock/gemini/…) is
+ * resolved internally by that layer. Adding a new provider requires ZERO changes
+ * to this agent.
+ */
 export class ResearchAgent extends BaseAgent {
   constructor() {
     super({
@@ -11,7 +43,10 @@ export class ResearchAgent extends BaseAgent {
       name: 'Research Agent',
       description: 'Finds opportunities and market signals. Identifies trends, demand patterns, and underserved niches.',
       purpose: 'Discover and validate potential income opportunities by analyzing market data and identifying emerging trends.',
-      currentCapability: 'Mock research workflow fully implemented. Executes structured research requests with opportunity integration, halal safety checks, and evidence classification. All results are mocked examples.',
+      currentCapability:
+        'Research workflow with real provider support (Gemini) behind a provider-agnostic generation layer. ' +
+        'Structured research output, halal safety gate, provenance (AI_INFERENCE), controlled failure on provider ' +
+        'failure. Mock mode works fully offline; set AI_PROVIDER=gemini with a valid key for live calls.',
       status: 'MOCKED',
       evidencePolicy: 'All research findings are classified as AI_INFERENCE until verified by human or trusted data sources.',
       safeExecutionState: true,
@@ -23,42 +58,107 @@ export class ResearchAgent extends BaseAgent {
   private validateResearchRequest(input: unknown): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
     const request = input as Partial<ResearchRequest>;
-    
+
     if (!request.researchObjective || typeof request.researchObjective !== 'string' || request.researchObjective.trim().length === 0) {
       errors.push('Valid research objective is required');
     }
-    
+
     if (request.opportunityId && typeof request.opportunityId !== 'string') {
       errors.push('opportunityId must be a string if provided');
     }
-    
+
     if (request.targetAudience && typeof request.targetAudience !== 'string') {
       errors.push('targetAudience must be a string if provided');
     }
-    
+
     if (request.marketCategory && typeof request.marketCategory !== 'string') {
       errors.push('marketCategory must be a string if provided');
     }
-    
+
     if (request.geography && typeof request.geography !== 'string') {
       errors.push('geography must be a string if provided');
     }
-    
+
     if (request.constraints && !Array.isArray(request.constraints)) {
       errors.push('constraints must be an array if provided');
     }
-    
+
     if (request.halalRequirements && !Array.isArray(request.halalRequirements)) {
       errors.push('halalRequirements must be an array if provided');
     }
-    
+
     return { valid: errors.length === 0, errors };
+  }
+
+  private emptyResearchResult(
+    researchObjective: string,
+    halalConsiderations: string[],
+    capabilityStatus: 'LIVE' | 'MOCKED'
+  ): ResearchResult {
+    return {
+      researchObjective,
+      findings: [],
+      signals: [],
+      assumptions: [],
+      risks:
+        halalConsiderations.length > 0
+          ? halalConsiderations.map((c) => `REVIEW/BLOCKED: ${c}`)
+          : ['No execution recommendation generated.'],
+      competitors: [],
+      demandIndicators: [],
+      monetizationObservations: [],
+      halalConsiderations,
+      overallConfidence: 0,
+      evidenceItems: [],
+      capabilityStatus,
+    };
+  }
+
+  private buildReasoning(reviewRequired: boolean, live: boolean, provider?: string, model?: string): string {
+    const reviewNote = reviewRequired ? ' Findings require human review (REVIEW_REQUIRED).' : '';
+    const providerNote =
+      live && provider && model
+        ? ` Generated at AI-inference level via ${provider}/${model}; not verified external data.`
+        : '';
+    return `AI research completed with structured findings.${reviewNote}${providerNote}`;
+  }
+
+  /**
+   * Persist a successful research result and return the AgentLog id. Builds the
+   * persisted payload via the shared pure buildAgentLogData mapper so AI usage
+   * metadata (provider/model/tokens/cost/fallback) is captured consistently.
+   */
+  private async persistResearchLog(
+    request: AgentRequest,
+    researchResult: ResearchResult,
+    reasoning: string,
+    aiUsage?: AiUsageMetadata,
+    fallbackUsed = false
+  ): Promise<string> {
+    const result: AgentResult = {
+      success: true,
+      output: researchResult,
+      reasoning,
+      evidenceType: INFERENCE,
+      executionTime: 0,
+      capabilityStatus: researchResult.capabilityStatus,
+      ...(aiUsage ? { aiUsage, fallbackUsed } : {}),
+    };
+    const entry = await db.agentLog.create({
+      data: buildAgentLogData({
+        agentType: this.type,
+        action: request.action,
+        input: request.input,
+        result,
+      }),
+    });
+    return entry.id;
   }
 
   async execute(request: AgentRequest): Promise<AgentResult> {
     const startTime = Date.now();
     const researchRequest = request.input as unknown as ResearchRequest;
-    
+
     // 1. Input Validation
     const validation = this.validateResearchRequest(researchRequest);
     if (!validation.valid) {
@@ -67,7 +167,7 @@ export class ResearchAgent extends BaseAgent {
         success: false,
         output: {},
         reasoning: errorMessage,
-        evidenceType: 'AI_INFERENCE' as EvidenceType,
+        evidenceType: INFERENCE,
         error: errorMessage,
         executionTime: Date.now() - startTime,
       };
@@ -78,28 +178,28 @@ export class ResearchAgent extends BaseAgent {
     // 2. Opportunity Context Loading
     let opportunity: { id: string; title: string; problemSolved?: string; halalStatus: string; overallScore?: number } | null = null;
     let opportunityHalalStatus: string | null = null;
-    
+
     if (researchRequest.opportunityId) {
       try {
         opportunity = await db.opportunity.findUnique({
           where: { id: researchRequest.opportunityId },
-          select: { id: true, title: true, problemSolved: true, halalStatus: true, overallScore: true }
+          select: { id: true, title: true, problemSolved: true, halalStatus: true, overallScore: true },
         });
-        
+
         if (!opportunity) {
           const errorMessage = `Opportunity with ID ${researchRequest.opportunityId} not found`;
           const result: AgentResult = {
             success: false,
             output: {},
             reasoning: errorMessage,
-            evidenceType: 'AI_INFERENCE' as EvidenceType,
+            evidenceType: INFERENCE,
             error: errorMessage,
             executionTime: Date.now() - startTime,
           };
           await this.logExecution(request.action, request.input, result);
           return result;
         }
-        
+
         opportunityHalalStatus = opportunity.halalStatus;
       } catch (dbError) {
         console.error('Database error details:', dbError);
@@ -108,7 +208,7 @@ export class ResearchAgent extends BaseAgent {
           success: false,
           output: {},
           reasoning: errorMessage,
-          evidenceType: 'AI_INFERENCE' as EvidenceType,
+          evidenceType: INFERENCE,
           error: errorMessage,
           executionTime: Date.now() - startTime,
         };
@@ -117,154 +217,154 @@ export class ResearchAgent extends BaseAgent {
       }
     }
 
-    // 3. Halal Safety Check
-    const halalConsiderations: string[] = [];
-    let researchBlocked = false;
-    let reviewRequired = false;
-    
-    if (opportunityHalalStatus === 'NOT_ALLOWED') {
-      researchBlocked = true;
-      halalConsiderations.push('Research blocked: Opportunity has NOT_ALLOWED halal status');
-      halalConsiderations.push('No execution recommendations will be generated per halal safety rules');
-    } else if (opportunityHalalStatus === 'REVIEW_REQUIRED') {
-      reviewRequired = true;
-      halalConsiderations.push('Human review required: Opportunity has REVIEW_REQUIRED halal status');
-      halalConsiderations.push('All findings must be reviewed by a qualified human before any execution');
-    }
+    // 3. Halal Safety Gate (screening tool, not a religious ruling)
+    const halalGate = evaluateHalalGate({
+      researchObjective: researchRequest.researchObjective,
+      targetAudience: researchRequest.targetAudience,
+      marketCategory: researchRequest.marketCategory,
+      halalRequirements: researchRequest.halalRequirements,
+      opportunityHalalStatus,
+    });
 
-    if (researchBlocked) {
-      const researchResult: ResearchResult = {
-        researchObjective: researchRequest.researchObjective,
-        findings: [],
-        signals: [],
-        assumptions: [],
-        risks: ['Research blocked due to halal compliance issues'],
-        competitors: [],
-        demandIndicators: [],
-        monetizationObservations: [],
-        halalConsiderations,
-        overallConfidence: 0,
-        evidenceItems: [],
-        capabilityStatus: this.status
-      };
-      
+    const mode = identifyExecutionMode();
+    const capabilityStatus: 'LIVE' | 'MOCKED' = mode.isLive ? 'LIVE' : 'MOCKED';
+
+    if (halalGate.status === 'BLOCKED') {
+      const researchResult = this.emptyResearchResult(
+        researchRequest.researchObjective,
+        halalGate.considerations,
+        capabilityStatus
+      );
       const result: AgentResult = {
         success: false,
         output: researchResult,
-        reasoning: 'Research blocked due to halal compliance checks',
-        evidenceType: 'AI_INFERENCE' as EvidenceType,
+        reasoning: 'Research blocked due to halal compliance checks.',
+        evidenceType: INFERENCE,
+        capabilityStatus,
         error: 'Halal compliance check failed',
+        fallbackUsed: false,
         executionTime: Date.now() - startTime,
       };
-      
       await this.logExecution(request.action, request.input, result);
       return result;
     }
 
-    // 4. Generate Mock Research Results
-    const mockFindings: ResearchFinding[] = [
-      {
-        id: uuidv4(),
-        content: `Example demand hypothesis for: ${researchRequest.researchObjective}`,
-        evidenceType: 'AI_INFERENCE' as EvidenceType
-      },
-      {
-        id: uuidv4(),
-        content: reviewRequired 
-          ? 'REVIEW REQUIRED: This finding requires human validation before use' 
-          : 'Preliminary analysis suggests potential market opportunity',
-        evidenceType: 'AI_INFERENCE' as EvidenceType
-      }
-    ];
+    // 4. Build the structured research prompt (provider-agnostic).
+    const prompt = buildResearchPrompt({
+      researchObjective: researchRequest.researchObjective,
+      targetAudience: researchRequest.targetAudience,
+      marketCategory: researchRequest.marketCategory,
+      geography: researchRequest.geography,
+      constraints: researchRequest.constraints,
+      halalRequirements: researchRequest.halalRequirements,
+      opportunity,
+      halalConsiderations: halalGate.considerations,
+    });
 
-    const mockSignals: ResearchSignal[] = [
-      {
-        id: uuidv4(),
-        type: 'demand',
-        content: 'Example demand signal: Potential user interest in this category',
-        confidence: 0.65,
-        evidenceType: 'AI_INFERENCE' as EvidenceType,
-        isMocked: true
-      },
-      {
-        id: uuidv4(),
-        type: 'competitor',
-        content: 'Example competitor category: Other projects in similar space exist',
-        confidence: 0.8,
-        evidenceType: 'AI_INFERENCE' as EvidenceType,
-        isMocked: true
-      },
-      {
-        id: uuidv4(),
-        type: 'monetization',
-        content: 'Example monetization hypothesis: Multiple potential revenue streams identified',
-        confidence: 0.7,
-        evidenceType: 'AI_INFERENCE' as EvidenceType,
-        isMocked: true
-      },
-      {
-        id: uuidv4(),
-        type: 'risk',
-        content: 'Example risk signal: Market entry barriers require further analysis',
-        confidence: 0.75,
-        evidenceType: 'AI_INFERENCE' as EvidenceType,
-        isMocked: true
-      }
-    ];
+    const policy = getModelPolicy(PURPOSE);
 
-    // Add score suggestion if opportunity exists
-    if (opportunity) {
-      mockSignals.push({
-        id: uuidv4(),
-        type: 'demand',
-        content: 'Research signal / suggested input: Opportunity score could be updated to 6.8/10 based on preliminary research',
-        confidence: 0.55,
-        evidenceType: 'AI_INFERENCE' as EvidenceType,
-        isMocked: true
-      });
+    // 5a. LIVE path — route through the generic AI generation layer. The agent
+    // has NO knowledge of which concrete provider serves this call; that is
+    // resolved internally by generateValidated() -> getProvider(). Adding another
+    // provider never requires changes to this agent.
+    if (mode.isLive) {
+      const outcome = await generateValidated<ResearchAiOutput>(
+        prompt,
+        PURPOSE,
+        RESEARCH_SCHEMA,
+        {
+          model: policy.model,
+          maxOutputTokens: policy.maxOutputTokens,
+          temperature: policy.temperature,
+        }
+      );
+
+      if (outcome.ok) {
+        const researchResult = buildResearchResult({
+          researchObjective: researchRequest.researchObjective,
+          research: outcome.value,
+          halalConsiderations: halalGate.considerations,
+          overallConfidence: LIVE_CONFIDENCE,
+          capabilityStatus: 'LIVE',
+          isMocked: false,
+        });
+        const aiUsage: AiUsageMetadata = {
+          provider: outcome.usage.provider,
+          model: outcome.usage.model,
+          purpose: PURPOSE,
+          inputTokens: outcome.usage.inputTokens,
+          outputTokens: outcome.usage.outputTokens,
+          estimatedCostUsd: outcome.usage.estimatedCostUsd,
+          latencyMs: outcome.usage.latencyMs,
+        };
+        const reasoning = this.buildReasoning(
+          halalGate.status === 'REVIEW',
+          true,
+          outcome.usage.provider,
+          outcome.usage.model
+        );
+        researchResult.agentLogId = await this.persistResearchLog(request, researchResult, reasoning, aiUsage, false);
+
+        return {
+          success: true,
+          output: researchResult,
+          reasoning,
+          evidenceType: INFERENCE,
+          capabilityStatus: 'LIVE',
+          aiUsage,
+          fallbackUsed: false,
+          executionTime: Date.now() - startTime,
+        };
+      }
+
+      // Live path failed closed (retries + repair could not produce valid output).
+      const researchResult = this.emptyResearchResult(
+        researchRequest.researchObjective,
+        halalGate.considerations,
+        'LIVE'
+      );
+      const categories = (outcome.categories ?? []).join(', ') || 'unknown';
+      const detail = outcome.errors[0] ?? 'AI provider failed to produce valid structured output';
+      const result: AgentResult = {
+        success: false,
+        output: researchResult,
+        reasoning: `AI research failed after ${outcome.attempts} attempt(s). Error categories: ${categories}.`,
+        evidenceType: INFERENCE,
+        capabilityStatus: 'LIVE',
+        error: detail,
+        fallbackUsed: true,
+        executionTime: Date.now() - startTime,
+      };
+      await this.logExecution(request.action, request.input, result);
+      return result;
     }
 
-    const finalResearchResult: ResearchResult = {
+    // 5b. MOCKED path — deterministic, offline, no key/network required.
+    const mockOutput = buildMockResearchOutput({
       researchObjective: researchRequest.researchObjective,
-      findings: mockFindings,
-      signals: mockSignals,
-      assumptions: ['Example assumption: Target market exists as described', 'Example assumption: User need is real and unmet'],
-      risks: reviewRequired 
-        ? ['REVIEW REQUIRED: All risks must be validated by human reviewer'] 
-        : ['Example risk: Market conditions may change', 'Example risk: Competition could intensify'],
-      competitors: ['Example competitor category: Similar solutions in this space'],
-      demandIndicators: ['Example indicator: Preliminary interest signals exist'],
-      monetizationObservations: ['Example observation: Multiple potential models to explore'],
-      halalConsiderations,
-      overallConfidence: 0.6,
-      evidenceItems: mockFindings.map(f => ({ id: f.id, type: f.evidenceType, content: f.content })),
-      capabilityStatus: this.status
-    };
-
-    // 5. Create AgentLog entry
-    const agentLog = await db.agentLog.create({
-      data: {
-        agentType: this.type,
-        action: request.action,
-        input: JSON.stringify(request.input),
-        output: JSON.stringify(finalResearchResult),
-        reasoning: 'Mock research execution completed successfully',
-        evidenceType: 'AI_INFERENCE'
-      }
+      marketCategory: researchRequest.marketCategory,
     });
-    
-    finalResearchResult.agentLogId = agentLog.id;
+    const researchResult = buildResearchResult({
+      researchObjective: researchRequest.researchObjective,
+      research: mockOutput,
+      halalConsiderations: halalGate.considerations,
+      overallConfidence: MOCK_CONFIDENCE,
+      capabilityStatus: 'MOCKED',
+      isMocked: true,
+    });
+    researchResult.agentLogId = await this.persistResearchLog(request, researchResult, 'Mock research execution completed.');
 
-    const finalResult: AgentResult = {
+    return {
       success: true,
-      output: finalResearchResult,
-      reasoning: reviewRequired 
-        ? 'Mock research completed, but findings require human review due to REVIEW_REQUIRED opportunity status'
-        : 'Mock research execution completed successfully with structured findings',
-      evidenceType: 'AI_INFERENCE' as EvidenceType,
+      output: researchResult,
+      reasoning:
+        halalGate.status === 'REVIEW'
+          ? 'Mock research completed, but findings require human review (REVIEW_REQUIRED).'
+          : 'Mock research execution completed successfully with structured findings.',
+      evidenceType: INFERENCE,
+      capabilityStatus: 'MOCKED',
+      fallbackUsed: false,
       executionTime: Date.now() - startTime,
     };
-
-    return finalResult;
   }
 }

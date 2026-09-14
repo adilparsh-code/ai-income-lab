@@ -1,5 +1,8 @@
 import { db } from '@/lib/db';
 import { Agent, AgentRequest, AgentResult, EvidenceType, AgentType } from './types';
+import { buildAgentLogData } from './agent-log-data';
+export { buildAgentLogData } from './agent-log-data';
+export type { AgentLogDataInput, AgentLogPersistedData } from './agent-log-data';
 
 export abstract class BaseAgent implements Agent {
   id: string;
@@ -34,23 +37,8 @@ export abstract class BaseAgent implements Agent {
     result: AgentResult
   ): Promise<void> {
     try {
-      await db.agentLog.create({
-        data: {
-          agentType: this.type,
-          action: action,
-          input: JSON.stringify(input),
-          output: JSON.stringify(result.output),
-          reasoning: result.reasoning,
-          evidenceType: result.evidenceType,
-          // Phase 4.2.1: optional AI attribution. Nulls when deterministic/mock.
-          aiProvider: result.aiUsage?.provider ?? null,
-          aiModel: result.aiUsage?.model ?? null,
-          inputTokens: result.aiUsage?.inputTokens ?? null,
-          outputTokens: result.aiUsage?.outputTokens ?? null,
-          estimatedCostUsd: result.aiUsage?.estimatedCostUsd ?? null,
-          fallbackUsed: result.fallbackUsed ?? false,
-        },
-      });
+      const data = buildAgentLogData({ agentType: this.type, action, input, result });
+      await db.agentLog.create({ data });
     } catch (error) {
       console.error(`Failed to log agent execution: ${error}`);
     }

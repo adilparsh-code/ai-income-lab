@@ -12,6 +12,12 @@ export default function ResearchAgentPage() {
   const [isExecuting, setIsExecuting] = useState(false);
   const [result, setResult] = useState<ResearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [meta, setMeta] = useState<{
+    provider?: string;
+    model?: string;
+    capabilityStatus?: string;
+    fallbackUsed?: boolean;
+  } | null>(null);
 
   const researchAgent = agentRegistry.getAgentById('research-agent');
 
@@ -45,6 +51,12 @@ export default function ResearchAgentPage() {
       }
 
       setResult(data.output);
+      setMeta({
+        provider: data.aiUsage?.provider,
+        model: data.aiUsage?.model,
+        capabilityStatus: data.output?.capabilityStatus,
+        fallbackUsed: data.fallbackUsed,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unknown error occurred');
     } finally {
@@ -199,6 +211,30 @@ export default function ResearchAgentPage() {
         {result && (
           <div className="space-y-6">
             <h2 className="text-2xl font-bold">Research Results</h2>
+{meta && (
+              <div className="bg-white rounded-xl border p-6 shadow-sm">
+                <h3 className="text-lg font-semibold mb-3">Execution Details</h3>
+                <div className="flex flex-wrap gap-2 items-center text-sm">
+                  <span className="px-2 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
+                    Mode: {meta.capabilityStatus ?? '—'}
+                  </span>
+                  <span className="px-2 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
+                    Provider: {meta.provider ?? 'none'}
+                  </span>
+                  <span className="px-2 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
+                    Model: {meta.model ?? '—'}
+                  </span>
+                  {meta.fallbackUsed && (
+                    <span className="px-2 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                      Fallback / failure path used
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500 mt-3">
+                  All AI-generated results are AI_INFERENCE (not verified external data).
+                </p>
+              </div>
+            )}
             
             {/* Overview */}
             <div className="bg-white rounded-xl border p-6 shadow-sm">
