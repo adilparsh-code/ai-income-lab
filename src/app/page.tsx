@@ -1,19 +1,22 @@
 import { getDashboardStats, getNextBestAction, getRevenueChartData } from '@/actions/dashboard';
+import { getLifecycleOverview } from '@/actions/lifecycle';
 import { getOpportunities } from '@/actions/opportunities';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { NextBestAction } from '@/components/dashboard/next-best-action';
 import { RevenueChart } from '@/components/dashboard/revenue-chart';
 import { TopOpportunities } from '@/components/dashboard/top-opportunities';
+import { LifecyclePipeline } from '@/components/dashboard/lifecycle-pipeline';
 import { PageHeader } from '@/components/shared/page-header';
 import Link from 'next/link';
 import { Search, BarChart3, Crown } from 'lucide-react';
 
 export default async function DashboardPage() {
-  const [stats, nextAction, revenueData, opportunities] = await Promise.all([
+  const [stats, nextAction, revenueData, opportunities, lifecycle] = await Promise.all([
     getDashboardStats(),
     getNextBestAction(),
     getRevenueChartData(),
     getOpportunities({ sortBy: 'overallScore', sortOrder: 'desc' }),
+    getLifecycleOverview(),
   ]);
 
   const topOpportunities = opportunities.slice(0, 5);
@@ -58,6 +61,14 @@ export default async function DashboardPage() {
           Recommended Next Action
         </h2>
         <NextBestAction action={nextAction} />
+      </section>
+
+      {/* Business Loop Lifecycle (Phase 4.2.4) */}
+      <section>
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+          Business Loop — Discover → Research → Validate → Build → Publish → Measure
+        </h2>
+        <LifecyclePipeline opportunities={lifecycle.opportunities} />
       </section>
 
       {/* Charts and Top Opportunities */}

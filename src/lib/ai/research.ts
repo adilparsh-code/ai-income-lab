@@ -130,10 +130,6 @@ export function buildResearchPrompt(input: ResearchPromptInput): string {
   lines.push('Reply with ONLY a JSON object matching exactly this shape (arrays must be arrays of strings):');
   lines.push(JSON.stringify(EXAMPLE_SHAPE, null, 2));
   return lines.join('\n');
-lines.push('');
-  lines.push('Reply with ONLY a JSON object matching exactly this shape (arrays must be arrays of strings):');
-  lines.push(JSON.stringify(EXAMPLE_SHAPE, null, 2));
-  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------

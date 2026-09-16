@@ -67,7 +67,7 @@ export default function ValidationAgentPage() {
           and defines validation requirements.
         </p>
         <div className="mt-2 inline-block px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm font-medium">
-          MOCKED CAPABILITY - Results are examples only, no real-world validation performed
+          Results are AI_INFERENCE - all validation findings are hypotheses until verified by real-world evidence or a human
         </div>
       </div>
 

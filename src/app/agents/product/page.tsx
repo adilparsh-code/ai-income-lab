@@ -97,7 +97,7 @@ export default function ProductAgentPage() {
           Converts an eligible opportunity and its research/validation context into a structured product concept and build specification.
         </p>
         <div className="mt-2 inline-block px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm font-medium">
-          MOCKED CAPABILITY - Results are examples only, no real product has been built
+          Results are AI_INFERENCE - product concepts are hypotheses, no real product has been built
         </div>
       </div>
 

@@ -21,7 +21,7 @@ import {
   isRealProvider,
   resolveProviderId,
 } from './provider';
-import { clampMaxOutputTokens, clampTemperature, estimateCostUsd, estimateTokens, getDailyBudgetUsd, getModelPolicyOrDefault, type AiPurpose } from './models';
+import { clampMaxOutputTokens, clampTemperature, estimateCostUsd, estimateTokens, getDailyBudgetUsd, getModelPolicyOrDefault } from './models';
 import { buildGeminiProvider } from './gemini';
 import { parseAndValidate } from './schemas';
 
@@ -79,7 +79,9 @@ export function getProvider(): AiProvider {
     return buildGeminiProvider(apiKey);
   }
   if (id === 'openai') {
-    requireEnv('AI_PROVIDER_API_KEY');
+    // Explicitly unsupported: fail loudly BEFORE any env validation so the
+    // error names the real problem (unsupported provider), never a confusing
+    // missing-key message, and never a silent mock fallback.
     throw new Error(
       `AI provider "openai" is not enabled yet. Only "mock" and "gemini" are implemented in this phase. ` +
         `Set AI_PROVIDER to "mock" or "gemini" (or set the fallback).`
