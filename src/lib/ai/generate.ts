@@ -16,11 +16,12 @@ import {
   AiGenerateResult,
   AiProvider,
   AiProviderId,
+  RETRYABLE_CATEGORIES,
   classifyGenericError,
   isRealProvider,
   resolveProviderId,
 } from './provider';
-import { clampMaxOutputTokens, clampTemperature, estimateCostUsd, estimateTokens, getDailyBudgetUsd, getModelPolicy, type AiPurpose } from './models';
+import { clampMaxOutputTokens, clampTemperature, estimateCostUsd, estimateTokens, getDailyBudgetUsd, getModelPolicyOrDefault, type AiPurpose } from './models';
 import { buildGeminiProvider } from './gemini';
 import { parseAndValidate } from './schemas';
 
@@ -110,6 +111,48 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Build sanitized usage metadata; never NaN/Infinity, never key material. */
+function buildUsage(
+  result: { provider: string; model: string; inputTokens: number; outputTokens: number; latencyMs: number },
+  started: number
+): { provider: string; model: string; inputTokens: number; outputTokens: number; estimatedCostUsd: number; latencyMs: number } {
+  const inputTokens = Number.isFinite(result.inputTokens) && result.inputTokens >= 0 ? Math.floor(result.inputTokens) : 0;
+  const outputTokens = Number.isFinite(result.outputTokens) && result.outputTokens >= 0 ? Math.floor(result.outputTokens) : 0;
+  return {
+    provider: result.provider,
+    model: result.model,
+    inputTokens,
+    outputTokens,
+    estimatedCostUsd: estimateCostUsd(result.model, inputTokens, outputTokens),
+    latencyMs: Math.max(0, Date.now() - started),
+  };
+}
+
+/**
+ * Summarize an error for logs/results WITHOUT leaking env values or key
+ * material. Provider messages may echo configuration; strip anything that
+ * looks like a key/token before it reaches the error list.
+ */
+function summarizeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return redactKeyMaterial(message).slice(0, 300);
+}
+
+const KEY_LIKE_PATTERNS: RegExp[] = [
+  /AIza[0-9A-Za-z_\-]{10,}/g,
+  /sk-[A-Za-z0-9_\-]{10,}/g,
+  /key=[A-Za-z0-9_\-]{10,}/gi,
+  /(?:api[_-]?key|token|password|secret)\s*[=:]\s*["']?[A-Za-z0-9_\-./:@]{8,}/gi,
+];
+
+function redactKeyMaterial(text: string): string {
+  let output = text;
+  for (const pattern of KEY_LIKE_PATTERNS) {
+    output = output.replace(pattern, '[REDACTED]');
+  }
+  return output;
+}
+
 export interface ValidatedGeneration<T> {
   ok: true;
   value: T;
@@ -136,14 +179,19 @@ export async function generateValidated<T extends Record<string, unknown>>(
 ): Promise<GenerationOutcome<T>> {
   const started = Date.now();
   const provider = getProvider();
-  const policy = getModelPolicy(purpose as AiPurpose);
+  // Model selection follows the PURPOSE-SPECIFIC model policy. Callers may
+  // override, but when they do not, the policy for this purpose decides the
+  // model — never a hardcoded default buried in the call site. Unknown purpose
+  // labels resolve to a conservative generic policy instead of crashing.
+  const policy = getModelPolicyOrDefault(purpose);
   const timeoutMs = overrides?.timeoutMs ?? getTimeoutMs();
   const maxRetries = getMaxRetries();
   const maxOutputTokens = clampMaxOutputTokens(overrides?.maxOutputTokens ?? policy.maxOutputTokens);
   const temperature = clampTemperature(overrides?.temperature ?? policy.temperature);
   const model = overrides?.model ?? policy.model;
 
-  const estimatedCost = estimateCostUsd(model, estimateTokens(prompt), maxOutputTokens);
+  const estimatedCostRaw = estimateCostUsd(model, estimateTokens(prompt), maxOutputTokens);
+  const estimatedCost = Number.isFinite(estimatedCostRaw) && estimatedCostRaw >= 0 ? estimatedCostRaw : 0;
   const budget = getDailyBudgetUsd();
   if (estimatedCost > budget) {
     return { ok: false, errors: [`Estimated cost $${estimatedCost.toFixed(6)} exceeds daily budget $${budget.toFixed(2)}. Request blocked.`], fallbackUsed: true, attempts: 0 };
@@ -166,7 +214,7 @@ export async function generateValidated<T extends Record<string, unknown>>(
         return {
           ok: true,
           value: validated.value as T,
-          usage: { provider: result.provider, model: result.model, inputTokens: result.inputTokens, outputTokens: result.outputTokens, estimatedCostUsd: estimateCostUsd(result.model, result.inputTokens, result.outputTokens), latencyMs: Date.now() - started },
+          usage: buildUsage(result, started),
           fallbackUsed: false,
           attempts,
         };
@@ -174,8 +222,12 @@ export async function generateValidated<T extends Record<string, unknown>>(
       errors.push(`Attempt ${attempt}: schema validation failed: ${validated.errors.join('; ')}`);
       categories.push('invalid_response');
     } catch (error) {
-      errors.push(`Attempt ${attempt} failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+      errors.push(`Attempt ${attempt} failed: ${summarizeError(error)}`);
       categories.push(classifyGenericError(error));
+      // Bounded retry: only retry error categories that are actually retryable.
+      // Malformed/invalid responses and auth failures cannot improve on retry;
+      // fail closed immediately instead of burning budget on hopeless retries.
+      if (!RETRYABLE_CATEGORIES.has(categories[categories.length - 1])) break;
     }
     if (attempt < maxAttempts) await sleep(Math.min(4000, 250 * 2 ** (attempt - 1)));
   }
@@ -188,7 +240,7 @@ export async function generateValidated<T extends Record<string, unknown>>(
       return {
         ok: true,
         value: revalidated.value as T,
-        usage: { provider: repair.provider, model: repair.model, inputTokens: repair.inputTokens, outputTokens: repair.outputTokens, estimatedCostUsd: estimateCostUsd(repair.model, repair.inputTokens, repair.outputTokens), latencyMs: Date.now() - started },
+        usage: buildUsage(repair, started),
         fallbackUsed: false,
         attempts,
       };
@@ -196,7 +248,7 @@ export async function generateValidated<T extends Record<string, unknown>>(
     errors.push(`Repair attempt: schema validation failed: ${revalidated.errors.join('; ')}`);
     categories.push('invalid_response');
   } catch (repairError) {
-    errors.push(`Repair attempt failed: ${repairError instanceof Error ? repairError.message : 'unknown error'}`);
+    errors.push(`Repair attempt failed: ${summarizeError(repairError)}`);
     categories.push(classifyGenericError(repairError));
   }
 

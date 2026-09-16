@@ -1,12 +1,17 @@
 import 'dotenv/config';
 import { defineConfig, env } from 'prisma/config';
 
+// `env('DATABASE_URL')` throws when the variable is missing, which breaks
+// `prisma generate` in a fresh clone/CI where no DATABASE_URL is configured.
+// Generation never touches real data, so read the raw value (or absence) and
+// fall back to the documented local SQLite default here.
+const databaseUrl = process.env.DATABASE_URL && process.env.DATABASE_URL.trim().length > 0
+  ? process.env.DATABASE_URL
+  : 'file:./dev.db';
+
 export default defineConfig({
   schema: 'prisma/schema.prisma',
   datasource: {
-    // Fall back to a local SQLite file so `prisma generate` succeeds even in a
-    // fresh clone/CI without a configured DATABASE_URL. Generation never touches
-    // real data; the application runtime still requires a proper DATABASE_URL.
-    url: env('DATABASE_URL') ?? 'file:./dev.db',
+    url: databaseUrl,
   },
 });

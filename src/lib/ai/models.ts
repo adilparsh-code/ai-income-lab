@@ -39,9 +39,34 @@ const PURPOSE_ENV_VARS: Record<AiPurpose, string> = {
 /** Per-agent default policy; model name overridable via env without code change. */
 export function getModelPolicy(purpose: AiPurpose): ModelPolicy {
   const base = DEFAULT_POLICIES[purpose];
+  if (!base) {
+    throw new Error(`Unknown AI purpose "${purpose}". Known purposes: ${Object.keys(DEFAULT_POLICIES).join(', ')}.`);
+  }
   const override = process.env[PURPOSE_ENV_VARS[purpose]];
   const model = override && override.trim().length > 0 ? override.trim() : base.model;
   return { ...base, model };
+}
+
+/** True when the purpose has an explicit purpose-specific model policy. */
+export function isKnownPurpose(purpose: string): purpose is AiPurpose {
+  return Object.prototype.hasOwnProperty.call(DEFAULT_POLICIES, purpose);
+}
+
+const GENERIC_POLICY: ModelPolicy = {
+  provider: 'gemini',
+  model: 'gemini-2.5-flash',
+  maxOutputTokens: 1200,
+  temperature: 0.3,
+};
+
+/**
+ * Resolve the model policy for any purpose label. Known purposes use their
+ * purpose-specific policy (never a hardcoded model); unknown purposes get a
+ * conservative generic policy so the generic generation layer stays usable for
+ * attribution-only labels without crashing on policy lookup.
+ */
+export function getModelPolicyOrDefault(purpose: string): ModelPolicy {
+  return isKnownPurpose(purpose) ? getModelPolicy(purpose) : GENERIC_POLICY;
 }
 
 /** Clamp agent-friendly token limit into a safe range. */
