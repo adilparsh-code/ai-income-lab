@@ -20,7 +20,7 @@ import {
   isRealProvider,
   resolveProviderId,
 } from './provider';
-import { clampMaxOutputTokens, clampTemperature, estimateCostUsd, estimateTokens, getDailyBudgetUsd } from './models';
+import { clampMaxOutputTokens, clampTemperature, estimateCostUsd, estimateTokens, getDailyBudgetUsd, getModelPolicy, type AiPurpose } from './models';
 import { buildGeminiProvider } from './gemini';
 import { parseAndValidate } from './schemas';
 
@@ -70,12 +70,6 @@ class MockProvider implements AiProvider {
 
 const mockProvider = new MockProvider();
 
-/**
- * Resolve the configured provider. Mock works with no key. Real provider ids
- * are validated explicitly: gemini requires a key and returns the adapter;
- * openai is not yet implemented (explicit error). A missing key is a loud
- * configuration error — never a silent fallback to mock.
- */
 export function getProvider(): AiProvider {
   const id = resolveProviderId();
   if (id === 'mock') return mockProvider;
@@ -93,21 +87,11 @@ export function getProvider(): AiProvider {
   throw new Error(`Unknown AI provider "${id}".`);
 }
 
-/**
- * Describe how the current environment will execute AI calls, WITHOUT forcing a
- * provider construction (so it never throws on a missing key or performs I/O).
- * Used by agents to label results MOCKED vs LIVE / PLANNED.
- */
 export function identifyExecutionMode(): { provider: AiProviderId; isLive: boolean; isMocked: boolean } {
   const provider = resolveProviderId();
-  return {
-    provider,
-    isLive: isRealProvider(provider),
-    isMocked: provider === 'mock',
-  };
+  return { provider, isLive: isRealProvider(provider), isMocked: provider === 'mock' };
 }
 
-/** Enforce a timeout around a promise. */
 async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -125,6 +109,7 @@ async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
 export interface ValidatedGeneration<T> {
   ok: true;
   value: T;
@@ -138,17 +123,11 @@ export interface FailedGeneration {
   errors: string[];
   fallbackUsed: true;
   attempts: number;
-  /** Provider-agnostic error categories observed (Phase 4.2.2). Empty when unknown. */
   categories?: AiErrorCategory[];
 }
 
 export type GenerationOutcome<T> = ValidatedGeneration<T> | FailedGeneration;
 
-/**
- * Full orchestration: budget pre-check, timeout, retries with exponential
- * backoff, one repair attempt, schema validation, fail-closed fallback.
- * Returns metadata callers persist to AgentResult.aiUsage / AgentLog.
- */
 export async function generateValidated<T extends Record<string, unknown>>(
   prompt: string,
   purpose: string,
@@ -157,22 +136,17 @@ export async function generateValidated<T extends Record<string, unknown>>(
 ): Promise<GenerationOutcome<T>> {
   const started = Date.now();
   const provider = getProvider();
+  const policy = getModelPolicy(purpose as AiPurpose);
   const timeoutMs = overrides?.timeoutMs ?? getTimeoutMs();
   const maxRetries = getMaxRetries();
-  const maxOutputTokens = clampMaxOutputTokens(overrides?.maxOutputTokens ?? 1000);
-  const temperature = clampTemperature(overrides?.temperature ?? 0.3);
-  const model = overrides?.model ?? 'mock-default';
+  const maxOutputTokens = clampMaxOutputTokens(overrides?.maxOutputTokens ?? policy.maxOutputTokens);
+  const temperature = clampTemperature(overrides?.temperature ?? policy.temperature);
+  const model = overrides?.model ?? policy.model;
 
-  // Cost/budget pre-check (estimate from prompt + expected output ceiling).
   const estimatedCost = estimateCostUsd(model, estimateTokens(prompt), maxOutputTokens);
   const budget = getDailyBudgetUsd();
   if (estimatedCost > budget) {
-    return {
-      ok: false,
-      errors: [`Estimated cost $${estimatedCost.toFixed(6)} exceeds daily budget $${budget.toFixed(2)}. Request blocked.`],
-      fallbackUsed: true,
-      attempts: 0,
-    };
+    return { ok: false, errors: [`Estimated cost $${estimatedCost.toFixed(6)} exceeds daily budget $${budget.toFixed(2)}. Request blocked.`], fallbackUsed: true, attempts: 0 };
   }
 
   const opts: AiGenerateOptions = { model, maxOutputTokens, temperature, timeoutMs, jsonSchema: schema, purpose };
@@ -192,14 +166,7 @@ export async function generateValidated<T extends Record<string, unknown>>(
         return {
           ok: true,
           value: validated.value as T,
-          usage: {
-            provider: result.provider,
-            model: result.model,
-            inputTokens: result.inputTokens,
-            outputTokens: result.outputTokens,
-            estimatedCostUsd: estimateCostUsd(result.model, result.inputTokens, result.outputTokens),
-            latencyMs: Date.now() - started,
-          },
+          usage: { provider: result.provider, model: result.model, inputTokens: result.inputTokens, outputTokens: result.outputTokens, estimatedCostUsd: estimateCostUsd(result.model, result.inputTokens, result.outputTokens), latencyMs: Date.now() - started },
           fallbackUsed: false,
           attempts,
         };
@@ -210,12 +177,9 @@ export async function generateValidated<T extends Record<string, unknown>>(
       errors.push(`Attempt ${attempt} failed: ${error instanceof Error ? error.message : 'unknown error'}`);
       categories.push(classifyGenericError(error));
     }
-    if (attempt < maxAttempts) {
-      await sleep(Math.min(4000, 250 * 2 ** (attempt - 1)));
-    }
+    if (attempt < maxAttempts) await sleep(Math.min(4000, 250 * 2 ** (attempt - 1)));
   }
 
-  // One bounded repair attempt after retries are exhausted.
   try {
     const repair = await withTimeout(provider.generate(prompt, opts), timeoutMs, 'AI generation (repair attempt)');
     const revalidated = parseAndValidate(repair.text, schema);
@@ -224,14 +188,7 @@ export async function generateValidated<T extends Record<string, unknown>>(
       return {
         ok: true,
         value: revalidated.value as T,
-        usage: {
-          provider: repair.provider,
-          model: repair.model,
-          inputTokens: repair.inputTokens,
-          outputTokens: repair.outputTokens,
-          estimatedCostUsd: estimateCostUsd(repair.model, repair.inputTokens, repair.outputTokens),
-          latencyMs: Date.now() - started,
-        },
+        usage: { provider: repair.provider, model: repair.model, inputTokens: repair.inputTokens, outputTokens: repair.outputTokens, estimatedCostUsd: estimateCostUsd(repair.model, repair.inputTokens, repair.outputTokens), latencyMs: Date.now() - started },
         fallbackUsed: false,
         attempts,
       };
@@ -243,7 +200,6 @@ export async function generateValidated<T extends Record<string, unknown>>(
     categories.push(classifyGenericError(repairError));
   }
 
-  // Fail closed: no partial/trusted output. Log server-side only (no secrets).
   logger.warn('AI generation failed closed after retries', { purpose, attempts });
   return { ok: false, errors, fallbackUsed: true, attempts, categories };
 }
