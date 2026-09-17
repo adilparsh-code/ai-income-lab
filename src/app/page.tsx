@@ -5,17 +5,19 @@ import { getDashboardStats, getNextBestAction, getRevenueChartData } from '@/act
 import { getLifecycleOverview } from '@/actions/lifecycle';
 import { getRecentPipelineRuns } from '@/actions/pipeline';
 import { getOpportunities } from '@/actions/opportunities';
+import { getBusinessIntelligenceSummary } from '@/actions/business-intelligence';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { NextBestAction } from '@/components/dashboard/next-best-action';
 import { RevenueChart } from '@/components/dashboard/revenue-chart';
 import { TopOpportunities } from '@/components/dashboard/top-opportunities';
 import { LifecyclePipeline } from '@/components/dashboard/lifecycle-pipeline';
+import { BusinessIntelligenceCard } from '@/components/dashboard/business-intelligence-card';
 import { PageHeader } from '@/components/shared/page-header';
 import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 
 export default async function DashboardPage() {
-  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns] =
+  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary] =
     await Promise.all([
       getDashboardStats(),
       getNextBestAction(),
@@ -23,6 +25,7 @@ export default async function DashboardPage() {
       getOpportunities({ sortBy: 'overallScore', sortOrder: 'desc' }),
       getLifecycleOverview(),
       getRecentPipelineRuns(1),
+      getBusinessIntelligenceSummary(),
     ]);
   const latestPipelineRun = recentPipelineRuns[0] ?? null;
 
@@ -68,6 +71,14 @@ export default async function DashboardPage() {
           Recommended Next Action
         </h2>
         <NextBestAction action={nextAction} />
+      </section>
+
+      {/* Business Intelligence — Profitability (LIVE vs MOCKED/PLANNED) */}
+      <section>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Profitability — deterministic figures from real records
+        </h2>
+        <BusinessIntelligenceCard summary={biSummary} />
       </section>
 
       {/* Opportunity → Product Pipeline */}

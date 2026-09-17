@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { BaseAgent } from './base-agent';
+import { buildBusinessIntelligence, type BusinessIntelligenceResult } from '@/lib/business/profitability';
 import {
   AgentRequest, AgentResult, AgentStatus, EvidenceType,
   AnalyticsRequest, AnalyticsResult, AnalyticsScope,
@@ -462,6 +463,36 @@ export class AnalyticsAgent extends BaseAgent {
       'Recommendations are hypotheses requiring human validation before execution.',
     ];
 
+    // 15.5. BUSINESS INTELLIGENCE / PROFITABILITY (deterministic, VERIFIED_DATA)
+    // The profitability layer is authoritative for financial math; this agent
+    // never lets AI alter a financial number. AI-only narrative remains in the
+    // insights above.
+    let businessIntelligence: BusinessIntelligenceResult;
+    try {
+      businessIntelligence = buildBusinessIntelligence({
+        opportunities: opportunities.map((o) => ({
+          id: o.id,
+          title: o.title,
+          estimatedStartupCost: o.estimatedStartupCost,
+        })),
+        products: products.map((p) => ({ id: p.id, name: p.name, opportunityId: p.opportunityId })),
+        experiments: experiments.map((e) => ({
+          id: e.id,
+          hypothesis: e.hypothesis,
+          budget: e.budget,
+          revenue: e.revenue,
+          profit: e.profit,
+          visitors: e.visitors,
+          sales: e.sales,
+        })),
+        revenues,
+      });
+    } catch (biError) {
+      console.error('Business Intelligence computation failed:', biError);
+      businessIntelligence = buildBusinessIntelligence({ revenues: [] });
+      businessIntelligence.warnings.push('Business Intelligence computation failed; figures reflect no usable data.');
+    }
+
     // 16. Evidence Provenance
     const evidence: EvidenceItem[] = [
       { id: uuidv4(), type: 'USER_ENTERED' as EvidenceType, content: 'Analysis objective: ' + analyticsRequest.analysisObjective, source: 'User input' },
@@ -470,6 +501,7 @@ export class AnalyticsAgent extends BaseAgent {
       { id: uuidv4(), type: 'VERIFIED_DATA' as EvidenceType, content: 'Experiments loaded: ' + experiments.length + ' records from database', source: 'Prisma db.experiment' },
       { id: uuidv4(), type: 'VERIFIED_DATA' as EvidenceType, content: 'Products loaded: ' + products.length + ' records from database', source: 'Prisma db.product' },
       { id: uuidv4(), type: 'VERIFIED_DATA' as EvidenceType, content: 'Revenue records loaded: ' + revenues.length + ' records from database', source: 'Prisma db.revenue' },
+      { id: uuidv4(), type: 'VERIFIED_DATA' as EvidenceType, content: 'Profitability KPIs computed deterministically by the shared business-intelligence layer (contribution profit, margin, ROI where data supports it).', source: 'src/lib/business/profitability.ts' },
       { id: uuidv4(), type: 'AI_INFERENCE' as EvidenceType, content: 'Trends, anomalies, and recommendations are AI-generated inferences based on verified data.', source: 'Analytics Agent' },
     ];
 
@@ -507,6 +539,7 @@ export class AnalyticsAgent extends BaseAgent {
       recommendations,
       nextBestActions,
       evidence,
+      businessIntelligence,
       confidence: insufficientDataWarnings.length > 0 ? 0.3 : 0.7,
       halalStatus: scopedEntity?.halalStatus || overallHalal,
       humanReviewRequired: notAllowed ? false : (humanReviewRequired || anyReview),
@@ -534,7 +567,7 @@ export class AnalyticsAgent extends BaseAgent {
     return {
       success: true,
       output: finalAnalyticsResult,
-      reasoning: 'Analytics Agent completed analysis of ' + opportunities.length + ' opportunities, ' + experiments.length + ' experiments, ' + products.length + ' products, ' + revenues.length + ' revenue records. All KPIs calculated from real database data.',
+      reasoning: 'Analytics Agent completed analysis of ' + opportunities.length + ' opportunities, ' + experiments.length + ' experiments, ' + products.length + ' products, ' + revenues.length + ' revenue records. All KPIs calculated from real database data. Profitability: contribution profit $' + businessIntelligence.overall.contributionProfit.toFixed(2) + '.',
       evidenceType: 'VERIFIED_DATA' as EvidenceType,
       executionTime: Date.now() - startTime,
     };

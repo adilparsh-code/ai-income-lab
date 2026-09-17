@@ -398,6 +398,13 @@ export default function BusinessManagerPage() {
                   </div>
                   <p className="text-sm text-gray-600 mt-1">{result.analyticsSummary}</p>
                 </div>
+                <div className="bg-white border border-gray-200 rounded-lg p-4">
+                  <div className="flex justify-between items-start">
+                    <h4 className="font-semibold text-sm text-gray-800">Verified Profitability</h4>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${getEvidenceBadgeColor(result.profitabilityEvidenceType)}`}>{result.profitabilityEvidenceType}</span>
+                  </div>
+                  <p className="text-sm text-gray-600 mt-1">{result.profitabilitySummary}</p>
+                </div>
               </div>
 
               {/* ALTERNATIVE ACTIONS CONSIDERED */}

@@ -435,6 +435,11 @@ export interface AnalyticsResult {
   recommendations: string[];
   nextBestActions: NextBestActionItem[];
   evidence: EvidenceItem[];
+  /**
+   * Deterministic Business Intelligence / profitability analysis (VERIFIED_DATA).
+   * Computed by the shared src/lib/business layer; AI never alters these numbers.
+   */
+  businessIntelligence?: import('@/lib/business/profitability').BusinessIntelligenceResult;
   confidence: number;
   halalStatus: string;
   humanReviewRequired: boolean;
@@ -517,6 +522,13 @@ export interface BusinessManagerResult {
   productEvidenceType: EvidenceType;
   analyticsSummary: string;
   analyticsEvidenceType: EvidenceType;
+  /**
+   * Verified profitability summary for the selected scope (deterministic
+   * business-intelligence layer). AI_INFERENCE only when no revenue data
+   * exists to analyze.
+   */
+  profitabilitySummary: string;
+  profitabilityEvidenceType: EvidenceType;
   evidence: EvidenceItem[];
   assumptions: string[];
   risks: string[];

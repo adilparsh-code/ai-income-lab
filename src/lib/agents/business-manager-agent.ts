@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { BaseAgent } from './base-agent';
+import { buildProfitabilityDecisionFacts, type ProfitabilityDecisionFacts } from '@/lib/business/business-manager-profitability';
 import {
   AgentRequest, AgentResult, AgentStatus, EvidenceType,
   BusinessManagerRequest, BusinessManagerResult, BusinessManagerScope,
@@ -218,6 +219,27 @@ export class BusinessManagerAgent extends BaseAgent {
     const isValidating = selectedOpportunity?.status === 'VALIDATING';
     const isValidated = selectedOpportunity?.status === 'VALIDATED';
 
+    // 5.5 VERIFIED PROFITABILITY (deterministic business-intelligence layer)
+    // The decision engine branches on revenueHealth for revenue-bearing paths.
+    // Financial numbers here are computed deterministically from stored
+    // records; the engine never lets AI invent or alter them.
+    let profitabilityFacts: ProfitabilityDecisionFacts | null = null;
+    if (selectedOpportunity) {
+      try {
+        profitabilityFacts = buildProfitabilityDecisionFacts({
+          opportunity: {
+            id: selectedOpportunity.id,
+            title: selectedOpportunity.title,
+            estimatedStartupCost: selectedOpportunity.estimatedStartupCost,
+          },
+          revenues: combinedRevenues,
+        });
+      } catch (profitabilityError) {
+        console.error('Profitability decision-fact computation failed:', profitabilityError);
+        profitabilityFacts = null;
+      }
+    }
+
     // 6. RESEARCH / VALIDATION / PRODUCT / ANALYTICS SUMMARIES
     const researchSummary = isResearching
       ? 'Opportunity is currently in RESEARCHING status. Research Agent can provide AI-generated market analysis (AI_INFERENCE).'
@@ -242,6 +264,16 @@ export class BusinessManagerAgent extends BaseAgent {
       : hasOpportunity
         ? 'No revenue data for this opportunity. Record revenue entries to enable financial analysis.'
         : 'No opportunity selected for analytics.';
+
+    // Verified profitability summary (deterministic, VERIFIED_DATA when data exists)
+    const profitabilitySummary = profitabilityFacts
+      ? profitabilityFacts.summary
+      : hasOpportunity
+        ? 'No verified profitability analysis is available for this opportunity (no linked revenue records).'
+        : 'No opportunity selected for profitability analysis.';
+    const profitabilityEvidenceType: EvidenceType = profitabilityFacts?.evidenceType === 'VERIFIED_DATA'
+      ? 'VERIFIED_DATA'
+      : 'AI_INFERENCE';
 
     // 7. MISSING INFORMATION
     const missingInformation: string[] = [];
@@ -366,14 +398,31 @@ export class BusinessManagerAgent extends BaseAgent {
         primaryPurpose = 'Improve unit economics.';
         executionEligible = true;
       } else if (hasRevenue && totalNetRevenue > 0) {
-        // Positive net revenue
-        decision = 'PROCEED';
-        primaryAction = 'ANALYZE';
-        primaryReason = 'Positive net revenue of $' + totalNetRevenue.toFixed(2) + ' recorded. Analyze performance to optimize and scale.';
-        primaryEvidence = 'Net revenue: $' + totalNetRevenue.toFixed(2) + '. Product published and earning.';
-        primaryPurpose = 'Optimize and scale what is working.';
-        executionEligible = true;
-        alternativeActionsConsidered.push({ action: 'BUILD_PRODUCT', reasonRejected: 'Already have a revenue-generating product', evidenceType: 'VERIFIED_DATA' });
+        // Positive net revenue — refine with deterministic profitability.
+        // VERIFIED_DATA: unprofitable contribution economics divert from
+        // scale-up to cost review BEFORE any growth recommendation.
+        if (profitabilityFacts?.revenueHealth === 'UNPROFITABLE') {
+          decision = 'IMPROVE';
+          primaryAction = 'REVIEW_REVENUE';
+          primaryReason =
+            'Net revenue is positive ($' + totalNetRevenue.toFixed(2) + ') but contribution profit is $' +
+            profitabilityFacts.contributionProfit.toFixed(2) +
+            ' after fees and variable costs. Review fees, costs, and pricing before scaling.';
+          primaryEvidence = profitabilityFacts.summary;
+          primaryPurpose = 'Make unit economics contribution-positive before scaling.';
+          executionEligible = true;
+        } else {
+          decision = 'PROCEED';
+          primaryAction = 'ANALYZE';
+          primaryReason = 'Positive net revenue of $' + totalNetRevenue.toFixed(2) + ' recorded' +
+            (profitabilityFacts
+              ? ' with verified contribution profit of $' + profitabilityFacts.contributionProfit.toFixed(2)
+              : '') + '. Analyze performance to optimize and scale.';
+          primaryEvidence = profitabilityFacts?.summary ?? ('Net revenue: $' + totalNetRevenue.toFixed(2) + '. Product published and earning.');
+          primaryPurpose = 'Optimize and scale what is working.';
+          executionEligible = true;
+          alternativeActionsConsidered.push({ action: 'BUILD_PRODUCT', reasonRejected: 'Already have a revenue-generating product', evidenceType: 'VERIFIED_DATA' });
+        }
       } else {
         decision = 'COLLECT_MORE_DATA';
         primaryAction = 'COLLECT_DATA';
@@ -404,12 +453,16 @@ export class BusinessManagerAgent extends BaseAgent {
     if (hasOpportunity && !hasExperimentData) risks.push('No real-world validation data. Decisions are based on limited evidence.');
     if (hasProduct && !hasProfitData) risks.push('Product cost data missing. Profitability cannot be determined.');
     if (hasRevenue && totalNetRevenue <= 0) risks.push('Net revenue is not positive.');
+    if (profitabilityFacts?.revenueHealth === 'UNPROFITABLE') {
+      risks.push('Contribution profit is not positive after fees and variable costs; scaling now would amplify losses.');
+    }
     if (risks.length === 0) risks.push('No critical risks identified from available data.');
 
     const assumptions: string[] = [
       'Decision is based on actual database records only.',
       'Research/validation/product agent outputs referenced are AI_INFERENCE or MOCKED unless verified by real data.',
       'Revenue figures are recorded values, not inferred or projected. Revenue is not profit.',
+      'Profitability figures come from the deterministic business-intelligence layer; AI does not alter them.',
       'This recommendation requires human approval before any execution.',
     ];
 
@@ -426,6 +479,17 @@ export class BusinessManagerAgent extends BaseAgent {
       evidence.push({ id: uuidv4(), type: 'VERIFIED_DATA' as EvidenceType, content: 'Selected opportunity: "' + selectedOpportunity.title + '" (score: ' + selectedOpportunity.overallScore + ', status: ' + selectedOpportunity.status + ', halal: ' + selectedOpportunity.halalStatus + ')', source: 'Prisma db.opportunity' });
     }
     evidence.push({ id: uuidv4(), type: 'AI_INFERENCE' as EvidenceType, content: 'Next-best-action and decision rationale are AI-generated inferences.', source: 'Business Manager Agent' });
+    if (profitabilityFacts) {
+      evidence.push({
+        id: uuidv4(),
+        type: profitabilityFacts.evidenceType,
+        content: profitabilityFacts.summary,
+        source: 'Business Intelligence layer (deterministic)',
+      });
+      for (const warning of profitabilityFacts.warnings) {
+        evidence.push({ id: uuidv4(), type: 'VERIFIED_DATA' as EvidenceType, content: 'Profitability data quality: ' + warning, source: 'Business Intelligence layer (deterministic)' });
+      }
+    }
 
     // Agent coordination context (orchestrated agent outputs, provenance preserved)
     for (const coord of agentLastExecutions) {
@@ -444,7 +508,7 @@ export class BusinessManagerAgent extends BaseAgent {
       recommendation = 'Next Best Action: ' + primaryAction.replace(/_/g, ' ') + '. ' + primaryReason;
     }
 
-    const confidence = !hasOpportunity ? 0.1 : notAllowed ? 0.9 : humanReviewRequired ? 0.5 : hasRevenue && totalNetRevenue > 0 ? 0.8 : hasExperimentData ? 0.6 : 0.4;
+    const confidence = !hasOpportunity ? 0.1 : notAllowed ? 0.9 : humanReviewRequired ? 0.5 : hasRevenue && totalNetRevenue > 0 ? (profitabilityFacts?.revenueHealth === 'PROFITABLE' ? 0.85 : 0.75) : hasExperimentData ? 0.6 : 0.4;
 
     const finalResult: BusinessManagerResult = {
       decision,
@@ -467,6 +531,8 @@ export class BusinessManagerAgent extends BaseAgent {
       productEvidenceType: hasProduct ? 'VERIFIED_DATA' as EvidenceType : 'AI_INFERENCE' as EvidenceType,
       analyticsSummary,
       analyticsEvidenceType: hasRevenue ? 'VERIFIED_DATA' as EvidenceType : 'AI_INFERENCE' as EvidenceType,
+      profitabilitySummary,
+      profitabilityEvidenceType,
       evidence,
       assumptions,
       risks,
