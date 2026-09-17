@@ -11,6 +11,7 @@ import {
   DollarSign,
   Bot,
   Workflow,
+  Factory,
   Settings,
   Menu,
   X,
@@ -21,6 +22,7 @@ import { useState } from 'react';
 const navItems = [
   { label: 'Dashboard', href: '/', icon: LayoutDashboard },
   { label: 'Pipeline', href: '/pipeline', icon: Workflow },
+  { label: 'Product Factory', href: '/product-factory', icon: Factory },
   { label: 'Opportunities', href: '/opportunities', icon: Lightbulb },
   { label: 'Products', href: '/products', icon: Package },
   { label: 'Experiments', href: '/experiments', icon: FlaskConical },

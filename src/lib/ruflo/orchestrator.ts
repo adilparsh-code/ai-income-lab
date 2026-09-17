@@ -90,6 +90,13 @@ export interface PipelineRequest {
    * canonical order regardless of the order supplied here.
    */
   stages?: PipelineStage[];
+  /**
+   * Optional Product Agent hints (Product Factory v1). Values are validated by
+   * the Product Agent itself; invalid values fail that stage safely rather than
+   * being silently corrected. Omitted fields keep today's defaults.
+   */
+  productType?: string;
+  monetizationPreference?: string;
 }
 
 const BLOCKED = 'NOT_ALLOWED';
@@ -512,7 +519,8 @@ export async function runPipeline(request: PipelineRequest): Promise<PipelineRun
         input: {
           opportunityId: opportunity?.id,
           productObjective: `Create a product concept for: ${objective}`,
-          productType: 'DIGITAL_PRODUCT',
+          productType: request.productType ?? 'DIGITAL_PRODUCT',
+          monetizationPreference: request.monetizationPreference,
         },
         opportunityId: opportunity?.id,
       },
