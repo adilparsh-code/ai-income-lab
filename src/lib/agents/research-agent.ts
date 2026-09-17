@@ -7,6 +7,8 @@ import {
   ResearchRequest,
   ResearchResult,
   AiUsageMetadata,
+  ResearchSourceRef,
+  ResearchSourceReport,
 } from './types';
 import { generateValidated, identifyExecutionMode } from '@/lib/ai/generate';
 import { getModelPolicy } from '@/lib/ai/models';
@@ -16,8 +18,11 @@ import {
   buildResearchPrompt,
   buildResearchResult,
   buildMockResearchOutput,
+  buildEvidenceContext,
   evaluateHalalGate,
+  runRealResearch,
 } from '@/lib/ai/research';
+import { logger } from '@/lib/server-log';
 
 const INFERENCE: EvidenceType = 'AI_INFERENCE';
 // Neutral screening defaults, clearly documented: AI screening does not measure
@@ -44,9 +49,11 @@ export class ResearchAgent extends BaseAgent {
       description: 'Finds opportunities and market signals. Identifies trends, demand patterns, and underserved niches.',
       purpose: 'Discover and validate potential income opportunities by analyzing market data and identifying emerging trends.',
       currentCapability:
-        'Research workflow with real provider support (Gemini) behind a provider-agnostic generation layer. ' +
-        'Structured research output, halal safety gate, provenance (AI_INFERENCE), controlled failure on provider ' +
-        'failure. Mock mode works fully offline; set AI_PROVIDER=gemini with a valid key for live calls.',
+        'Real research engine: provider-agnostic web discovery (SearXNG free by default, optional Tavily) with safe ' +
+        'fetching (timeout, retry, size limits, SSRF guard), evidence caching, and strict provenance — search ' +
+        'results stay SEARCH_DISCOVERY, only fetched+validated pages are VERIFIED_DATA, AI output stays AI_INFERENCE. ' +
+        'Halal gates run before any search, fetch, or AI call. Discovery is reported NOT_CONFIGURED when no provider ' +
+        'is available — results are never fabricated. Set AI_PROVIDER=gemini with a valid key for live AI synthesis.',
       status: 'MOCKED',
       evidencePolicy: 'All research findings are classified as AI_INFERENCE until verified by human or trusted data sources.',
       safeExecutionState: true,
@@ -110,17 +117,32 @@ export class ResearchAgent extends BaseAgent {
       halalConsiderations,
       overallConfidence: 0,
       evidenceItems: [],
+      sources: [],
+      sourceResearch: null,
       capabilityStatus,
     };
   }
 
-  private buildReasoning(reviewRequired: boolean, live: boolean, provider?: string, model?: string): string {
+  private buildReasoning(
+    reviewRequired: boolean,
+    live: boolean,
+    provider?: string,
+    model?: string,
+    sources?: ResearchSourceRef[],
+    sourceResearch?: ResearchSourceReport | null
+  ): string {
     const reviewNote = reviewRequired ? ' Findings require human review (REVIEW_REQUIRED).' : '';
     const providerNote =
       live && provider && model
-        ? ` Generated at AI-inference level via ${provider}/${model}; not verified external data.`
+        ? ` Generated at AI-inference level via ${provider}/${model}.`
         : '';
-    return `AI research completed with structured findings.${reviewNote}${providerNote}`;
+    const evidenceNote = sourceResearch
+      ? ` Real research: ${sourceResearch.verifiedCount} verified fetch(es), ${sourceResearch.discoveryCount} discovery item(s)` +
+        ` via ${sourceResearch.searchProviderId ?? 'no provider'} (${sourceResearch.servedFrom}); status ${sourceResearch.status}.` +
+        ' Discovery items were never fetched; only fetched pages are VERIFIED_DATA.'
+      : ' No external sources were consulted; nothing was fabricated.';
+    const sourcesNote = sources && sources.length > 0 ? ` ${sources.length} source reference(s) attached with per-source provenance.` : '';
+    return `AI research completed with structured findings.${reviewNote}${providerNote}${evidenceNote}${sourcesNote}`;
   }
 
   /**
@@ -249,7 +271,44 @@ export class ResearchAgent extends BaseAgent {
       return result;
     }
 
-    // 4. Build the structured research prompt (provider-agnostic).
+    // 4. REAL RESEARCH ENGINE — external evidence collection behind the halal
+    // gate. Provider-agnostic and cache-aware; explicitly reports when no
+    // search provider is configured instead of fabricating sources. The halal
+    // gate above has already hard-blocked prohibited topics, so ZERO network
+    // requests and ZERO AI calls happen for them. The agent's own AI call
+    // interprets the evidence below; the engine's internal synthesis is off.
+    let realSources: ResearchSourceRef[] = [];
+    let sourceResearch: ResearchSourceReport | null = null;
+    try {
+      const real = await runRealResearch({
+        researchObjective: researchRequest.researchObjective,
+        opportunityId: researchRequest.opportunityId,
+        opportunityTitle: opportunity?.title,
+        marketCategory: researchRequest.marketCategory,
+        includeAiSynthesis: false,
+      });
+      realSources = real.sources;
+      sourceResearch = real.report;
+    } catch (error) {
+      logger.warn('Real research engine failed; continuing with AI-only research', {
+        error: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+      });
+      sourceResearch = {
+        status: 'FAILED',
+        searchProviderId: null,
+        servedFrom: 'none',
+        discoveryCount: 0,
+        verifiedCount: 0,
+        fetchErrors: [],
+        reasoning: 'Real research engine failed unexpectedly; no external evidence was collected and nothing was fabricated.',
+        ranAt: new Date().toISOString(),
+      };
+    }
+    const evidenceContext = buildEvidenceContext(realSources);
+
+    // 5. Build the structured research prompt (provider-agnostic). Verified
+    // fetches and discovery are labelled authoritatively so the model can
+    // never claim stronger verification than the evidence carries.
     const prompt = buildResearchPrompt({
       researchObjective: researchRequest.researchObjective,
       targetAudience: researchRequest.targetAudience,
@@ -259,11 +318,12 @@ export class ResearchAgent extends BaseAgent {
       halalRequirements: researchRequest.halalRequirements,
       opportunity,
       halalConsiderations: halalGate.considerations,
+      evidenceContext,
     });
 
     const policy = getModelPolicy(PURPOSE);
 
-    // 5a. LIVE path — route through the generic AI generation layer. The agent
+    // 6a. LIVE path — route through the generic AI generation layer. The agent
     // has NO knowledge of which concrete provider serves this call; that is
     // resolved internally by generateValidated() -> getProvider(). Adding another
     // provider never requires changes to this agent.
@@ -287,6 +347,8 @@ export class ResearchAgent extends BaseAgent {
           overallConfidence: LIVE_CONFIDENCE,
           capabilityStatus: 'LIVE',
           isMocked: false,
+          sources: realSources,
+          sourceResearch,
         });
         const aiUsage: AiUsageMetadata = {
           provider: outcome.usage.provider,
@@ -301,7 +363,9 @@ export class ResearchAgent extends BaseAgent {
           halalGate.status === 'REVIEW',
           true,
           outcome.usage.provider,
-          outcome.usage.model
+          outcome.usage.model,
+          realSources,
+          sourceResearch
         );
         researchResult.agentLogId = await this.persistResearchLog(request, researchResult, reasoning, aiUsage, false);
 
@@ -318,11 +382,15 @@ export class ResearchAgent extends BaseAgent {
       }
 
       // Live path failed closed (retries + repair could not produce valid output).
+      // Real-research evidence collected above is still attached with its own
+      // provenance; the failure is about the AI call, not the evidence.
       const researchResult = this.emptyResearchResult(
         researchRequest.researchObjective,
         halalGate.considerations,
         'LIVE'
       );
+      researchResult.sources = realSources;
+      researchResult.sourceResearch = sourceResearch;
       const categories = (outcome.categories ?? []).join(', ') || 'unknown';
       const detail = outcome.errors[0] ?? 'AI provider failed to produce valid structured output';
       const result: AgentResult = {
@@ -339,7 +407,9 @@ export class ResearchAgent extends BaseAgent {
       return result;
     }
 
-    // 5b. MOCKED path — deterministic, offline, no key/network required.
+    // 6b. MOCKED path — deterministic, offline AI output. Real-research
+    // evidence (if a search provider is configured) is still attached with its
+    // own provenance; the mock AI text never claims to have fetched anything.
     const mockOutput = buildMockResearchOutput({
       researchObjective: researchRequest.researchObjective,
       marketCategory: researchRequest.marketCategory,
@@ -351,8 +421,10 @@ export class ResearchAgent extends BaseAgent {
       overallConfidence: MOCK_CONFIDENCE,
       capabilityStatus: 'MOCKED',
       isMocked: true,
+      sources: realSources,
+      sourceResearch,
     });
-    researchResult.agentLogId = await this.persistResearchLog(request, researchResult, 'Mock research execution completed.');
+    researchResult.agentLogId = await this.persistResearchLog(request, researchResult, this.buildReasoning(halalGate.status === 'REVIEW', false, undefined, undefined, realSources, sourceResearch));
 
     return {
       success: true,

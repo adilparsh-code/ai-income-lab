@@ -1,8 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { agentRegistry } from '@/lib/agents/agent-registry';
 import { ResearchResult } from '@/lib/agents/types';
+import { ResearchEvidencePanel } from '@/components/agents/research-evidence';
+import type { ResearchEngineStatus } from '@/actions/research';
 
 export default function ResearchAgentPage() {
   const [researchObjective, setResearchObjective] = useState('');
@@ -18,6 +20,20 @@ export default function ResearchAgentPage() {
     capabilityStatus?: string;
     fallbackUsed?: boolean;
   } | null>(null);
+  const [engineStatus, setEngineStatus] = useState<ResearchEngineStatus | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/research/status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: ResearchEngineStatus | null) => {
+        if (active && data) setEngineStatus(data);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const researchAgent = agentRegistry.getAgentById('research-agent');
 
@@ -128,6 +144,21 @@ export default function ResearchAgentPage() {
         <div className="bg-white rounded-xl border p-6 mb-8 shadow-sm">
           <h2 className="text-xl font-semibold mb-3">Current Capabilities</h2>
           <p className="text-gray-600">{researchAgent?.currentCapability}</p>
+          {engineStatus && (
+            <div
+              className={`mt-4 rounded-lg border p-3 text-sm ${
+                engineStatus.searchConfigured
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                  : 'border-sky-200 bg-sky-50 text-sky-900'
+              }`}
+            >
+              <strong>Real research engine:</strong>{' '}
+              {engineStatus.searchConfigured
+                ? `live discovery via ${engineStatus.searchProviderId}.`
+                : 'search discovery is not configured — nothing is fabricated without it.'}{' '}
+              <span className="text-xs opacity-80">{engineStatus.searchHint}</span>
+            </div>
+          )}
         </div>
 
         {/* Research Execution Form */}
@@ -194,7 +225,7 @@ export default function ResearchAgentPage() {
               disabled={isExecuting || !researchObjective.trim()}
               className="w-full py-3 px-4 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
             >
-              {isExecuting ? 'Executing Mock Research...' : 'Execute Research'}
+              {isExecuting ? 'Researching (AI + external evidence)…' : 'Execute Research'}
             </button>
           </div>
         </div>
@@ -304,6 +335,14 @@ export default function ResearchAgentPage() {
                 ))}
               </div>
             </div>
+
+            {/* Real research: sources, evidence, provenance, gaps */}
+            {(result.sources.length > 0 || result.sourceResearch) && (
+              <div className="bg-white rounded-xl border p-6 shadow-sm">
+                <h3 className="text-lg font-semibold mb-4">Sources & Evidence</h3>
+                <ResearchEvidencePanel result={result} />
+              </div>
+            )}
 
             {/* Assumptions & Risks */}
             <div className="grid gap-6 md:grid-cols-2">

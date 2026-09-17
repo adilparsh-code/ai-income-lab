@@ -11,7 +11,15 @@
 // fabricated.
 
 import { type AiJsonSchema } from './provider';
-import type { AgentStatus, EvidenceType, ResearchFinding, ResearchResult, ResearchSignal } from '@/lib/agents/types';
+import type {
+  AgentStatus,
+  EvidenceType,
+  ResearchFinding,
+  ResearchResult,
+  ResearchSignal,
+  ResearchSourceRef,
+  ResearchSourceReport,
+} from '@/lib/agents/types';
 import { screenForHalalCompliance } from '@/lib/halal-filter';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -80,6 +88,8 @@ export interface ResearchPromptInput {
     overallScore?: number;
   } | null;
   halalConsiderations: string[];
+  /** Real-research evidence context (discovery + verified fetches), if any. */
+  evidenceContext?: string;
 }
 
 const EXAMPLE_SHAPE: Record<keyof ResearchAiOutput, string | string[]> = {
@@ -126,6 +136,11 @@ export function buildResearchPrompt(input: ResearchPromptInput): string {
   if (input.halalConsiderations.length > 0) {
     lines.push(`Halal considerations already flagged: ${input.halalConsiderations.join('; ')}`);
   }
+  if (input.evidenceContext && input.evidenceContext.trim().length > 0) {
+    lines.push('');
+    lines.push('Collected web evidence (labels are authoritative — never claim stronger verification than shown):');
+    lines.push(input.evidenceContext);
+  }
   lines.push('');
   lines.push('Reply with ONLY a JSON object matching exactly this shape (arrays must be arrays of strings):');
   lines.push(JSON.stringify(EXAMPLE_SHAPE, null, 2));
@@ -143,6 +158,9 @@ export interface BuildResearchResultInput {
   overallConfidence: number;
   capabilityStatus: AgentStatus;
   isMocked: boolean;
+  /** Real-research sources + report (Phase 5.1); empty/null when engine absent. */
+  sources?: ResearchSourceRef[];
+  sourceResearch?: ResearchSourceReport | null;
 }
 
 const INFERENCE: EvidenceType = 'AI_INFERENCE';
@@ -175,7 +193,107 @@ export function buildResearchResult(input: BuildResearchResultInput): ResearchRe
     halalConsiderations: input.halalConsiderations,
     overallConfidence: input.overallConfidence,
     evidenceItems,
+    sources: input.sources ?? [],
+    sourceResearch: input.sourceResearch ?? null,
     capabilityStatus: input.capabilityStatus,
+  };
+}
+
+/**
+ * Format real-research sources into a bounded, provenance-labelled prompt
+ * context. Labels are authoritative: verified fetches are marked VERIFIED_DATA
+ * and discovery is explicitly NOT verified, so the model can never honestly
+ * claim more verification than the labels carry.
+ */
+export function buildEvidenceContext(sources: ResearchSourceRef[]): string {
+  if (sources.length === 0) return '';
+  const verified = sources.filter((s) => s.evidenceType === 'VERIFIED_DATA');
+  const discovery = sources.filter((s) => s.evidenceType === 'SEARCH_DISCOVERY');
+  const lines: string[] = [];
+
+  if (verified.length > 0) {
+    lines.push('VERIFIED_DATA — fetched from origin:');
+    const verifiedItems = verified.slice(0, 5).map((s) => `- "${s.title}" (${s.domain}, fetched ${s.retrievedAt}): ${(s.excerpt ?? '').slice(0, 300)}`);
+    lines.push(...verifiedItems);
+  }
+  if (discovery.length > 0) {
+    lines.push('SEARCH_DISCOVERY — search-result metadata only, NEVER fetched, NOT verified:');
+    const discoveryItems = discovery.slice(0, 5).map((s) => `- "${s.title}" (${s.domain}): ${(s.snippet ?? '').slice(0, 200)}`);
+    lines.push(...discoveryItems);
+  }
+  lines.push(
+    'Treat VERIFIED_DATA items as sourced observations and SEARCH_DISCOVERY items as unverified leads. ' +
+      'Do not invent market sizes, customer counts, prices, or revenue; if the evidence does not answer something, say so.',
+  );
+  return lines.join('\n').slice(0, 6000);
+}
+
+// ---------------------------------------------------------------------------
+// Real Research Engine mapping (Phase 5.1)
+// ---------------------------------------------------------------------------
+
+import { runResearchSources } from '@/lib/research/engine';
+
+/**
+ * Run the Real Research Engine for one objective and map its output into the
+ * Research Agent result fields. The engine returns structured discovery and
+ * verified evidence; nothing here upgrades discovery into verified data and
+ * nothing here invents facts — unavailable research is reported as unavailable.
+ */
+export async function runRealResearch(input: {
+  researchObjective: string;
+  opportunityId?: string;
+  opportunityTitle?: string;
+  marketCategory?: string;
+  /** Run engine-internal AI synthesis (the Research Agent does its own). */
+  includeAiSynthesis?: boolean;
+}): Promise<{ sources: ResearchSourceRef[]; report: ResearchSourceReport }> {
+  const query = [input.opportunityTitle, input.researchObjective].filter(Boolean).join(' ').slice(0, 200);
+  const result = await runResearchSources({
+    objective: input.researchObjective,
+    opportunityId: input.opportunityId,
+    query,
+    maxSources: 5,
+    maxFetches: 3,
+    includeAiSynthesis: input.includeAiSynthesis ?? true,
+  });
+
+  const sources: ResearchSourceRef[] = [
+    // Verified evidence first (fetched from origin), then discovery metadata.
+    ...result.evidence.map((e) => ({
+      url: e.url,
+      domain: e.domain,
+      title: e.title,
+      excerpt: e.excerpt,
+      evidenceType: 'VERIFIED_DATA' as const,
+      retrievedAt: e.fetchedAt,
+      httpStatus: e.httpStatus,
+      contentType: e.contentType,
+      contentLength: e.contentLength,
+      fetchDurationMs: e.fetchDurationMs,
+    })),
+    ...result.discovery.map((d) => ({
+      url: d.url,
+      domain: d.domain,
+      title: d.title,
+      snippet: d.snippet,
+      evidenceType: 'SEARCH_DISCOVERY' as const,
+      retrievedAt: d.retrievedAt,
+    })),
+  ];
+
+  return {
+    sources,
+    report: {
+      status: result.status,
+      searchProviderId: result.searchProviderId,
+      servedFrom: result.servedFrom,
+      discoveryCount: result.sourcesDiscovered,
+      verifiedCount: result.sourcesSucceeded,
+      fetchErrors: result.fetchErrors,
+      reasoning: result.reasoning,
+      ranAt: new Date().toISOString(),
+    },
   };
 }
 

@@ -9,7 +9,10 @@ export type AgentType =
 
 export type AgentStatus = 'LIVE' | 'MOCKED' | 'PLANNED';
 
-export type EvidenceType = 'AI_INFERENCE' | 'VERIFIED_DATA' | 'USER_ENTERED';
+// SEARCH_DISCOVERY marks search-provider metadata (title/snippet/url) that was
+// never fetched. It can NEVER be promoted to VERIFIED_DATA by AI output; only
+// content actually fetched from the origin and validated is VERIFIED_DATA.
+export type EvidenceType = 'AI_INFERENCE' | 'VERIFIED_DATA' | 'USER_ENTERED' | 'SEARCH_DISCOVERY';
 
 export type AgentExecutionStatus = 'idle' | 'running' | 'completed' | 'failed';
 
@@ -87,6 +90,39 @@ export interface ResearchSignal {
   isMocked: boolean;
 }
 
+// Real Research Engine (Phase 5.1): external evidence with strict provenance.
+export type ResearchSourceType = 'SEARCH_DISCOVERY' | 'VERIFIED_DATA';
+
+export interface ResearchSourceRef {
+  url: string;
+  domain: string;
+  title: string;
+  /** Search-result snippet (SEARCH_DISCOVERY only; never fetched). */
+  snippet?: string;
+  /** Extracted page text (VERIFIED_DATA only; actually fetched). */
+  excerpt?: string;
+  evidenceType: ResearchSourceType;
+  /** ISO 8601 retrieval/fetch timestamp. */
+  retrievedAt: string;
+  /** Fetch metadata — present only for VERIFIED_DATA. */
+  httpStatus?: number;
+  contentType?: string;
+  contentLength?: number;
+  fetchDurationMs?: number;
+}
+
+export interface ResearchSourceReport {
+  status: 'OK' | 'PARTIAL' | 'NOT_CONFIGURED' | 'BLOCKED' | 'FAILED' | 'OFFLINE';
+  searchProviderId: string | null;
+  /** 'live' = network fetches this run; 'cache' = previously fetched evidence. */
+  servedFrom: 'live' | 'cache' | 'none';
+  discoveryCount: number;
+  verifiedCount: number;
+  fetchErrors: string[];
+  reasoning: string;
+  ranAt: string;
+}
+
 export interface ResearchResult {
   researchObjective: string;
   findings: ResearchFinding[];
@@ -99,6 +135,10 @@ export interface ResearchResult {
   halalConsiderations: string[];
   overallConfidence: number;
   evidenceItems: { id: string; type: EvidenceType; content: string }[];
+  /** External sources considered by the Real Research Engine (may be empty). */
+  sources: ResearchSourceRef[];
+  /** Real-research pass report; null when the engine did not run (mock mode). */
+  sourceResearch: ResearchSourceReport | null;
   capabilityStatus: AgentStatus;
   agentLogId?: string;
 }

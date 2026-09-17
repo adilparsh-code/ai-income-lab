@@ -43,6 +43,7 @@ model Opportunity {
   revenues              Revenue[]
   contents              Content[]
   pipelineRuns          PipelineRun[]
+  evidenceItems         EvidenceItemModel[]
 }
 
 model Product {
@@ -162,6 +163,54 @@ model Content {
 // Provenance rules: AI-derived payloads stay AI_INFERENCE (stored with the
 // step outputs they came from); VERIFIED_DATA is only ever the DB record
 // references themselves. This model never invents market/revenue facts.
+// Evidence cache + provenance store for the Real Research Engine.
+// One row per unique (url, query) fetch result so repeated research does not
+// re-hit external sources. Provenance rules:
+// - evidenceType is VERIFIED_DATA ONLY when content was actually fetched and
+//   passed validation; SEARCH_DISCOVERY marks search-result metadata (title/
+//   snippet from a search provider) which was never fetched.
+// - AI interpretation of this evidence is stored separately as AI_INFERENCE
+//   and can NEVER upgrade a row's evidenceType.
+// - No market size, customer counts, prices, or revenue figures are stored
+//   here; extraction only keeps observed page text (see extraction.ts).
+model EvidenceItemModel {
+  id             String   @id @default(cuid())
+
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+
+  // Identity + provenance of the source.
+  url            String
+  domain         String
+  query          String   @default("")
+  sourceType     String   @default("WEB_PAGE")
+
+  // VERIFIED_DATA (fetched + validated) or SEARCH_DISCOVERY (search metadata only).
+  evidenceType   String
+
+  // Extraction output.
+  title          String   @default("")
+  excerpt        String   @default("")
+
+  // Fetch metadata (verifiability).
+  httpStatus     Int?
+  contentType    String?
+  contentLength  Int?
+  fetchedAt      DateTime
+  retrievedVia   String   @default("direct_fetch")
+
+  // Cache control.
+  fetchDurationMs Int?
+  cache          Boolean  @default(true)
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([url, query])
+  @@index([opportunityId])
+  @@index([fetchedAt])
+}
+
 model PipelineRun {
   id             String   @id @default(cuid())
 
