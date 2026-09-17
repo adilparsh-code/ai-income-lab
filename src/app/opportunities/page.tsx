@@ -1,3 +1,6 @@
+// Opportunity listings are request-time database state; never prerender at build time.
+export const dynamic = 'force-dynamic';
+
 import { Suspense } from 'react';
 import { getOpportunities } from '@/actions/opportunities';
 import type { OpportunityFilters as OpportunityFiltersType } from '@/actions/opportunities';

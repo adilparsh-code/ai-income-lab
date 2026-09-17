@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { defineConfig, env } from 'prisma/config';
+import { defineConfig } from 'prisma/config';
 
 // `env('DATABASE_URL')` throws when the variable is missing, which breaks
 // `prisma generate` in a fresh clone/CI where no DATABASE_URL is configured.

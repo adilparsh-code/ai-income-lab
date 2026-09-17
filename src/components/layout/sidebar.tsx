@@ -10,6 +10,7 @@ import {
   FlaskConical,
   DollarSign,
   Bot,
+  Workflow,
   Settings,
   Menu,
   X,
@@ -19,6 +20,7 @@ import { useState } from 'react';
 
 const navItems = [
   { label: 'Dashboard', href: '/', icon: LayoutDashboard },
+  { label: 'Pipeline', href: '/pipeline', icon: Workflow },
   { label: 'Opportunities', href: '/opportunities', icon: Lightbulb },
   { label: 'Products', href: '/products', icon: Package },
   { label: 'Experiments', href: '/experiments', icon: FlaskConical },
@@ -89,12 +91,9 @@ export function Sidebar() {
                   >
                     <item.icon className={cn('h-4 w-4', isActive ? 'text-indigo-400' : 'text-slate-400')} />
                     {item.label}
-                    {/* Phase 2+ badges */}
+                    {/* Feature availability badges */}
                     {['Products', 'Experiments', 'Revenue'].includes(item.label) && (
                       <span className="ml-auto rounded bg-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400">Soon</span>
-                    )}
-                    {item.label === 'AI Agents' && (
-                      <span className="ml-auto rounded bg-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400">Planned</span>
                     )}
                   </Link>
                 </li>
@@ -106,7 +105,7 @@ export function Sidebar() {
         {/* Footer */}
         <div className="border-t border-slate-800 px-4 py-3">
           <p className="text-[10px] text-slate-500 text-center">
-            AI Income Lab v1.0 — Phase 1
+            AI Income Lab — Halal Business Discovery
           </p>
         </div>
       </aside>

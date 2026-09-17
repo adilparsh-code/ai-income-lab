@@ -42,6 +42,7 @@ model Opportunity {
   experiments           Experiment[]
   revenues              Revenue[]
   contents              Content[]
+  pipelineRuns          PipelineRun[]
 }
 
 model Product {
@@ -153,6 +154,43 @@ model Content {
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+}
+
+// Persistent record of one bounded Opportunity → Product pipeline run
+// (Phase 5: unified workflow). Stores durable, reviewable state: lifecycle
+// stage positions, per-step status, provenance rollups, and next actions.
+// Provenance rules: AI-derived payloads stay AI_INFERENCE (stored with the
+// step outputs they came from); VERIFIED_DATA is only ever the DB record
+// references themselves. This model never invents market/revenue facts.
+model PipelineRun {
+  id             String   @id @default(cuid())
+
+  // The opportunity this run operated on. Optional: a run may start from a
+  // free-form objective before any opportunity record is selected.
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+
+  // Snapshot of the objective at run time (never mutated afterwards).
+  objective      String
+
+  // Denormalized display state for fast dashboards: lifecycle stage + run outcome.
+  currentStage   String
+  status         String   // COMPLETED, PARTIAL, BLOCKED, HUMAN_REVIEW, FAILED
+
+  // Full machine-readable run payload (steps, outputs, provenance, actions).
+  result         String
+
+  // Aggregated AI usage for the whole run (sums across steps; estimates only).
+  aiInputTokens  Int?
+  aiOutputTokens Int?
+  estimatedCostUsd Float?
+
+  startedAt      DateTime @default(now())
+  completedAt    DateTime?
+  durationMs     Int?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }
 
 model AgentLog {

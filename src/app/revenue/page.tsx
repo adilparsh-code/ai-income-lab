@@ -1,3 +1,6 @@
+// Revenue data is request-time database state; never prerender at build time.
+export const dynamic = 'force-dynamic';
+
 import { getRevenues, getRevenueSummary } from '@/actions/revenue';
 import { getOpportunities } from '@/actions/opportunities';
 import { PageHeader } from '@/components/shared/page-header';

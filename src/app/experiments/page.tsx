@@ -1,3 +1,6 @@
+// Experiment listings are request-time database state; never prerender at build time.
+export const dynamic = 'force-dynamic';
+
 import { getExperiments } from '@/actions/experiments';
 import { getOpportunities } from '@/actions/opportunities';
 import { PageHeader } from '@/components/shared/page-header';
