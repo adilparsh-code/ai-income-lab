@@ -44,6 +44,7 @@ model Opportunity {
   contents              Content[]
   pipelineRuns          PipelineRun[]
   evidenceItems         EvidenceItemModel[]
+  jobRuns               JobRun[]
 }
 
 model Product {
@@ -240,6 +241,52 @@ model PipelineRun {
 
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+}
+
+// Phase 4.5.2 — Ruflo-ready job orchestration.
+// One row per queued/executed job (single agent or bounded pipeline). The job
+// layer ENFORCES the existing safety architecture: a NOT_ALLOWED opportunity
+// transitions to BLOCKED before any agent/AI invocation; REVIEW_REQUIRED goes
+// to HUMAN_REVIEW with no autonomous execution. Idempotency: idempotencyKey
+// (jobType:correlationId) is unique, so re-queuing the same logical work
+// returns the existing row instead of double-executing.
+model JobRun {
+  id             String   @id @default(cuid())
+
+  jobType        String   // RESEARCH, VALIDATION, PRODUCT, ANALYTICS, BUSINESS_MANAGER, OPPORTUNITY_PIPELINE
+  status         String   // QUEUED, RUNNING, SUCCEEDED, FAILED, BLOCKED, HUMAN_REVIEW, DEGRADED
+
+  // Idempotency/dedup identifier. Unique per (jobType, correlationId).
+  correlationId  String
+  idempotencyKey String   @unique
+
+  // Optional opportunity scope; halal gating applies when present.
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+
+  // Resolved executor: an agent type (single-agent jobs) or the pipeline.
+  agentType      String?
+
+  // Job payload (JSON). Contains user inputs only — never secrets.
+  input          String   @default("{}")
+
+  // Output reference: AgentLog id / PipelineRun id, plus a compact provenance
+  // summary. Full payloads stay in AgentLog/PipelineRun — no duplication.
+  resultRef      String?
+  output         String?
+  error          String?
+
+  retryCount     Int      @default(0)
+  executionMode  String?  // LIVE or MOCKED at execution time
+
+  createdAt      DateTime @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  updatedAt      DateTime @updatedAt
+
+  @@index([status])
+  @@index([jobType, createdAt])
+  @@index([correlationId])
 }
 
 model AgentLog {

@@ -7,6 +7,8 @@ import { getRecentPipelineRuns } from '@/actions/pipeline';
 import { getOpportunities } from '@/actions/opportunities';
 import { getBusinessIntelligenceSummary } from '@/actions/business-intelligence';
 import { getAiUsageForRange } from '@/lib/ai/usage-server';
+import { getRecentJobActivity, describeRufloIntegration, type JobActivityItem } from '@/lib/jobs/job-registry';
+import { JobActivity } from '@/components/dashboard/job-activity';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { NextBestAction } from '@/components/dashboard/next-best-action';
 import { RevenueChart } from '@/components/dashboard/revenue-chart';
@@ -19,7 +21,7 @@ import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 
 export default async function DashboardPage() {
-  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage] =
+  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity] =
     await Promise.all([
       getDashboardStats(),
       getNextBestAction(),
@@ -29,6 +31,8 @@ export default async function DashboardPage() {
       getRecentPipelineRuns(1),
       getBusinessIntelligenceSummary(),
       getAiUsageForRange('7d').catch(() => null),
+      // Activity listing is non-critical for page load; degrade to empty.
+      getRecentJobActivity(6).catch(() => [] as JobActivityItem[]),
     ]);
   const latestPipelineRun = recentPipelineRuns[0] ?? null;
 
@@ -93,6 +97,14 @@ export default async function DashboardPage() {
           <AiUsageCard usage={aiUsage} />
         </section>
       )}
+
+      {/* Job / Agent Activity (Phase 4.5.2) — Ruflo-ready orchestration */}
+      <section>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Orchestration — job activity and Ruflo readiness
+        </h2>
+        <JobActivity jobs={jobActivity} rufloStatus={describeRufloIntegration().status} />
+      </section>
 
       {/* Opportunity → Product Pipeline */}
       <section>
