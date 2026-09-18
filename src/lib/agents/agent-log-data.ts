@@ -25,9 +25,16 @@ export interface AgentLogPersistedData {
   outputTokens: number | null;
   estimatedCostUsd: number | null;
   fallbackUsed: boolean;
+  /** Phase 4.5.1: generation-layer purpose label, when the agent supplies one. */
+  purpose: string | null;
+  /** Phase 4.5.1: wall-clock execution latency in ms (agent step). */
+  latencyMs: number | null;
+  /** Phase 4.5.1: AgentResult outcome; null only for legacy/unspecified rows. */
+  success: boolean | null;
 }
 
 export function buildAgentLogData(input: AgentLogDataInput): AgentLogPersistedData {
+  const latency = input.result.executionTime;
   return {
     agentType: input.agentType,
     action: input.action,
@@ -41,5 +48,8 @@ export function buildAgentLogData(input: AgentLogDataInput): AgentLogPersistedDa
     outputTokens: input.result.aiUsage?.outputTokens ?? null,
     estimatedCostUsd: input.result.aiUsage?.estimatedCostUsd ?? null,
     fallbackUsed: input.result.fallbackUsed ?? false,
+    purpose: input.result.aiUsage?.purpose ?? null,
+    latencyMs: Number.isFinite(latency) && latency >= 0 ? Math.floor(latency) : null,
+    success: typeof input.result.success === 'boolean' ? input.result.success : null,
   };
 }

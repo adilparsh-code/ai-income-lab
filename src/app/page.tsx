@@ -6,18 +6,20 @@ import { getLifecycleOverview } from '@/actions/lifecycle';
 import { getRecentPipelineRuns } from '@/actions/pipeline';
 import { getOpportunities } from '@/actions/opportunities';
 import { getBusinessIntelligenceSummary } from '@/actions/business-intelligence';
+import { getAiUsageForRange } from '@/lib/ai/usage-server';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { NextBestAction } from '@/components/dashboard/next-best-action';
 import { RevenueChart } from '@/components/dashboard/revenue-chart';
 import { TopOpportunities } from '@/components/dashboard/top-opportunities';
 import { LifecyclePipeline } from '@/components/dashboard/lifecycle-pipeline';
 import { BusinessIntelligenceCard } from '@/components/dashboard/business-intelligence-card';
+import { AiUsageCard } from '@/components/dashboard/ai-usage-card';
 import { PageHeader } from '@/components/shared/page-header';
 import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 
 export default async function DashboardPage() {
-  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary] =
+  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage] =
     await Promise.all([
       getDashboardStats(),
       getNextBestAction(),
@@ -26,6 +28,7 @@ export default async function DashboardPage() {
       getLifecycleOverview(),
       getRecentPipelineRuns(1),
       getBusinessIntelligenceSummary(),
+      getAiUsageForRange('7d').catch(() => null),
     ]);
   const latestPipelineRun = recentPipelineRuns[0] ?? null;
 
@@ -80,6 +83,16 @@ export default async function DashboardPage() {
         </h2>
         <BusinessIntelligenceCard summary={biSummary} />
       </section>
+
+      {/* AI Usage & Cost (Phase 4.5.1) — compact, links to /ai-usage */}
+      {aiUsage && (
+        <section>
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            AI Usage — estimated cost telemetry from recorded agent runs
+          </h2>
+          <AiUsageCard usage={aiUsage} />
+        </section>
+      )}
 
       {/* Opportunity → Product Pipeline */}
       <section>

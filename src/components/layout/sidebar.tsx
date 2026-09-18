@@ -16,6 +16,7 @@ import {
   Menu,
   X,
   TrendingUp,
+  Gauge,
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -28,6 +29,7 @@ const navItems = [
   { label: 'Experiments', href: '/experiments', icon: FlaskConical },
   { label: 'Revenue', href: '/revenue', icon: DollarSign },
   { label: 'AI Agents', href: '/agents', icon: Bot },
+  { label: 'AI Usage & Cost', href: '/ai-usage', icon: Gauge },
   { label: 'Settings', href: '/settings', icon: Settings },
 ];
 

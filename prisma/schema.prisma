@@ -256,6 +256,19 @@ model AgentLog {
   outputTokens    Int?
   estimatedCostUsd Float?
   fallbackUsed    Boolean  @default(false)
-  
+
+  // Phase 4.5.1 (AI Usage & Cost Center): additive usage-attribution fields.
+  // purpose is the AiPurpose label from the generation layer (e.g.
+  // 'research.findings'); latencyMs is the wall-clock execution time of the
+  // agent step; success records the AgentResult outcome. All three are
+  // optional so historical rows (written before this change) aggregate
+  // unchanged — unknown values are reported as 'unknown', never guessed.
+  purpose         String?
+  latencyMs       Int?
+  success         Boolean?
+
   createdAt       DateTime @default(now())
+
+  @@index([agentType, createdAt])
+  @@index([createdAt])
 }
