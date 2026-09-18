@@ -20,6 +20,7 @@ import {
   getRegisteredRufloOrchestrator,
   isRufloConnected,
   dispatchWorkflowViaRuflo,
+  type RufloProductAnalysis,
 } from '../connector';
 import { describeRufloIntegration } from '../capability';
 import type { WorkflowState } from '../workflows';
@@ -155,5 +156,69 @@ describe('Ruflo connector', () => {
       // No step executed through dispatch.
       assert.equal(md.calls.length, 0);
     }
+  });
+
+  it('forwards the deterministic product analysis in the completion notification when PRODUCT_ANALYZE ran', async () => {
+    const notifications: { productAnalysis?: RufloProductAnalysis }[] = [];
+    registerRufloOrchestrator({
+      id: 'learning-orchestrator',
+      onWorkflowCompleted: (summary) => notifications.push({ productAnalysis: summary.productAnalysis }),
+    });
+
+    // Mimics the real runner's flat result shape for a factory outcome.
+    const md = makeDispatch('SUCCEEDED');
+    const baseDispatch = md.dispatch;
+    const result = await dispatchWorkflowViaRuflo(
+      { workflowType: 'PRODUCT_LAUNCH', objective: 'Launch it', opportunityId: 'opp-1' },
+      {
+        providedState: HALAL_STATE,
+        skipPersistence: true,
+        dispatch: async (jobType, payload, correlationId) => {
+          const base = await baseDispatch(jobType, payload, correlationId);
+          if (jobType === 'PRODUCT_ANALYZE') {
+            return {
+              ...base,
+              result: {
+                factoryJob: jobType,
+                productId: 'prod-1',
+                evidenceState: 'PROMISING',
+                recommendedAction: 'IMPROVE',
+                dataStatus: 'SUPPORTED',
+                recordedVisitors: 40,
+                visitorEvidenceStatus: 'SUPPORTED',
+              },
+            };
+          }
+          return base;
+        },
+      },
+    );
+
+    assert.equal(result.accepted, true);
+    assert.equal(notifications.length, 1);
+    const analysis = notifications[0].productAnalysis;
+    assert.ok(analysis, 'productAnalysis must be present when PRODUCT_ANALYZE ran');
+    assert.equal(analysis!['evidenceState'], 'PROMISING');
+    assert.equal(analysis!['recommendedAction'], 'IMPROVE');
+    assert.equal(analysis!['dataStatus'], 'SUPPORTED');
+    assert.equal(analysis!['recordedVisitors'], 40);
+  });
+
+  it('omits productAnalysis when no PRODUCT_ANALYZE step ran — never fabricated', async () => {
+    const notifications: { productAnalysis?: RufloProductAnalysis }[] = [];
+    registerRufloOrchestrator({
+      id: 'honest-orchestrator',
+      onWorkflowCompleted: (summary) => notifications.push({ productAnalysis: summary.productAnalysis }),
+    });
+
+    const md = makeDispatch('SUCCEEDED');
+    const result = await dispatchWorkflowViaRuflo(
+      { workflowType: 'OPPORTUNITY_DISCOVERY', objective: 'Just research' },
+      { providedState: HALAL_STATE, dispatch: md.dispatch, skipPersistence: true },
+    );
+
+    assert.equal(result.accepted, true);
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].productAnalysis, undefined);
   });
 });

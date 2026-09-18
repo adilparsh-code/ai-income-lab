@@ -132,6 +132,23 @@ export function describeCapabilityCenter(): CapabilityCenterReport {
       requiresHumanApproval: false,
     },
     {
+      name: 'Revenue Ingestion API',
+      status: process.env.OPERATOR_REVENUE_TOKEN?.trim() ? 'LIVE' : 'NOT_CONFIGURED',
+      detail: process.env.OPERATOR_REVENUE_TOKEN?.trim()
+        ? 'POST /api/revenue is active: token-gated (constant-time comparison), server-derived idempotency, automatic attribution. The token is never logged or exposed.'
+        : 'POST /api/revenue exists but refuses all writes until OPERATOR_REVENUE_TOKEN is set server-side (fail-closed). Nothing can be recorded without it.',
+      requiredForLive: process.env.OPERATOR_REVENUE_TOKEN?.trim() ? [] : ['OPERATOR_REVENUE_TOKEN (server-side)'],
+      requiresHumanApproval: false,
+    },
+    {
+      name: 'Traffic Event Ingestion',
+      status: 'LIVE',
+      detail:
+        'POST /api/events ingests visitor/purchase events idempotently with provenance; GET /api/events returns deterministic funnel metrics labelled SUPPORTED or INSUFFICIENT_DATA.',
+      requiredForLive: [],
+      requiresHumanApproval: false,
+    },
+    {
       name: 'Per-Product AI Cost',
       status: 'LIVE',
       detail:

@@ -57,6 +57,13 @@ export interface SafeDeploymentConfig {
 
 export function describeVercelConfig(): SafeDeploymentConfig {
   const token = readToken();
+  // Phase 5.5 — deployment-env sync requirement: a deployed product that calls
+  // back into AI Income Lab (events/revenue ingestion) needs the PUBLIC app
+  // URL plus the OPERATOR_REVENUE_TOKEN mirrored into the deployment env. The
+  // token value is never shown — only whether the operator must sync it.
+  const missingSync: string[] = [];
+  if (!process.env.NEXT_PUBLIC_APP_URL?.trim()) missingSync.push('NEXT_PUBLIC_APP_URL (public app URL for event/revenue callbacks)');
+  if (!process.env.OPERATOR_REVENUE_TOKEN?.trim()) missingSync.push('OPERATOR_REVENUE_TOKEN (mirror into the deployment env for revenue ingestion)');
   return {
     connected: token !== null,
     providerId: token ? 'vercel' : null,
@@ -64,7 +71,9 @@ export function describeVercelConfig(): SafeDeploymentConfig {
     teamIdConfigured: Boolean(process.env.VERCEL_TEAM_ID?.trim()),
     projectIdConfigured: Boolean(process.env.VERCEL_PROJECT_ID?.trim()),
     hint: token
-      ? 'Vercel token configured (server-side only). Deployment still requires a human approval token per request.'
+      ? missingSync.length > 0
+        ? `Vercel token configured (server-side only). Deployment still requires a human approval token per request. For the closed revenue loop, also configure: ${missingSync.join('; ')}.`
+        : 'Vercel token configured (server-side only). Deployment still requires a human approval token per request. Deployment env sync for the revenue loop is complete.'
       : `No ${VERCEL_TOKEN_ENV} configured; the adapter reports DEPLOYMENT_NOT_CONNECTED and performs no external calls.`,
   };
 }

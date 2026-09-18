@@ -202,6 +202,12 @@ model Revenue {
   opportunityId   String?
   opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
   
+  // Phase 5.5 — idempotent revenue ingestion (additive, optional). Null for
+  // historical rows; when present, a unique violation is a DUPLICATE, so the
+  // same payment can never be recorded twice. Written by the shared
+  // revenueIdempotencyKey() rule — never by the API caller.
+  idempotencyKey  String?  @unique
+  
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }

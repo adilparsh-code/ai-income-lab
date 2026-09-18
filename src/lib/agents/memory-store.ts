@@ -184,6 +184,94 @@ export async function getOpportunityMemoryContext(
   return memoryToContextItems(entries);
 }
 
+/**
+ * Phase 5.5 — Business-Manager memory view: the opportunity memory EXTENDED
+ * with recorded product outcomes and deterministic growth classifications,
+ * so the Business Manager can learn from what actually happened.
+ *
+ * Derived from REAL rows only (Product, Revenue, JobRun PRODUCT_ANALYZE
+ * outputs). Provenance and evidence types are preserved exactly as stored;
+ * a product with no recorded revenue yields an honest "no recorded revenue"
+ * entry — never a fabricated learning signal. Retrieval stays bounded.
+ */
+export async function buildOpportunityBusinessMemory(
+  opportunityId: string,
+  options: { limit?: number } = {},
+): Promise<MemoryEntry[]> {
+  const base = await buildOpportunityMemory(opportunityId, { limit: options.limit });
+  const entries: MemoryEntry[] = [...base];
+  const scope = `opportunity:${opportunityId}`;
+
+  const [products, analyzeRuns] = await Promise.all([
+    db.product.findMany({
+      where: { opportunityId },
+      orderBy: { updatedAt: 'desc' },
+      take: 3,
+      select: { id: true, name: true, status: true, updatedAt: true },
+    }),
+    db.jobRun.findMany({
+      where: { jobType: 'PRODUCT_ANALYZE', status: 'SUCCEEDED', input: { contains: opportunityId } },
+      orderBy: { createdAt: 'desc' },
+      take: 2,
+      select: { id: true, output: true, createdAt: true },
+    }),
+  ]);
+
+  // Recorded product outcomes — VERIFIED_DATA because status and revenue are
+  // stored DB state, not inference.
+  for (const product of products) {
+    const revenueRows = await db.revenue.aggregate({
+      where: { productId: product.id },
+      _sum: { grossRevenue: true, netRevenue: true },
+      _count: { id: true },
+    });
+    const gross = revenueRows._sum.grossRevenue ?? 0;
+    const net = revenueRows._sum.netRevenue ?? 0;
+    const count = revenueRows._count.id;
+    const hasRevenue = count > 0;
+
+    entries.push(createMemoryEntry({
+      id: `product-outcome:${product.id}`,
+      category: hasRevenue ? 'SUCCESSFUL_PATTERNS' : 'EXPERIMENT_RESULTS',
+      scope,
+      content: clamp(
+        `Product "${product.name}" is ${product.status} with ${count} recorded revenue row(s)` +
+          (hasRevenue ? ` (gross $${gross.toFixed(2)}, net $${net.toFixed(2)}).` : ' — no recorded revenue yet.'),
+      ),
+      evidenceType: 'VERIFIED_DATA',
+      provenance: `Product:${product.id}`,
+      createdAt: product.updatedAt.toISOString(),
+    }));
+  }
+
+  // Deterministic growth classifications (PRODUCT_ANALYZE is AI-free, so its
+  // decisions are recorded business decisions, not AI inference).
+  for (const run of analyzeRuns) {
+    let state = 'unknown';
+    let action = 'unknown';
+    try {
+      const output = JSON.parse(run.output ?? '{}') as {
+        summary?: { evidenceState?: string; recommendedAction?: string };
+      };
+      if (typeof output.summary?.evidenceState === 'string') state = output.summary.evidenceState;
+      if (typeof output.summary?.recommendedAction === 'string') action = output.summary.recommendedAction;
+    } catch {
+      // Unreadable output: keep provenance without inventing a decision.
+    }
+    entries.push(createMemoryEntry({
+      id: `growth-decision:${run.id}`,
+      category: 'BUSINESS_DECISIONS',
+      scope,
+      content: clamp(`Deterministic growth classification: ${state}; recommended action: ${action}.`),
+      evidenceType: 'VERIFIED_DATA',
+      provenance: `JobRun:${run.id}`,
+      createdAt: run.createdAt.toISOString(),
+    }));
+  }
+
+  return retrieveMemory(entries, { scope, limit: options.limit ?? 12 });
+}
+
 /** Memory categories exposed for surfaces (re-export for convenience). */
 export const MEMORY_CATEGORY_LIST: readonly MemoryCategory[] = [
   'VERIFIED_FACTS',

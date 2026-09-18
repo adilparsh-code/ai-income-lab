@@ -23,6 +23,21 @@ export interface RufloWorkflowRequest {
 }
 
 /**
+ * Phase 5.5 — deterministic learning-loop enrichment: when the workflow was
+ * a product launch, its PRODUCT_ANALYZE summary (AI-free growth
+ * classification from recorded data) is forwarded so the orchestrator's
+ * Business-Manager layer can learn from actual outcomes. Present only when
+ * a real step summary exists — never fabricated.
+ */
+export interface RufloProductAnalysis {
+  evidenceState?: string;
+  recommendedAction?: string;
+  dataStatus?: string;
+  recordedVisitors?: number;
+  visitorEvidenceStatus?: string;
+}
+
+/**
  * What a real Ruflo runtime provides when wired server-side. `id` is a
  * non-secret label used for audit; hooks are optional and receive bounded,
  * secret-free summaries only.
@@ -37,6 +52,8 @@ export interface RufloOrchestratorHandle {
     correlationId: string;
     stepCount: number;
     completedAt: string;
+    /** Deterministic product analysis when a PRODUCT_ANALYZE step ran. */
+    productAnalysis?: RufloProductAnalysis;
   }): void;
 }
 
@@ -109,6 +126,22 @@ export async function dispatchWorkflowViaRuflo(
   );
 
   // Notification only — the handle never re-executes or alters the result.
+  // Learning-loop enrichment: surface the deterministic product analysis if a
+  // PRODUCT_ANALYZE step actually produced one (real step output, no invention).
+  const analyzeSummary = execution.steps.find((s) => s.jobType === 'PRODUCT_ANALYZE')?.summary as
+    | { evidenceState?: unknown; recommendedAction?: unknown; dataStatus?: unknown; recordedVisitors?: unknown; visitorEvidenceStatus?: unknown }
+    | null
+    | undefined;
+  const productAnalysis: RufloProductAnalysis | undefined = analyzeSummary
+    ? {
+        ...(typeof analyzeSummary.evidenceState === 'string' ? { evidenceState: analyzeSummary.evidenceState } : {}),
+        ...(typeof analyzeSummary.recommendedAction === 'string' ? { recommendedAction: analyzeSummary.recommendedAction } : {}),
+        ...(typeof analyzeSummary.dataStatus === 'string' ? { dataStatus: analyzeSummary.dataStatus } : {}),
+        ...(typeof analyzeSummary.recordedVisitors === 'number' ? { recordedVisitors: analyzeSummary.recordedVisitors } : {}),
+        ...(typeof analyzeSummary.visitorEvidenceStatus === 'string' ? { visitorEvidenceStatus: analyzeSummary.visitorEvidenceStatus } : {}),
+      }
+    : undefined;
+
   try {
     registration.handle.onWorkflowCompleted?.({
       workflowId: execution.workflowId,
@@ -117,6 +150,7 @@ export async function dispatchWorkflowViaRuflo(
       correlationId: execution.correlationId,
       stepCount: execution.steps.length,
       completedAt: execution.completedAt,
+      ...(productAnalysis && Object.keys(productAnalysis).length > 0 ? { productAnalysis } : {}),
     });
   } catch {
     // A broken notification channel must never corrupt the workflow result.

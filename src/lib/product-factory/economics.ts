@@ -14,6 +14,9 @@
 // key helper the caller persists with a unique constraint.
 
 import type { Prisma } from '@prisma/client';
+import { Prisma as PrismaNs } from '@prisma/client';
+import { db } from '@/lib/db';
+import { logger } from '@/lib/server-log';
 
 // ---------------------------------------------------------------------------
 // Revenue attribution
@@ -93,6 +96,137 @@ export function revenueIdempotencyKey(input: {
     input.date.slice(0, 10),
     input.grossRevenue.toFixed(2),
   ].join(':');
+}
+
+// ---------------------------------------------------------------------------
+// Durable revenue ingestion (Phase 5.5)
+// ---------------------------------------------------------------------------
+
+export type RevenueIngestStatus = 'RECORDED' | 'DUPLICATE' | 'INVALID' | 'STORAGE_UNAVAILABLE';
+
+export interface RevenueIngestInput {
+  date: string;
+  revenueSource: string;
+  grossRevenue: number;
+  fees?: number;
+  netRevenue?: number;
+  currency?: string;
+  referenceNote?: string;
+  productId?: string | null;
+  opportunityId?: string | null;
+}
+
+export interface RevenueIngestResult {
+  status: RevenueIngestStatus;
+  revenueId: string | null;
+  /** Present for RECORDED: the derived attribution for dashboards/audit. */
+  attribution: RevenueAttribution | null;
+  errors: string[];
+}
+
+function validateRevenueIngest(input: RevenueIngestInput): string[] {
+  const errors: string[] = [];
+  if (typeof input.date !== 'string' || Number.isNaN(new Date(input.date).getTime())) {
+    errors.push('date must be a valid ISO date string.');
+  }
+  if (typeof input.revenueSource !== 'string' || input.revenueSource.trim().length === 0 || input.revenueSource.trim().length > 120) {
+    errors.push('revenueSource must be a non-empty string of at most 120 characters.');
+  }
+  for (const [field, value] of [
+    ['grossRevenue', input.grossRevenue],
+    ['fees', input.fees],
+    ['netRevenue', input.netRevenue],
+  ] as const) {
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+      errors.push(`${field} must be a non-negative finite number.`);
+    }
+  }
+  if (input.productId !== undefined && input.productId !== null && (typeof input.productId !== 'string' || input.productId.trim().length === 0)) {
+    errors.push('productId, when present, must be a non-empty string.');
+  }
+  if (input.opportunityId !== undefined && input.opportunityId !== null && (typeof input.opportunityId !== 'string' || input.opportunityId.trim().length === 0)) {
+    errors.push('opportunityId, when present, must be a non-empty string.');
+  }
+  return errors;
+}
+
+/**
+ * Persist one revenue row durably and idempotently.
+ *
+ * - The idempotency key is ALWAYS derived by the shared revenueIdempotencyKey()
+ *   rule — the caller can never supply one, so a replayed payment collapses to
+ *   a DUPLICATE instead of a double-recorded figure.
+ * - Attribution is derived by the shared attributeRevenueRow() rule — the API
+ *   layer cannot invent an attribution.
+ * - Evidence is VERIFIED by construction: rows come from the operator or a
+ *   real provider sync, never from AI.
+ * - Storage failure degrades to STORAGE_UNAVAILABLE; ingestion never throws.
+ */
+export async function recordRevenueWithAttribution(input: RevenueIngestInput): Promise<RevenueIngestResult> {
+  const errors = validateRevenueIngest(input);
+  if (errors.length > 0) return { status: 'INVALID', revenueId: null, attribution: null, errors };
+
+  const gross = input.grossRevenue;
+  const fees = input.fees ?? 0;
+  // Net must be internally consistent: a caller may supply it, otherwise it is
+  // derived deterministically. A supplied net above gross is rejected as invalid.
+  const net = input.netRevenue ?? gross - fees;
+  if (input.netRevenue !== undefined && input.netRevenue > gross) {
+    return { status: 'INVALID', revenueId: null, attribution: null, errors: ['netRevenue cannot exceed grossRevenue.'] };
+  }
+
+  const productId = input.productId?.trim() || null;
+  const opportunityId = input.opportunityId?.trim() || null;
+  const dateIso = new Date(input.date).toISOString();
+  const idempotencyKey = revenueIdempotencyKey({
+    date: dateIso,
+    revenueSource: input.revenueSource,
+    grossRevenue: gross,
+    productId,
+    opportunityId,
+  });
+
+  try {
+    const row = await db.revenue.create({
+      data: {
+        date: new Date(dateIso),
+        revenueSource: input.revenueSource.trim(),
+        grossRevenue: gross,
+        fees,
+        netRevenue: net,
+        currency: input.currency?.trim() || 'USD',
+        referenceNote: input.referenceNote?.slice(0, 500) ?? '',
+        productId,
+        opportunityId,
+        idempotencyKey,
+      },
+    });
+    return {
+      status: 'RECORDED',
+      revenueId: row.id,
+      attribution: attributeRevenueRow({
+        id: row.id,
+        date: row.date,
+        revenueSource: row.revenueSource,
+        grossRevenue: row.grossRevenue,
+        fees: row.fees,
+        netRevenue: row.netRevenue,
+        productId: row.productId,
+        opportunityId: row.opportunityId,
+      }),
+      errors: [],
+    };
+  } catch (error) {
+    const isUniqueViolation = error instanceof PrismaNs.PrismaClientKnownRequestError && error.code === 'P2002';
+    if (isUniqueViolation) return { status: 'DUPLICATE', revenueId: null, attribution: null, errors: [] };
+    logger.error('Revenue ingestion storage failure', { error: String(error) });
+    return {
+      status: 'STORAGE_UNAVAILABLE',
+      revenueId: null,
+      attribution: null,
+      errors: ['Revenue storage is unavailable; the row was not recorded.'],
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
