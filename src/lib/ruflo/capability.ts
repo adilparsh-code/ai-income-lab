@@ -12,8 +12,9 @@
 // auditability. Ruflo would orchestrate THROUGH these, never around them.
 
 import { describeWorkflowBoundary } from './workflow-runner';
+import { getRegisteredRufloOrchestrator } from './connector';
 
-export type RufloConnectionStatus = 'RUFLO_READY' | 'NOT_CONNECTED';
+export type RufloConnectionStatus = 'RUFLO_READY' | 'NOT_CONNECTED' | 'RUFLO_CONNECTED';
 
 export interface RufloRequirement {
   id: string;
@@ -34,43 +35,51 @@ export interface RufloIntegrationStatus {
 }
 
 /**
- * Detect a real Ruflo runtime. Absent an actual package/credential, this is
- * deterministically false — we do not pretend.
+ * A real Ruflo integration means a handle is actually registered server-side
+ * (via registerRufloOrchestrator). No package was installed merely for
+ * appearance; the honest default remains disconnected.
  */
 function rufloRuntimeAvailable(): boolean {
-  // A real integration would check for the Ruflo runtime/credential here
-  // (e.g. an injected orchestrator handle or server-side credential). No such
-  // dependency exists in this repository, so the honest answer is false.
-  return false;
+  return getRegisteredRufloOrchestrator() !== null;
 }
 
 export function describeRufloIntegration(): RufloIntegrationStatus {
   const runtimeAvailable = rufloRuntimeAvailable();
   const boundary = describeWorkflowBoundary();
 
+  if (runtimeAvailable) {
+    const registration = getRegisteredRufloOrchestrator()!;
+    return {
+      status: 'RUFLO_CONNECTED',
+      detail: `A Ruflo orchestrator handle (id: ${registration.handle.id}) is registered server-side. ` +
+        'All orchestration flows through the AI Income Lab workflow boundary — gates, budgets, and audit trails remain mandatory.',
+      unmetRequirements: [],
+      availableContracts: boundary.contract,
+      invariantsPreserved: [
+        'Idempotency and correlation IDs owned by the AI Income Lab job runner.',
+        'Bounded retries — never infinite, never for deterministic failures.',
+        'Halal gates: NOT_ALLOWED blocks before execution; REVIEW_REQUIRED requires human review.',
+        'Lifecycle guards on every product/state transition.',
+        'AI cost controls (dedup, cache, token budgets, model routing, treasury).',
+        'Audit logging via AgentLog/JobRun/WorkflowRun.',
+      ],
+    };
+  }
+
   const unmetRequirements: RufloRequirement[] = [
     {
       id: 'ruflo-runtime',
-      description: 'Ruflo orchestrator runtime/package is not installed in this repository.',
-      satisfied: runtimeAvailable,
-    },
-    {
-      id: 'ruflo-credential',
-      description: 'No Ruflo credential or endpoint is configured (server-side only, if added later).',
+      description: 'No Ruflo orchestrator handle is registered server-side (registerRufloOrchestrator).',
       satisfied: false,
     },
   ];
 
-  const allSatisfied = unmetRequirements.every((r) => r.satisfied);
-
   return {
-    status: allSatisfied ? 'RUFLO_READY' : 'NOT_CONNECTED',
-    detail: allSatisfied
-      ? 'Ruflo runtime and credentials detected; orchestration may proceed through the workflow boundary.'
-      : 'Ruflo is RUFLO_READY at the contract level (workflows, jobs, and gates exist and are tested) '
-        + 'but NOT_CONNECTED: no Ruflo runtime or credential exists. Nothing in this repository '
-        + 'claims live orchestration.',
-    unmetRequirements: unmetRequirements.filter((r) => !r.satisfied).map((r) => r.description),
+    status: 'NOT_CONNECTED',
+    detail: 'Ruflo is RUFLO_READY at the contract level (workflows, jobs, and gates exist and are tested) '
+      + 'but NOT_CONNECTED: no orchestrator runtime handle is registered. Nothing in this repository '
+      + 'claims live orchestration.',
+    unmetRequirements: unmetRequirements.map((r) => r.description),
     availableContracts: boundary.contract,
     invariantsPreserved: [
       'Idempotency and correlation IDs owned by the AI Income Lab job runner.',
