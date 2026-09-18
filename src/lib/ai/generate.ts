@@ -25,6 +25,50 @@ import {
 import { clampMaxOutputTokens, clampTemperature, estimateCostUsd, estimateTokens, getDailyBudgetUsd, getModelPolicyOrDefault } from './models';
 import { buildGeminiProvider } from './gemini';
 import { parseAndValidate } from './schemas';
+import {
+  accountCacheHit,
+  accountCacheMiss,
+  accountDuplicatePrevented,
+  buildRequestSignature,
+  checkDuplicate,
+  checkTokenBudgets,
+  lookupCache,
+  recordTokenUsage,
+  storeCache,
+  type EfficiencySnapshot,
+} from './efficiency';
+
+/**
+ * Process-local efficiency snapshot (Phase 4.5.3): cache hits/misses, prevented
+ * duplicates, and estimated avoided cost/tokens for THIS server instance.
+ * Read by the usage surfaces; reset on process restart (deliberately not
+ * durable — savings are estimates for observability, not business data).
+ */
+const efficiencySnapshot: EfficiencySnapshot = {
+  cacheHits: 0,
+  cacheMisses: 0,
+  duplicateRequestsPrevented: 0,
+  dedupAvoidedInputTokens: 0,
+  dedupAvoidedCostUsd: 0,
+  cacheAvoidedInputTokens: 0,
+  cacheAvoidedCostUsd: 0,
+};
+
+/** Read-only view of the process-local efficiency counters. */
+export function getEfficiencySnapshot(): Readonly<EfficiencySnapshot> {
+  return efficiencySnapshot;
+}
+
+/** Test seam: reset the process-local efficiency counters. */
+export function __resetEfficiencySnapshot(): void {
+  efficiencySnapshot.cacheHits = 0;
+  efficiencySnapshot.cacheMisses = 0;
+  efficiencySnapshot.duplicateRequestsPrevented = 0;
+  efficiencySnapshot.dedupAvoidedInputTokens = 0;
+  efficiencySnapshot.dedupAvoidedCostUsd = 0;
+  efficiencySnapshot.cacheAvoidedInputTokens = 0;
+  efficiencySnapshot.cacheAvoidedCostUsd = 0;
+}
 
 export type { AiGenerateOptions, AiGenerateResult };
 export { estimateTokens } from './models';
@@ -176,6 +220,8 @@ export interface ValidatedGeneration<T> {
   usage: { provider: string; model: string; inputTokens: number; outputTokens: number; estimatedCostUsd: number; latencyMs: number };
   fallbackUsed: boolean;
   attempts: number;
+  /** Phase 4.5.3: true when the validated result came from the TTL cache. */
+  servedFromCache?: boolean;
 }
 
 export interface FailedGeneration {
@@ -184,6 +230,9 @@ export interface FailedGeneration {
   fallbackUsed: true;
   attempts: number;
   categories?: AiErrorCategory[];
+  /** Phase 4.5.3: why an efficiency policy blocked the call (when it did). */
+  blockedBy?: 'token_budget' | 'dedup';
+  budgetKind?: 'request' | 'daily' | 'monthly' | 'agent' | 'purpose' | null;
 }
 
 export type GenerationOutcome<T> = ValidatedGeneration<T> | FailedGeneration;
@@ -225,20 +274,81 @@ export async function generateValidated<T extends Record<string, unknown>>(
   const temperature = clampTemperature(overrides?.temperature ?? policy.temperature);
   const model = overrides?.model ?? policy.model;
 
-  const estimatedCostRaw = estimateCostUsd(model, estimateTokens(prompt), maxOutputTokens);
+  const estimatedInputTokens = estimateTokens(prompt);
+  const estimatedCostRaw = estimateCostUsd(model, estimatedInputTokens, maxOutputTokens);
   const estimatedCost = Number.isFinite(estimatedCostRaw) && estimatedCostRaw >= 0 ? estimatedCostRaw : 0;
   const budget = getDailyBudgetUsd();
   if (estimatedCost > budget) {
     return { ok: false, errors: [`Estimated cost $${estimatedCost.toFixed(6)} exceeds daily budget $${budget.toFixed(2)}. Request blocked.`], fallbackUsed: true, attempts: 0 };
   }
 
+  // Phase 4.5.3 — TOKEN BUDGETS (per request/agent/purpose/daily/monthly).
+  // The agent label is derived from the purpose ('research.findings' →
+  // 'research'); unknown purposes use the purpose itself as the agent label.
+  const budgetAgentLabel = purpose.includes('.') ? purpose.split('.')[0] : purpose;
+  const tokenBudget = checkTokenBudgets({
+    estimatedTotalTokens: estimatedInputTokens + maxOutputTokens,
+    agent: budgetAgentLabel,
+    purpose,
+  });
+  if (!tokenBudget.allowed) {
+    logger.warn('AI generation blocked by token budget policy', { purpose, budgetKind: tokenBudget.budgetKind });
+    return {
+      ok: false,
+      errors: [tokenBudget.reason ?? 'Token budget policy blocked this request.'],
+      fallbackUsed: true,
+      attempts: 0,
+      blockedBy: 'token_budget',
+      budgetKind: tokenBudget.budgetKind,
+    };
+  }
+
   const opts: AiGenerateOptions = { model, maxOutputTokens, temperature, timeoutMs, jsonSchema: schema, purpose };
   if (overrides?.cacheKey) opts.cacheKey = overrides.cacheKey;
+
+  // Phase 4.5.3 — RESULT CACHE (checked BEFORE dedup): only an explicit
+  // caller-supplied cacheKey can hit the cache; keys never outlive their TTL
+  // (freshness stays the caller's contract). A hit is the cheapest outcome —
+  // no AI call, no dedup penalty — and returns fallbackUsed=false because the
+  // validated value IS the productive output of this request.
+  if (overrides?.cacheKey) {
+    const cached = lookupCache<{ value: T; usage: ValidatedGeneration<T>['usage'] }>(overrides.cacheKey);
+    if (cached.hit && cached.value) {
+      accountCacheHit(efficiencySnapshot, { inputTokens: estimatedInputTokens, costUsd: estimatedCost });
+      logger.info('AI generation served from result cache', { purpose });
+      return {
+        ok: true,
+        value: cached.value.value,
+        usage: cached.value.usage,
+        fallbackUsed: false,
+        attempts: 0,
+        servedFromCache: true,
+      };
+    }
+    accountCacheMiss(efficiencySnapshot);
+  }
+
+  // Phase 4.5.3 — REQUEST DEDUPLICATION: an identical (provider, model,
+  // purpose, prompt, options) request inside the dedup window is prevented.
+  const signature = buildRequestSignature({ provider: provider.id, model, purpose, prompt, maxOutputTokens, temperature });
+  const dedup = checkDuplicate(signature);
+  if (dedup.duplicate) {
+    accountDuplicatePrevented(efficiencySnapshot, { inputTokens: estimatedInputTokens, costUsd: estimatedCost });
+    logger.info('AI generation deduplicated an identical in-window request', { purpose });
+    return {
+      ok: false,
+      errors: ['Duplicate request prevented: an identical request already ran inside the dedup window. Use a fresh cacheKey or wait for the window to elapse if this work is genuinely new.'],
+      fallbackUsed: true,
+      attempts: 0,
+      blockedBy: 'dedup',
+    };
+  }
 
   const errors: string[] = [];
   const categories: AiErrorCategory[] = [];
   const maxAttempts = maxRetries + 1;
   let attempts = 0;
+  let succeeded = false;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     attempts = attempt;
@@ -246,10 +356,17 @@ export async function generateValidated<T extends Record<string, unknown>>(
       const result = await withTimeout(provider.generate(prompt, opts), timeoutMs, `AI generation (attempt ${attempt})`);
       const validated = parseAndValidate(result.text, schema);
       if (validated.valid) {
+        const usage = buildUsage(result, started);
+        recordTokenUsage({ agent: budgetAgentLabel, purpose, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, at: new Date() });
+        dedup.record(signature, usage.inputTokens, usage.estimatedCostUsd);
+        if (overrides?.cacheKey) {
+          storeCache({ cacheKey: overrides.cacheKey, value: { value: validated.value as T, usage }, inputTokens: usage.inputTokens, costUsd: usage.estimatedCostUsd });
+        }
+        succeeded = true;
         return {
           ok: true,
           value: validated.value as T,
-          usage: buildUsage(result, started),
+          usage,
           fallbackUsed: false,
           attempts,
         };
@@ -267,24 +384,32 @@ export async function generateValidated<T extends Record<string, unknown>>(
     if (attempt < maxAttempts) await sleep(Math.min(4000, 250 * 2 ** (attempt - 1)));
   }
 
-  try {
-    const repair = await withTimeout(provider.generate(prompt, opts), timeoutMs, 'AI generation (repair attempt)');
-    const revalidated = parseAndValidate(repair.text, schema);
-    attempts += 1;
-    if (revalidated.valid) {
-      return {
-        ok: true,
-        value: revalidated.value as T,
-        usage: buildUsage(repair, started),
-        fallbackUsed: false,
-        attempts,
-      };
+  if (!succeeded) {
+    try {
+      const repair = await withTimeout(provider.generate(prompt, opts), timeoutMs, 'AI generation (repair attempt)');
+      const revalidated = parseAndValidate(repair.text, schema);
+      attempts += 1;
+      if (revalidated.valid) {
+        const usage = buildUsage(repair, started);
+        recordTokenUsage({ agent: budgetAgentLabel, purpose, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, at: new Date() });
+        dedup.record(signature, usage.inputTokens, usage.estimatedCostUsd);
+        if (overrides?.cacheKey) {
+          storeCache({ cacheKey: overrides.cacheKey, value: { value: revalidated.value as T, usage }, inputTokens: usage.inputTokens, costUsd: usage.estimatedCostUsd });
+        }
+        return {
+          ok: true,
+          value: revalidated.value as T,
+          usage,
+          fallbackUsed: false,
+          attempts,
+        };
+      }
+      errors.push(`Repair attempt: schema validation failed: ${revalidated.errors.join('; ')}`);
+      categories.push('invalid_response');
+    } catch (repairError) {
+      errors.push(`Repair attempt failed: ${summarizeError(repairError)}`);
+      categories.push(classifyGenericError(repairError));
     }
-    errors.push(`Repair attempt: schema validation failed: ${revalidated.errors.join('; ')}`);
-    categories.push('invalid_response');
-  } catch (repairError) {
-    errors.push(`Repair attempt failed: ${summarizeError(repairError)}`);
-    categories.push(classifyGenericError(repairError));
   }
 
   logger.warn('AI generation failed closed after retries', { purpose, attempts });

@@ -6,7 +6,7 @@
 // executions are called out explicitly. No secrets, no prompt contents.
 
 import { cn } from '@/lib/utils';
-import { Activity, Bot, Clock, Coins, Cpu, Gauge, ShieldCheck, TrendingUp, Zap } from 'lucide-react';
+import { Activity, Bot, Clock, Coins, Cpu, Gauge, PiggyBank, ShieldCheck, TrendingUp, Zap } from 'lucide-react';
 import Link from 'next/link';
 import type { AiUsageSummary, UsageGroup, UsageTimeRange } from '@/lib/ai/usage';
 
@@ -232,6 +232,84 @@ export function AiUsagePanel({
           <span className="text-lg font-semibold tabular-nums">{formatUsd(summary.estimatedTotalCostUsd)}</span>
         </div>
       </div>
+
+      {/* Phase 4.5.3 — Efficiency, token budget, treasury */}
+      {(data.efficiency || data.tokenBudget || data.treasury) && (
+        <div className="grid gap-4 lg:grid-cols-3">
+          {data.efficiency && (
+            <div className="rounded-xl border bg-card p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Gauge className="h-4 w-4 text-muted-foreground" />
+                  <h3 className="text-sm font-semibold">Efficiency (this process)</h3>
+                </div>
+                <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700">EST. SAVINGS</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm tabular-nums">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Cache hit rate</div>
+                  <div className="font-semibold">{data.efficiency.cacheHitRate === null ? '—' : `${data.efficiency.cacheHitRate.toFixed(1)}%`}</div>
+                  <div className="text-[10px] text-muted-foreground">{data.efficiency.cacheHits} hits / {data.efficiency.cacheMisses} misses</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Duplicates prevented</div>
+                  <div className="font-semibold">{formatNumber(data.efficiency.duplicateRequestsPrevented)}</div>
+                  <div className="text-[10px] text-muted-foreground">identical in-window requests</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Avoided tokens (in)</div>
+                  <div className="font-semibold">{formatNumber(data.efficiency.estimatedAvoidedInputTokens)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Estimated savings</div>
+                  <div className="font-semibold">{formatUsd(data.efficiency.estimatedSavingsUsd)}</div>
+                  <div className="text-[10px] text-muted-foreground">process-local estimate</div>
+                </div>
+              </div>
+            </div>
+          )}
+          {data.tokenBudget && (
+            <div className="rounded-xl border bg-card p-4 shadow-sm">
+              <div className="flex items-center gap-2 mb-3">
+                <Zap className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Token Budget (today)</h3>
+              </div>
+              <div className="text-sm tabular-nums">
+                <div className="flex justify-between"><span className="text-muted-foreground">Tokens today</span><span className="font-semibold">{formatNumber(data.tokenBudget.tokensToday)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Daily cap</span><span className="font-semibold">{data.tokenBudget.dailyBudget === null ? 'Unlimited' : formatNumber(data.tokenBudget.dailyBudget)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Monthly cap</span><span className="font-semibold">{data.tokenBudget.monthlyBudget === null ? 'Unlimited' : formatNumber(data.tokenBudget.monthlyBudget)}</span></div>
+              </div>
+              {Object.keys(data.tokenBudget.byAgent).length > 0 && (
+                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                  {Object.entries(data.tokenBudget.byAgent).slice(0, 5).map(([agent, tokens]) => (
+                    <div key={agent} className="flex justify-between"><span className="font-mono">{agent}</span><span className="tabular-nums">{formatNumber(tokens)}</span></div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {data.treasury && (
+            <div className="rounded-xl border bg-card p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <PiggyBank className="h-4 w-4 text-muted-foreground" />
+                  <h3 className="text-sm font-semibold">Agent Treasury</h3>
+                </div>
+                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">ACCOUNTING</span>
+              </div>
+              <div className="text-sm tabular-nums">
+                <div className="flex justify-between"><span className="text-muted-foreground">Allocated (daily AI budget)</span><span className="font-semibold">{formatUsd(data.treasury.allocatedBudget)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Spent (estimated)</span><span className="font-semibold">{formatUsd(data.treasury.spentBudget)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Reserved</span><span className="font-semibold">{formatUsd(data.treasury.reservedBudget)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Remaining</span><span className="font-semibold">{formatUsd(data.treasury.remainingBudget)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Reinvestment bucket</span><span className="font-semibold">{formatUsd(data.treasury.reinvestmentBudget)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Owner / Reserve</span><span className="font-semibold">{formatUsd(data.treasury.ownerAllocation)} / {formatUsd(data.treasury.businessReserve)}</span></div>
+              </div>
+              <p className="mt-2 text-[10px] leading-snug text-muted-foreground">{data.treasury.note}</p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Groups */}
       <div className="grid gap-4 lg:grid-cols-2">

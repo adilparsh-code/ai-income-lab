@@ -8,7 +8,10 @@ import {
   getTimeoutMs,
   getMaxRetries,
   identifyExecutionMode,
+  __resetEfficiencySnapshot,
+  getEfficiencySnapshot,
 } from '../generate';
+import { __resetDedupWindow, __resetResultCache, __resetTokenLedger } from '../efficiency';
 import type { AiJsonSchema } from '../provider';
 
 const MOCK_SCHEMA: AiJsonSchema = {
@@ -39,8 +42,12 @@ describe('generateValidated (mock provider)', () => {
   });
 
   it('fails closed after bounded retries when output can never satisfy the schema', async () => {
+    // Unique prompt: the dedup window (Phase 4.5.3) would otherwise recognize
+    // the identical request from the success test above and block it before
+    // any retry could happen — which is correct production behavior, but this
+    // test specifically exercises retry exhaustion.
     const outcome = await generateValidated<Record<string, unknown>>(
-      'test prompt',
+      'test prompt retry-exhaustion',
       'test.purpose',
       IMPOSSIBLE_SCHEMA
     );
@@ -87,6 +94,73 @@ describe('openai provider', () => {
       () => generateValidated('p', 'test.purpose', MOCK_SCHEMA),
       /openai.*not enabled/
     );
+  });
+});
+
+describe('Phase 4.5.3 — efficiency integration', () => {
+  beforeEach(() => {
+    __resetEfficiencySnapshot();
+    __resetDedupWindow();
+    __resetResultCache();
+    __resetTokenLedger();
+  });
+
+  it('prevents an identical in-window request and accounts the saving', async () => {
+    const first = await generateValidated<{ mock: boolean }>('dedup probe prompt', 'dedup.test.purpose', MOCK_SCHEMA);
+    assert.equal(first.ok, true);
+
+    const second = await generateValidated<Record<string, unknown>>('dedup probe prompt', 'dedup.test.purpose', MOCK_SCHEMA);
+    assert.equal(second.ok, false);
+    if (!second.ok) {
+      assert.equal(second.blockedBy, 'dedup');
+      assert.ok(second.errors[0].includes('Duplicate request prevented'));
+    }
+    const snapshot = getEfficiencySnapshot();
+    assert.equal(snapshot.duplicateRequestsPrevented, 1);
+    assert.ok(snapshot.dedupAvoidedInputTokens > 0);
+  });
+
+  it('serves a cached validated result for an explicit cacheKey (hit) and tracks misses', async () => {
+    const first = await generateValidated<{ mock: boolean }>('cache probe prompt', 'cache.test.purpose', MOCK_SCHEMA, { cacheKey: 'test-cache-key' });
+    assert.equal(first.ok, true);
+    assert.notEqual(first.servedFromCache, true);
+
+    let snapshot = getEfficiencySnapshot();
+    assert.equal(snapshot.cacheMisses, 1);
+
+    const second = await generateValidated<{ mock: boolean }>('cache probe prompt', 'cache.test.purpose', MOCK_SCHEMA, { cacheKey: 'test-cache-key' });
+    assert.equal(second.ok, true);
+    assert.equal(second.servedFromCache, true);
+    assert.deepEqual(second.value, first.value);
+
+    snapshot = getEfficiencySnapshot();
+    assert.equal(snapshot.cacheHits, 1);
+    assert.ok(snapshot.cacheAvoidedCostUsd > 0);
+  });
+
+  it('blocks calls when the daily token budget is exhausted', async () => {
+    const previous = process.env.AI_DAILY_TOKEN_BUDGET;
+    process.env.AI_DAILY_TOKEN_BUDGET = '10';
+    try {
+      const outcome = await generateValidated<Record<string, unknown>>('token budget probe', 'token.budget.purpose', MOCK_SCHEMA);
+      assert.equal(outcome.ok, false);
+      if (!outcome.ok) {
+        assert.equal(outcome.blockedBy, 'token_budget');
+        assert.equal(outcome.budgetKind, 'daily');
+        assert.equal(outcome.attempts, 0, 'no provider call is attempted under an exhausted budget');
+      }
+    } finally {
+      if (previous === undefined) delete process.env.AI_DAILY_TOKEN_BUDGET;
+      else process.env.AI_DAILY_TOKEN_BUDGET = previous;
+    }
+  });
+
+  it('the mock provider path records token usage into the ledger', async () => {
+    const { getTokenLedgerTotals } = await import('../efficiency');
+    await generateValidated<{ mock: boolean }>('ledger probe prompt', 'ledger.test.purpose', MOCK_SCHEMA);
+    const totals = getTokenLedgerTotals();
+    assert.ok(totals.totalTokens > 0);
+    assert.ok(totals.byAgent['ledger'] > 0);
   });
 });
 

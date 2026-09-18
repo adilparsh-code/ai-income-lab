@@ -94,6 +94,39 @@ export interface AiUsageSummary {
   anomalies: {
     nonFiniteNumbersExcluded: number;
   };
+  /**
+   * Phase 4.5.3: efficiency telemetry for THIS server process (cache hits,
+   * prevented duplicates, estimated avoided tokens/cost). Process-local by
+   * design; the API caller sees them labelled as such.
+   */
+  efficiency?: {
+    cacheHits: number;
+    cacheMisses: number;
+    cacheHitRate: number | null;
+    duplicateRequestsPrevented: number;
+    estimatedAvoidedInputTokens: number;
+    estimatedSavingsUsd: number;
+    basis: 'PROCESS_LOCAL_ESTIMATE';
+  };
+  /** Phase 4.5.3: token-budget ledger status (process-local). */
+  tokenBudget?: {
+    day: string;
+    tokensToday: number;
+    dailyBudget: number | null;
+    monthlyBudget: number | null;
+    byAgent: Record<string, number>;
+  };
+  /** Phase 4.5.3: agent treasury view (accounting only, never money movement). */
+  treasury?: {
+    allocatedBudget: number;
+    spentBudget: number;
+    reservedBudget: number;
+    remainingBudget: number;
+    reinvestmentBudget: number;
+    ownerAllocation: number;
+    businessReserve: number;
+    note: string;
+  };
 }
 
 // ---------------------------------------------------------------------------

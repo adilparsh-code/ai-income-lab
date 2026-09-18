@@ -21,6 +21,7 @@ import {
   type UsageTimeRange,
   type UsageLogRow,
 } from '@/lib/ai/usage';
+import { getEfficiencyViews } from '@/lib/ai/usage-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,11 +60,27 @@ export async function GET(request: Request) {
 
     const summary = aggregateUsageForRange(rows, range);
 
+    // Phase 4.5.3 — efficiency, token-budget, and treasury views. Efficiency
+    // counters are PROCESS-LOCAL estimates; treasury is internal accounting
+    // (no money movement). Any failure degrades to omitted fields, never a
+    // fabricated number.
+    let efficiencyViews: Awaited<ReturnType<typeof getEfficiencyViews>> | null = null;
+    try {
+      efficiencyViews = await getEfficiencyViews();
+    } catch (efficiencyError) {
+      logger.warn('Efficiency views unavailable; returning usage-only summary', {
+        error: efficiencyError instanceof Error ? efficiencyError.message.slice(0, 150) : String(efficiencyError).slice(0, 150),
+      });
+    }
+
     return NextResponse.json({
       ok: true,
       ...summary,
+      ...(efficiencyViews ?? {}),
       notes: [
         'Cost figures are ESTIMATES computed from an isolated price table, not billing data.',
+        'Efficiency/savings figures are PROCESS-LOCAL estimates from dedup and cache hits in this server instance.',
+        'The treasury view is internal accounting only: no bank accounts, wallets, or transfers exist.',
         'Executions without recorded AI metadata are counted as deterministic/mock runs.',
         'No prompt contents, API keys, or environment values are included in this response.',
       ],

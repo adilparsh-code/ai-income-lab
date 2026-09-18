@@ -2,6 +2,7 @@ import { PageHeader } from '@/components/shared/page-header';
 import { AiUsagePanel, type AiUsagePanelData } from '@/components/ai/ai-usage-panel';
 import { db } from '@/lib/db';
 import { aggregateUsageForRange, isUsageTimeRange, type UsageTimeRange, type UsageLogRow } from '@/lib/ai/usage';
+import { getEfficiencyViews } from '@/lib/ai/usage-server';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = { title: 'AI Usage & Cost — AI Income Lab' };
@@ -42,6 +43,15 @@ export default async function AiUsagePage({ searchParams }: AiUsagePageProps) {
     })) as unknown as UsageLogRow[];
 
     data = aggregateUsageForRange(rows, range) as AiUsagePanelData;
+
+    // Phase 4.5.3 — efficiency/token-budget/treasury views (best-effort;
+    // failures degrade to the base usage panel, never a fabricated number).
+    try {
+      const views = await getEfficiencyViews();
+      data = { ...data, ...views } as AiUsagePanelData;
+    } catch {
+      // Keep the base usage data without the optional views.
+    }
   } catch (e) {
     error = 'AI usage data could not be loaded. Check the server logs and try again.';
     console.error('[ai-usage] aggregation failed:', e);
