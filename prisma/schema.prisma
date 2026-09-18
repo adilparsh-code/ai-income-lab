@@ -45,6 +45,7 @@ model Opportunity {
   pipelineRuns          PipelineRun[]
   evidenceItems         EvidenceItemModel[]
   jobRuns               JobRun[]
+  workflowRuns          WorkflowRun[]
 }
 
 model Product {
@@ -287,6 +288,38 @@ model JobRun {
   @@index([status])
   @@index([jobType, createdAt])
   @@index([correlationId])
+}
+
+// Phase 5.2 — Ruflo workflow runs. One row per state-aware workflow execution
+// (OPPORTUNITY_DISCOVERY, OPPORTUNITY_TO_PRODUCT, BUSINESS_ANALYSIS,
+// FULL_INCOME_PIPELINE). Stores the planner's decisions (which steps were
+// necessary, skipped, or blocked and why) plus per-step outcomes — an
+// auditable record of "why the system did less work". Safety: workflows
+// execute through the existing JobRun/AgentLog stack; this model only records
+// workflow-level state and never bypasses halal or human-review gates.
+model WorkflowRun {
+  id            String   @id @default(cuid())
+
+  workflowType  String   // OPPORTUNITY_DISCOVERY, OPPORTUNITY_TO_PRODUCT, BUSINESS_ANALYSIS, FULL_INCOME_PIPELINE
+  status        String   // COMPLETED, PARTIAL, BLOCKED, HUMAN_REVIEW, FAILED
+
+  correlationId String
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+
+  // Planner decisions and per-step outcomes (JSON; safe fields only).
+  plan          String   @default("{}")
+  steps         String   @default("[]")
+
+  startedAt     DateTime
+  completedAt   DateTime
+  durationMs    Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([workflowType, createdAt])
+  @@index([correlationId])
+  @@index([status])
 }
 
 model AgentLog {
