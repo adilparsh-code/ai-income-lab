@@ -25,7 +25,8 @@ export type FactoryWorkflowKey =
   | 'MVP'
   | 'BUILD_PLAN'
   | 'MONETIZATION'
-  | 'DISTRIBUTION';
+  | 'DISTRIBUTION'
+  | 'HUMAN_APPROVAL';
 
 export type FactoryStepState = 'READY' | 'PENDING' | 'FAILED' | 'BLOCKED';
 
@@ -46,6 +47,11 @@ export const FACTORY_WORKFLOW: { key: FactoryWorkflowKey; label: string; descrip
   { key: 'BUILD_PLAN', label: 'Build Plan', description: 'Phased build plan with dependencies and risks.' },
   { key: 'MONETIZATION', label: 'Monetization', description: 'Monetization model and pricing hypotheses.' },
   { key: 'DISTRIBUTION', label: 'Distribution', description: 'Channels, content, and conversion path hypotheses.' },
+  {
+    key: 'HUMAN_APPROVAL',
+    label: 'Human Approval',
+    description: 'Final gate: a human reviews and approves the specification. Publishing, spending, and marketplace actions stay human-gated.',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -156,6 +162,144 @@ export interface FactoryProductView {
 }
 
 // ---------------------------------------------------------------------------
+// Human approval (final workflow gate — derived, never stored as state)
+// ---------------------------------------------------------------------------
+
+/** Items that are ALWAYS human-gated after approval; never agent-executable. */
+export const HUMAN_GATED_ACTIONS = [
+  'Publishing the product',
+  'Spending money (ads, tools, paid services)',
+  'Committing to pricing',
+  'Marketplace submission',
+  'Any irreversible external action',
+] as const;
+
+export interface FactoryHumanApproval {
+  /** REVIEW_REQUIRED / agent-requested review — no autonomous execution. */
+  reviewRequired: boolean;
+  /** Halal hard-block: there is nothing to approve. */
+  blocked: boolean;
+  /** Pipeline finished and produced a usable specification. */
+  completed: boolean;
+  /** Ready for a human to review and approve (completed, not blocked/review). */
+  readyForApproval: boolean;
+  reason: string;
+  /** Human-gated actions that remain manual regardless of approval state. */
+  gates: string[];
+}
+
+function buildHumanApproval(
+  run: FactoryRunLike,
+  product: FactoryProductView,
+  runLevelReviewRequired: boolean,
+): FactoryHumanApproval {
+  const gates: string[] = [...HUMAN_GATED_ACTIONS];
+
+  if (run.status === 'BLOCKED') {
+    return {
+      reviewRequired: false,
+      blocked: true,
+      completed: false,
+      readyForApproval: false,
+      reason: 'Blocked by halal compliance screening — nothing ran and there is nothing to approve.',
+      gates,
+    };
+  }
+
+  if (runLevelReviewRequired) {
+    return {
+      reviewRequired: true,
+      blocked: false,
+      completed: run.status === 'COMPLETED' && product.present,
+      readyForApproval: false,
+      reason:
+        'REVIEW_REQUIRED — human review is required before this specification can proceed; nothing was executed autonomously.',
+      gates,
+    };
+  }
+
+  if (run.status === 'COMPLETED' && product.present) {
+    return {
+      reviewRequired: false,
+      blocked: false,
+      completed: true,
+      readyForApproval: true,
+      reason:
+        'Pipeline finished successfully. A human may now review the specification; approval is required before any human-gated action.',
+      gates,
+    };
+  }
+
+  return {
+    reviewRequired: false,
+    blocked: false,
+    completed: false,
+    readyForApproval: false,
+    reason:
+      'The pipeline has not completed yet — approval becomes available once research, validation, and product generation succeed.',
+    gates,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Business Intelligence snapshot (defensive read of run findings)
+// ---------------------------------------------------------------------------
+
+/** Client-safe view of the opportunity-scoped BI snapshot attached by the service. */
+export interface FactoryBiSnapshotView {
+  opportunityId: string;
+  opportunityTitle: string;
+  hasRevenueData: boolean;
+  netRevenue: number;
+  contributionProfit: number;
+  contributionMarginPercent: number | null;
+  roiPercent: number | null;
+  revenueHealth: string;
+  /** Number of revenue records the figures are computed from. */
+  recordCount: number;
+  /** Deterministic, agent-independent narrative summary from the BI layer. */
+  summary: string;
+  evidenceType: string;
+  warnings: string[];
+}
+
+/**
+ * Validate the persisted snapshot shape defensively: corrupt payloads yield
+ * null rather than partially-trusted numbers. Figures are copied verbatim
+ * from the deterministic profitability layer — never recomputed, never invented.
+ */
+function extractBusinessIntelligence(raw: unknown): FactoryBiSnapshotView | null {
+  if (!isRecord(raw) || !isRecord(raw.facts)) return null;
+  const facts = raw.facts;
+  const fin = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  const net = fin(facts.netRevenue);
+  const contribution = fin(facts.contributionProfit);
+  if (net === null || contribution === null) return null;
+
+  const health = asNullableString(facts.revenueHealth);
+  if (!health) return null;
+
+  return {
+    opportunityId: asString(raw.opportunityId, ''),
+    opportunityTitle: asString(raw.opportunityTitle, ''),
+    hasRevenueData: facts.hasRevenueData === true,
+    netRevenue: net,
+    contributionProfit: contribution,
+    contributionMarginPercent: fin(facts.contributionMarginPercent),
+    roiPercent: fin(facts.roiPercent),
+    revenueHealth: health,
+    recordCount:
+      typeof facts.recordCount === 'number' && Number.isFinite(facts.recordCount) && facts.recordCount >= 0
+        ? facts.recordCount
+        : 0,
+    summary: asString(facts.summary, ''),
+    evidenceType: asString(facts.evidenceType, 'VERIFIED_DATA'),
+    warnings: asStringArray(facts.warnings),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Aggregated run view
 // ---------------------------------------------------------------------------
 
@@ -189,6 +333,10 @@ export interface FactoryRunView {
   };
   validation: FactoryValidationView | null;
   product: FactoryProductView;
+  /** Derived final gate state (never stored, always recomputed from the run). */
+  humanApproval: FactoryHumanApproval;
+  /** Opportunity-scoped deterministic BI snapshot, when the service attached one. */
+  businessIntelligence: FactoryBiSnapshotView | null;
   provenance: FactoryProvenanceSummary;
   missingEvidence: string[];
   nextActions: string[];
@@ -207,6 +355,7 @@ export interface FactoryRunLike {
     missingEvidence?: string[];
     nextActions?: string[];
     provenanceCounts?: Record<string, number>;
+    businessIntelligence?: unknown;
     aiTotals?: {
       liveSteps: number;
       fallbackSteps: number;
@@ -497,6 +646,16 @@ function buildWorkflow(
         ? 'Product generation failed — no concept was produced.'
         : undefined;
 
+  const humanApprovalState: FactoryStepState = blocked
+    ? 'BLOCKED'
+    : paused
+      ? 'PENDING'
+      : runStatus === 'COMPLETED' && product.present
+        ? 'READY'
+        : 'PENDING';
+
+  const distributionReady = product.distribution !== null;
+
   return [
     {
       key: 'OPPORTUNITY',
@@ -557,8 +716,22 @@ function buildWorkflow(
       key: 'DISTRIBUTION',
       label: FACTORY_WORKFLOW[7].label,
       description: FACTORY_WORKFLOW[7].description,
-      state: product.distribution ? 'READY' : productState,
-      detail: product.distribution ? undefined : detailFor(productState, 'No distribution view was produced.'),
+      state: distributionReady ? 'READY' : productState,
+      detail: distributionReady ? undefined : detailFor(productState, 'No distribution view was produced.'),
+    },
+    {
+      key: 'HUMAN_APPROVAL',
+      label: FACTORY_WORKFLOW[8].label,
+      description: FACTORY_WORKFLOW[8].description,
+      state: humanApprovalState,
+      detail:
+        blocked
+          ? blockedDetail
+          : paused
+            ? reviewDetail
+            : humanApprovalState === 'READY'
+              ? 'Ready for a human to review and approve the specification.'
+              : 'Approval unlocks after research, validation, and product generation complete.',
     },
   ];
 }
@@ -694,6 +867,8 @@ export function buildFactoryRunView(run: FactoryRunLike): FactoryRunView {
     evidence,
     validation,
     product,
+    humanApproval: buildHumanApproval(run, product, humanReviewRequired),
+    businessIntelligence: extractBusinessIntelligence(run.findings?.businessIntelligence),
     provenance: computeProvenance(run, steps, evidence),
     missingEvidence,
     nextActions,

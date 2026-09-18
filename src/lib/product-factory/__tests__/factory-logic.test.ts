@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {
   buildFactoryRunView,
   looksLikeFactoryRun,
+  HUMAN_GATED_ACTIONS,
   type FactoryRunLike,
 } from '../factory-logic';
 import type { PipelineStepSummary } from '@/lib/ruflo/pipeline-logic';
@@ -453,5 +454,160 @@ describe('looksLikeFactoryRun', () => {
     assert.equal(looksLikeFactoryRun({}), false);
     assert.equal(looksLikeFactoryRun({ steps: 'not-an-array' }), false);
     assert.equal(looksLikeFactoryRun({ steps: [] }), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Human approval — final workflow gate (derived, never fabricated)
+// ---------------------------------------------------------------------------
+
+describe('buildFactoryRunView: human approval gate', () => {
+  it('exposes a 9-step workflow ending in HUMAN_APPROVAL', () => {
+    const view = buildFactoryRunView(fullRun());
+    assert.equal(view.workflow.length, 9);
+    assert.equal(view.workflow[8].key, 'HUMAN_APPROVAL');
+  });
+
+  it('is ready for approval when the run completed with a real concept', () => {
+    const view = buildFactoryRunView(fullRun());
+    assert.equal(view.humanApproval.readyForApproval, true);
+    assert.equal(view.humanApproval.completed, true);
+    assert.equal(view.humanApproval.reviewRequired, false);
+    assert.equal(view.humanApproval.blocked, false);
+    const states = Object.fromEntries(view.workflow.map((w) => [w.key, w.state]));
+    assert.equal(states['HUMAN_APPROVAL'], 'READY');
+  });
+
+  it('always lists the human-gated actions', () => {
+    const view = buildFactoryRunView(fullRun());
+    assert.ok(view.humanApproval.gates.length >= 5);
+    for (const gate of HUMAN_GATED_ACTIONS) {
+      assert.ok(view.humanApproval.gates.includes(gate));
+    }
+    // Publishing/spending/marketplace stay human-gated in every state.
+    for (const status of ['COMPLETED', 'BLOCKED', 'HUMAN_REVIEW', 'FAILED'] as const) {
+      const gated = buildFactoryRunView(baseRun({ status, steps: status === 'COMPLETED' ? fullRun().steps : [] })).humanApproval.gates;
+      for (const gate of HUMAN_GATED_ACTIONS) assert.ok(gated.includes(gate), `gate missing for ${status}: ${gate}`);
+    }
+  });
+
+  it('is blocked (nothing to approve) for halal-blocked runs', () => {
+    const view = buildFactoryRunView(baseRun({ status: 'BLOCKED', steps: [] }));
+    assert.equal(view.humanApproval.blocked, true);
+    assert.equal(view.humanApproval.readyForApproval, false);
+    assert.ok(view.humanApproval.reason.includes('nothing to approve'));
+    const states = Object.fromEntries(view.workflow.map((w) => [w.key, w.state]));
+    assert.equal(states['HUMAN_APPROVAL'], 'BLOCKED');
+  });
+
+  it('keeps REVIEW_REQUIRED runs out of ready-for-approval', () => {
+    const view = buildFactoryRunView(
+      baseRun({ status: 'HUMAN_REVIEW', steps: fullRun().steps, humanReviewRequired: true }),
+    );
+    assert.equal(view.humanApproval.reviewRequired, true);
+    assert.equal(view.humanApproval.readyForApproval, false);
+    const states = Object.fromEntries(view.workflow.map((w) => [w.key, w.state]));
+    assert.equal(states['HUMAN_APPROVAL'], 'PENDING');
+  });
+
+  it('stays pending for incomplete runs even with partial outputs', () => {
+    const view = buildFactoryRunView(
+      baseRun({
+        status: 'PARTIAL',
+        steps: [step({ stage: 'RESEARCH', output: MOCK_RESEARCH_OUTPUT })],
+      }),
+    );
+    assert.equal(view.humanApproval.readyForApproval, false);
+    assert.equal(view.humanApproval.completed, false);
+  });
+
+  it('derives review from agent-level humanReviewRequired even on completed runs', () => {
+    const view = buildFactoryRunView(
+      baseRun({
+        steps: [
+          step({ stage: 'RESEARCH', output: MOCK_RESEARCH_OUTPUT }),
+          step({ stage: 'VALIDATION', output: MOCK_VALIDATION_OUTPUT }),
+          step({ stage: 'PRODUCT', output: { ...MOCK_PRODUCT_OUTPUT, humanReviewRequired: true } }),
+        ],
+      }),
+    );
+    assert.equal(view.humanApproval.reviewRequired, true);
+    assert.equal(view.humanApproval.readyForApproval, false);
+    assert.equal(view.humanReviewRequired, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Business Intelligence snapshot passthrough (verbatim, never recomputed)
+// ---------------------------------------------------------------------------
+
+describe('buildFactoryRunView: business intelligence snapshot', () => {
+  const SNAPSHOT = {
+    opportunityId: 'opp-1',
+    opportunityTitle: 'Test opportunity',
+    facts: {
+      hasRevenueData: true,
+      netRevenue: 880,
+      contributionProfit: 720,
+      contributionMarginPercent: 75,
+      roiPercent: 240,
+      revenueHealth: 'PROFITABLE',
+      recordCount: 3,
+      summary: 'Deterministic summary from the shared profitability layer.',
+      evidenceType: 'VERIFIED_DATA',
+      warnings: ['Refunds derived from stored residual.'],
+    },
+  };
+
+  it('passes the snapshot through verbatim when present', () => {
+    const view = buildFactoryRunView(
+      baseRun({ findings: { ...baseRun().findings, businessIntelligence: SNAPSHOT } }),
+    );
+    assert.ok(view.businessIntelligence);
+    assert.equal(view.businessIntelligence.opportunityId, 'opp-1');
+    assert.equal(view.businessIntelligence.netRevenue, 880);
+    assert.equal(view.businessIntelligence.contributionProfit, 720);
+    assert.equal(view.businessIntelligence.roiPercent, 240);
+    assert.equal(view.businessIntelligence.recordCount, 3);
+    assert.equal(view.businessIntelligence.revenueHealth, 'PROFITABLE');
+    assert.equal(view.businessIntelligence.evidenceType, 'VERIFIED_DATA');
+  });
+
+  it('returns null (not zeros) when no snapshot was attached', () => {
+    const view = buildFactoryRunView(fullRun());
+    assert.equal(view.businessIntelligence, null);
+  });
+
+  it('rejects corrupt snapshots instead of partially trusting them', () => {
+    for (const bad of [null, 'x', 42, {}, { facts: null }, { facts: {} }, { facts: { netRevenue: 'n/a', contributionProfit: 1, revenueHealth: 'PROFITABLE' } }]) {
+      const view = buildFactoryRunView(
+        baseRun({ findings: { ...baseRun().findings, businessIntelligence: bad } }),
+      );
+      assert.equal(view.businessIntelligence, null, `corrupt snapshot accepted: ${JSON.stringify(bad)}`);
+    }
+  });
+
+  it('coerces non-finite figures to null, never NaN/Infinity', () => {
+    const view = buildFactoryRunView(
+      baseRun({
+        findings: {
+          ...baseRun().findings,
+          businessIntelligence: {
+            opportunityId: 'opp-1',
+            facts: {
+              hasRevenueData: true,
+              netRevenue: 880,
+              contributionProfit: 720,
+              roiPercent: Number.POSITIVE_INFINITY,
+              contributionMarginPercent: Number.NaN,
+              revenueHealth: 'PROFITABLE',
+              warnings: [],
+            },
+          },
+        },
+      }),
+    );
+    assert.equal(view.businessIntelligence?.roiPercent, null);
+    assert.equal(view.businessIntelligence?.contributionMarginPercent, null);
   });
 });

@@ -11,12 +11,15 @@ import {
   Loader2,
   Package,
   ShieldCheck,
+  UserCheck,
   XCircle,
 } from 'lucide-react';
 import { generateProductConcept, getFactoryRunDetail } from '@/actions/product-factory';
 import type { FactoryOpportunityOption, FactoryRunSummary } from '@/actions/product-factory';
 import type {
+  FactoryBiSnapshotView,
   FactoryEvidenceSource,
+  FactoryHumanApproval,
   FactoryRunView,
   FactoryWorkflowStep,
 } from '@/lib/product-factory/factory-logic';
@@ -236,6 +239,51 @@ function EvidenceSection({ evidence }: { evidence: FactoryRunView['evidence'] })
 }
 
 // ---------------------------------------------------------------------------
+// Human approval (final gate)
+// ---------------------------------------------------------------------------
+
+const APPROVAL_STATE_STYLES: Record<string, { chip: string; label: string }> = {
+  ready: { chip: 'bg-emerald-100 text-emerald-700', label: 'READY FOR HUMAN APPROVAL' },
+  review: { chip: 'bg-indigo-100 text-indigo-700', label: 'REVIEW_REQUIRED — HUMAN REVIEW' },
+  blocked: { chip: 'bg-red-100 text-red-700', label: 'BLOCKED — NOTHING TO APPROVE' },
+  waiting: { chip: 'bg-slate-100 text-slate-600', label: 'AWAITING COMPLETION' },
+};
+
+function approvalStateKey(approval: FactoryHumanApproval): keyof typeof APPROVAL_STATE_STYLES {
+  if (approval.blocked) return 'blocked';
+  if (approval.reviewRequired) return 'review';
+  if (approval.readyForApproval) return 'ready';
+  return 'waiting';
+}
+
+function HumanApprovalSection({ approval }: { approval: FactoryHumanApproval }) {
+  const key = approvalStateKey(approval);
+  const style = APPROVAL_STATE_STYLES[key];
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={cn('rounded px-2 py-0.5 text-xs font-semibold', style.chip)}>{style.label}</span>
+        <span className="text-xs text-muted-foreground">Final gate — nothing autonomous runs past this point</span>
+      </div>
+      <p className="text-sm text-foreground/90">{approval.reason}</p>
+      <div>
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Human-gated actions (always manual, regardless of approval)
+        </h4>
+        <ul className="mt-1.5 space-y-1.5">
+          {approval.gates.map((gate) => (
+            <li key={gate} className="flex items-start gap-2 text-sm">
+              <UserCheck className="mt-0.5 h-4 w-4 shrink-0 text-indigo-500" />
+              {gate}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Product sections
 // ---------------------------------------------------------------------------
 
@@ -416,6 +464,74 @@ function DistributionSection({ view }: { view: FactoryRunView }) {
 }
 
 // ---------------------------------------------------------------------------
+// Business intelligence (deterministic, from the shared profitability layer)
+// ---------------------------------------------------------------------------
+
+const REVENUE_HEALTH_STYLES: Record<string, string> = {
+  PROFITABLE: 'bg-emerald-100 text-emerald-700',
+  UNPROFITABLE: 'bg-red-100 text-red-700',
+  NON_POSITIVE_NET: 'bg-amber-100 text-amber-700',
+  NO_DATA: 'bg-slate-100 text-slate-600',
+};
+
+const REVENUE_HEALTH_LABELS: Record<string, string> = {
+  PROFITABLE: 'PROFITABLE (verified)',
+  UNPROFITABLE: 'UNPROFITABLE (verified)',
+  NON_POSITIVE_NET: 'NON-POSITIVE NET (verified)',
+  NO_DATA: 'NO REVENUE DATA — profitability unknown, not zero',
+};
+
+function formatUsd(value: number): string {
+  return `${value < 0 ? '-' : ''}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatPercent(value: number | null): string {
+  return value === null ? 'Undefined (insufficient data)' : `${value.toFixed(2)}%`;
+}
+
+function BusinessIntelligenceSection({ bi }: { bi: FactoryBiSnapshotView }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={cn('rounded px-2 py-0.5 text-xs font-semibold', REVENUE_HEALTH_STYLES[bi.revenueHealth] ?? REVENUE_HEALTH_STYLES.NO_DATA)}>
+          {REVENUE_HEALTH_LABELS[bi.revenueHealth] ?? bi.revenueHealth.replace(/_/g, ' ')}
+        </span>
+        <ProvenanceBadge type={bi.evidenceType} />
+        <span className="text-xs text-muted-foreground">
+          Deterministic figures from the shared profitability layer — AI never alters them
+        </span>
+      </div>
+      <p className="text-sm text-foreground/90">{bi.summary}</p>
+      <dl className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-lg border p-2.5">
+          <dt className="text-xs text-muted-foreground">Net revenue (post-refund)</dt>
+          <dd className="font-medium">{formatUsd(bi.netRevenue)}</dd>
+        </div>
+        <div className="rounded-lg border p-2.5">
+          <dt className="text-xs text-muted-foreground">Contribution profit</dt>
+          <dd className="font-medium">{formatUsd(bi.contributionProfit)}</dd>
+        </div>
+        <div className="rounded-lg border p-2.5">
+          <dt className="text-xs text-muted-foreground">Contribution margin</dt>
+          <dd className="font-medium">{formatPercent(bi.contributionMarginPercent)}</dd>
+        </div>
+        <div className="rounded-lg border p-2.5">
+          <dt className="text-xs text-muted-foreground">ROI</dt>
+          <dd className="font-medium">{formatPercent(bi.roiPercent)}</dd>
+        </div>
+        <div className="rounded-lg border p-2.5">
+          <dt className="text-xs text-muted-foreground">Opportunity</dt>
+          <dd className="truncate font-medium" title={bi.opportunityTitle}>{bi.opportunityTitle || '—'}</dd>
+        </div>
+      </dl>
+      {bi.warnings.length > 0 && (
+        <BulletList items={bi.warnings} tone="warning" />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main workspace
 // ---------------------------------------------------------------------------
 
@@ -573,7 +689,9 @@ export function ProductFactoryWorkspace({ opportunities, recentRuns }: ProductFa
           <h3 className="mt-3 text-sm font-semibold">No product generated yet</h3>
           <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
             Select an opportunity and generate a concept. The factory reuses the existing pipeline: real research
-            evidence, a validation plan, and a product specification — each field labelled with its provenance.
+            evidence, a validation plan, and a product specification — each field labelled with its provenance. The
+            9-step loop ends at a human approval gate: publishing, spending, pricing commitments, and marketplace
+            submissions always require a human decision.
           </p>
         </div>
       )}
@@ -587,11 +705,16 @@ export function ProductFactoryWorkspace({ opportunities, recentRuns }: ProductFa
               <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', MODE_STYLES[view.dataMode].chip)}>
                 {MODE_STYLES[view.dataMode].label}
               </span>
-              {view.humanReviewRequired && (
-                <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700">
-                  REVIEW_REQUIRED — human review before any action
-                </span>
-              )}
+            {view.humanReviewRequired && (
+              <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700">
+                REVIEW_REQUIRED — human review before any action
+              </span>
+            )}
+            {view.humanApproval.readyForApproval && (
+              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                READY FOR HUMAN APPROVAL
+              </span>
+            )}
             </div>
             <p className="mt-2">{view.reasoning}</p>
           </div>
@@ -660,6 +783,12 @@ export function ProductFactoryWorkspace({ opportunities, recentRuns }: ProductFa
             </Section>
           )}
 
+          {view.businessIntelligence && (
+            <Section title="Verified profitability (Business Intelligence)">
+              <BusinessIntelligenceSection bi={view.businessIntelligence} />
+            </Section>
+          )}
+
           <Section title="Product concept">
             <ConceptSection view={view} />
           </Section>
@@ -696,6 +825,10 @@ export function ProductFactoryWorkspace({ opportunities, recentRuns }: ProductFa
               )}
             </Section>
           </div>
+
+          <Section title="Human approval — final gate">
+            <HumanApprovalSection approval={view.humanApproval} />
+          </Section>
 
           <Section title="Provenance & AI usage">
             <div className="space-y-2 text-sm">

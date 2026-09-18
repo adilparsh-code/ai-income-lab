@@ -115,10 +115,18 @@ describe('AI Provider Resolution (Phase 4.2.1)', () => {
     const original = process.env.AI_PROVIDER;
     const originalKey = process.env.AI_PROVIDER_API_KEY;
 
-    it('gemini without API key throws explicit config error', () => {
+    it('gemini without API key fails as a typed authentication provider error (operational, fail-closed)', () => {
       process.env.AI_PROVIDER = 'gemini';
       delete process.env.AI_PROVIDER_API_KEY;
-      assert.throws(() => getProvider(), /required but not set/i);
+      assert.throws(() => getProvider(), (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /AI_PROVIDER_API_KEY is not set/i);
+        // Deliberately does NOT say "required but not set": a missing key at
+        // runtime is an operational failure that resolves to the documented
+        // deterministic fallback (fallbackUsed=true), not a deploy-time config
+        // error. Unsupported providers (openai) still throw real config errors.
+        return true;
+      });
     });
 
     it('gemini WITH API key resolves a real provider (not mock)', () => {

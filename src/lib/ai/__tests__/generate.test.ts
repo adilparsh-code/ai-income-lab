@@ -90,6 +90,52 @@ describe('openai provider', () => {
   });
 });
 
+describe('configured provider without credentials (operational failure)', () => {
+  const previousKey = process.env.AI_PROVIDER_API_KEY;
+
+  beforeEach(() => {
+    process.env.AI_PROVIDER = 'gemini';
+    delete process.env.AI_PROVIDER_API_KEY;
+  });
+
+  afterEach(() => {
+    process.env.AI_PROVIDER = 'mock';
+    if (previousKey === undefined) delete process.env.AI_PROVIDER_API_KEY;
+    else process.env.AI_PROVIDER_API_KEY = previousKey;
+  });
+
+  it('fails closed to the caller (no throw) so deterministic fallback runs', async () => {
+    const outcome = await generateValidated<Record<string, unknown>>(
+      'test prompt',
+      'test.purpose',
+      MOCK_SCHEMA
+    );
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) {
+      assert.equal(outcome.fallbackUsed, true);
+      assert.equal(outcome.attempts, 0, 'no provider call is attempted without credentials');
+      assert.ok(outcome.categories?.includes('authentication'));
+      assert.ok(outcome.errors[0].includes('AI_PROVIDER_API_KEY'));
+      // No key material can leak through the error path.
+      assert.ok(!/AIza[0-9A-Za-z_\-]{10,}/.test(outcome.errors.join(' ')));
+    }
+  });
+
+  it('never presents the degraded outcome as live AI output', async () => {
+    const outcome = await generateValidated<Record<string, unknown>>(
+      'test prompt',
+      'test.purpose',
+      MOCK_SCHEMA
+    );
+    if (outcome.ok) {
+      assert.fail('generation must not succeed without credentials');
+      return;
+    }
+    // The outcome carries no value to mislabel: ok=false is the only shape.
+    assert.equal('value' in outcome, false);
+  });
+});
+
 describe('execution mode and bounds', () => {
   afterEach(() => {
     delete process.env.AI_PROVIDER;

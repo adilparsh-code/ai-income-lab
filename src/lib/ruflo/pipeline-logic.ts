@@ -287,6 +287,14 @@ export interface RunFindings {
   missingEvidence: string[];
   nextActions: string[];
   provenanceCounts: Record<string, number>;
+  /**
+   * Opportunity-scoped Business Intelligence snapshot attached by the Product
+   * Factory service (deterministic figures computed from stored records by the
+   * shared profitability layer). Never produced by buildRunFindings and never
+   * interpreted here; purely additive so older persisted payloads load
+   * unchanged. Consumers must validate the shape defensively.
+   */
+  businessIntelligence?: unknown;
   aiTotals: {
     liveSteps: number;
     fallbackSteps: number;

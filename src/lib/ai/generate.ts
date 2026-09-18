@@ -8,16 +8,17 @@
 // Provenance rule: everything produced here is AI_INFERENCE. Callers must never
 // classify it as VERIFIED_DATA.
 
-import { requireEnv } from '@/lib/config';
 import { logger } from '@/lib/server-log';
 import {
   AiErrorCategory,
   AiGenerateOptions,
   AiGenerateResult,
   AiProvider,
+  AiProviderError,
   AiProviderId,
   RETRYABLE_CATEGORIES,
   classifyGenericError,
+  isAiProviderError,
   isRealProvider,
   resolveProviderId,
 } from './provider';
@@ -75,7 +76,21 @@ export function getProvider(): AiProvider {
   const id = resolveProviderId();
   if (id === 'mock') return mockProvider;
   if (id === 'gemini') {
-    const apiKey = requireEnv('AI_PROVIDER_API_KEY');
+    // Missing credentials for an IMPLEMENTED provider are an OPERATIONAL
+    // condition, not a config error: the configured provider simply cannot
+    // run right now. Surface it as a typed provider error so the generation
+    // orchestrator (and therefore every agent) fails CLOSED into its
+    // documented deterministic fallback instead of crashing the business
+    // workflow. This is not a silent mock fallback — callers see
+    // fallbackUsed=true, a MOCKED capability status, and this exact reason.
+    const apiKey = process.env.AI_PROVIDER_API_KEY;
+    if (!apiKey || apiKey.trim().length === 0) {
+      throw new AiProviderError(
+        'AI provider "gemini" is selected but AI_PROVIDER_API_KEY is not set. '
+          + 'The deterministic fallback was used instead; no live AI output was produced.',
+        { category: 'authentication' },
+      );
+    }
     return buildGeminiProvider(apiKey);
   }
   if (id === 'openai') {
@@ -180,7 +195,25 @@ export async function generateValidated<T extends Record<string, unknown>>(
   overrides?: Partial<Pick<AiGenerateOptions, 'model' | 'maxOutputTokens' | 'temperature' | 'timeoutMs' | 'cacheKey'>>
 ): Promise<GenerationOutcome<T>> {
   const started = Date.now();
-  const provider = getProvider();
+  // Provider resolution can fail for OPERATIONAL reasons (configured provider
+  // has no credentials). Those resolve to a FailedGeneration outcome so callers
+  // fail closed into their deterministic fallback paths. Genuine CONFIG errors
+  // (unsupported provider id, invalid AI_PROVIDER value) still throw loudly.
+  let provider: AiProvider;
+  try {
+    provider = getProvider();
+  } catch (error) {
+    if (isAiProviderError(error)) {
+      return {
+        ok: false,
+        errors: [summarizeError(error)],
+        fallbackUsed: true,
+        attempts: 0,
+        categories: [error.category],
+      };
+    }
+    throw error;
+  }
   // Model selection follows the PURPOSE-SPECIFIC model policy. Callers may
   // override, but when they do not, the policy for this purpose decides the
   // model — never a hardcoded default buried in the call site. Unknown purpose
