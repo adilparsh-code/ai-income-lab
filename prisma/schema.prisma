@@ -71,6 +71,89 @@ model Product {
   
   revenues        Revenue[]
   contents        Content[]
+
+  // Phase 5.3 — Product Factory additions (all optional; additive only).
+  solution        String   @default("")
+  userFlows       String   @default("[]")   // JSON array of {name, steps[]}
+  techRequirements String  @default("[]")   // JSON array of strings
+  acceptanceCriteria String @default("[]")  // JSON array of strings
+  lifecycleHistory String  @default("[]")   // JSON array of transition records
+
+  builds          ProductBuild[]
+  deployments     ProductDeployment[]
+  assets          ProductAsset[]
+}
+
+// Phase 5.3 — Product build runs. One row per build attempt against the
+// build contract. Stores status, artifact reference, test summary, and a
+// BOUNDED log summary (never raw logs, never secrets). A build can never set
+// a product DEPLOYED/PUBLISHED by itself — only the deployment/publishing
+// provider confirmations can.
+model ProductBuild {
+  id            String   @id @default(cuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id])
+
+  status        String   // NOT_BUILT, SUCCEEDED, FAILED, UNAVAILABLE
+  version       String?
+  artifactRef   String?
+
+  // Bounded test/log summaries (JSON; safe fields only).
+  tests         String   @default("{}")
+  logSummary    String   @default("")
+  qualityGates  String   @default("[]")
+
+  sandboxed     Boolean  @default(true)
+  correlationId String?
+  createdAt     DateTime @default(now())
+
+  @@index([productId, createdAt])
+}
+
+// Phase 5.3 — Product deployment runs. A product is DEPLOYED only when a real
+// provider confirmation (deploymentId + url) exists on a row here; the
+// unavailable adapter writes DEPLOYMENT_NOT_CONNECTED rows with no ids.
+model ProductDeployment {
+  id            String   @id @default(cuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id])
+
+  status        String   // DEPLOYMENT_NOT_CONNECTED, DEPLOYED, FAILED, ROLLED_BACK, ...
+  providerId    String?
+  deploymentId  String?
+  url           String?
+  version       String?
+  errors        String   @default("[]")
+
+  // Publication of the action requires an explicit human approval token.
+  // The token itself is NEVER stored — only its presence and a hash hint.
+  approved      Boolean  @default(false)
+  approvalTokenHash String @default("")
+
+  correlationId String?
+  createdAt     DateTime @default(now())
+
+  @@index([productId, createdAt])
+}
+
+// Phase 5.3 — Product assets with provenance and rights tracking. An asset
+// can only be marked publishable when rights are CLEAR/OWNED; unclear rights
+// force HUMAN_REVIEW and blocked assets stay unpublishable.
+model ProductAsset {
+  id                String   @id @default(cuid())
+  productId         String
+  product           Product  @relation(fields: [productId], references: [id])
+
+  assetType         String   // PRODUCT_IMAGE, SCREENSHOT, THUMBNAIL, PREVIEW, LISTING_GRAPHIC
+  source            String   // GENERATED, MANUAL_UPLOAD, THIRD_PARTY
+  provenance        String   // AI_GENERATED, USER_ENTERED, VERIFIED_DATA, MOCKED
+  rightsStatus      String   // CLEAR, OWNED, UNCLEAR, HUMAN_REVIEW
+  publicationStatus String   // NOT_PUBLISHABLE, PUBLISHABLE, PUBLISHED, HUMAN_REVIEW
+
+  origin            String   @default("")  // URL or description of origin (no credentials)
+  createdAt         DateTime @default(now())
+
+  @@index([productId, createdAt])
 }
 
 model Experiment {

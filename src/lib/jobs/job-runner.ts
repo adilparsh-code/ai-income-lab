@@ -26,9 +26,16 @@ import { agentRegistry } from '@/lib/agents/agent-registry';
 import { runPipeline } from '@/lib/ruflo/orchestrator';
 import { screenForHalalCompliance } from '@/lib/halal-filter';
 import { logger } from '@/lib/server-log';
+import {
+  executeFactoryJob,
+  mapFactoryOutcomeToStatus,
+  type FactoryJobOutcome,
+  type FactoryJobOptions,
+} from '@/lib/product-factory/factory-jobs';
 import { validateJobPayload } from './job-definitions';
 import {
   JOB_TYPE_TO_AGENT,
+  isFactoryJobType,
   type JobOutcome,
   type JobPayload,
   type JobStatus,
@@ -191,6 +198,13 @@ export interface RunJobOptions {
     steps: unknown[];
     aiTotals?: Record<string, unknown>;
   }>;
+  /** Test seam: execute a factory job without touching provider boundaries. */
+  executeFactoryJob?: (jobType: string, payload: JobPayload) => Promise<FactoryJobOutcome>;
+  /**
+   * Factory execution options (deployment/publishing providers, persistence
+   * seam). Ignored for non-factory job types.
+   */
+  factory?: FactoryJobOptions;
 }
 
 export async function runJob(
@@ -280,10 +294,13 @@ export async function runJob(
     }
   }
 
-  // 5. Execute through the EXISTING agents / pipeline.
+  // 5. Execute through the EXISTING agents / pipeline / factory boundaries.
   try {
     if (jobType === 'OPPORTUNITY_PIPELINE') {
       return await executeWorkflowJob(db, row, payload, options);
+    }
+    if (isFactoryJobType(jobType)) {
+      return await executeFactoryJobViaRunner(db, row, jobType, payload, opportunity, options);
     }
     return await executeSingleAgentJob(db, row, jobType, payload, opportunity, options);
   } catch (error) {
@@ -291,6 +308,34 @@ export async function runJob(
     logger.error('Job execution threw', error, { jobType, jobId: row.id });
     return finishRow(db, row, 'FAILED', null, `Job execution failed: ${message}`.slice(0, 500), null, 0);
   }
+}
+
+/**
+ * Phase 5.3 — Factory job branch. Deterministic factory operations that run
+ * through the SAME idempotency/halal gates as agent jobs. No AI is invoked;
+ * high-impact actions (DEPLOY/PUBLISH) require the payload's human approval
+ * token and are executed only through the provider boundaries, which refuse
+ * when unconfigured.
+ */
+async function executeFactoryJobViaRunner(
+  db: JobDb,
+  row: JobRunRow,
+  jobType: JobType,
+  payload: JobPayload,
+  opportunity: JobOpportunityRow | null,
+  options: RunJobOptions,
+): Promise<JobOutcome> {
+  const outcome = await (options.executeFactoryJob
+    ? options.executeFactoryJob(jobType, payload)
+    : executeFactoryJob(jobType, payload, options.factory));
+
+  const status = mapFactoryOutcomeToStatus(outcome, opportunity?.halalStatus === 'NOT_ALLOWED');
+  const executionMode: JobExecutionMode = 'MOCKED'; // deterministic ops; no AI, no network claims
+  return finishRow(db, row, status, {
+    factoryJob: jobType,
+    productId: typeof payload.productId === 'string' ? payload.productId : null,
+    ...(outcome.summary ?? {}),
+  }, outcome.error ?? null, null, 0, executionMode);
 }
 
 async function executeSingleAgentJob(

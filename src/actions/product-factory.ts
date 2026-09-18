@@ -13,6 +13,8 @@ import {
   looksLikeFactoryRun,
   type FactoryRunView,
 } from '@/lib/product-factory/factory-logic';
+import { describeDeploymentStatus } from '@/lib/product-factory/build-contract';
+import { describePublishingStatus } from '@/lib/publishing/contract';
 import type { PipelineRunResult } from '@/lib/ruflo/orchestrator';
 
 /** Lean opportunity list for the factory selector. */
@@ -150,5 +152,144 @@ export async function getFactoryRunDetail(runId: string): Promise<RehydratedRunR
   } catch (error) {
     logger.error('Factory run detail action failed', error, { runId });
     return { ok: false, error: 'The run detail could not be loaded. Try again.' };
+  }
+}
+
+// ===========================================================================
+// Phase 5.3 — Product Factory dashboard summary (lifecycle + economics +
+// truthful provider statuses). Reads REAL records only; degrades gracefully.
+// ===========================================================================
+
+export interface FactoryLifecycleRow {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+  opportunityId: string | null;
+  opportunityTitle: string | null;
+  price: number;
+  grossRevenueUsd: number;
+  feesUsd: number;
+  netRevenueUsd: number;
+  buildStatus: string | null;
+  deploymentStatus: string | null;
+  publicationStatus: string | null;
+  nextAction: string;
+}
+
+export interface ProductFactoryDashboardSummary {
+  products: FactoryLifecycleRow[];
+  countsByStatus: Record<string, number>;
+  totals: {
+    grossRevenueUsd: number;
+    netRevenueUsd: number;
+    estimatedAiCostUsd: number;
+  };
+  deployment: { status: string; note: string };
+  publishing: { status: string; note: string };
+}
+
+const LIFECYCLE_ORDER = [
+  'IDEA', 'VALIDATED', 'SPEC_READY', 'BUILDING', 'TESTING',
+  'READY_TO_DEPLOY', 'DEPLOYED', 'PUBLISHED', 'PAUSED', 'ARCHIVED', 'BLOCKED',
+] as const;
+
+export async function getProductFactorySummary(limit = 12): Promise<ProductFactoryDashboardSummary> {
+  try {
+    const products = await db.product.findMany({
+      orderBy: { updatedAt: 'desc' },
+      take: Math.min(50, Math.max(1, limit)),
+      include: {
+        opportunity: { select: { title: true } },
+        revenues: { select: { grossRevenue: true, fees: true, netRevenue: true } },
+      },
+    });
+
+    const [builds, deployments, assets, aiCostGroups] = await Promise.all([
+      db.productBuild.findMany({
+        orderBy: { createdAt: 'desc' }, take: 100,
+        select: { productId: true, status: true },
+      }).catch(() => []),
+      db.productDeployment.findMany({
+        orderBy: { createdAt: 'desc' }, take: 100,
+        select: { productId: true, status: true },
+      }).catch(() => []),
+      db.productAsset.findMany({
+        orderBy: { createdAt: 'desc' }, take: 100,
+        select: { productId: true, publicationStatus: true },
+      }).catch(() => []),
+      db.agentLog.groupBy({
+        by: ['purpose'],
+        _sum: { estimatedCostUsd: true },
+        where: { estimatedCostUsd: { not: null } },
+      }).catch(() => []),
+    ]);
+
+    const latestBuild = new Map<string, string>();
+    for (const b of builds) if (!latestBuild.has(b.productId)) latestBuild.set(b.productId, b.status);
+    const latestDeployment = new Map<string, string>();
+    for (const d of deployments) if (!latestDeployment.has(d.productId)) latestDeployment.set(d.productId, d.status);
+    const assetStatus = new Map<string, string>();
+    for (const a of assets) if (!assetStatus.has(a.productId)) assetStatus.set(a.productId, a.publicationStatus);
+
+    const totalAiCostUsd = aiCostGroups.reduce((sum, g) => sum + (g._sum.estimatedCostUsd ?? 0), 0);
+
+    const rows: FactoryLifecycleRow[] = products.map((p) => {
+      const gross = p.revenues.reduce((s, r) => s + r.grossRevenue, 0);
+      const fees = p.revenues.reduce((s, r) => s + r.fees, 0);
+      const net = p.revenues.reduce((s, r) => s + r.netRevenue, 0);
+
+      const nextAction = p.status === 'PUBLISHED'
+        ? 'Track revenue and analyze (REVENUE_SYNC → PRODUCT_ANALYZE)'
+        : p.status === 'DEPLOYED'
+          ? 'Prepare listing draft; publishing requires human approval'
+          : p.status === 'READY_TO_DEPLOY'
+            ? 'Deployment requires a human approval token'
+            : p.status === 'BLOCKED'
+              ? 'Blocked by halal gate — human review required'
+              : 'Continue lifecycle: research → validation → spec';
+
+      return {
+        id: p.id,
+        name: p.name,
+        type: p.type,
+        status: (LIFECYCLE_ORDER as readonly string[]).includes(p.status) ? p.status : 'IDEA',
+        opportunityId: p.opportunityId,
+        opportunityTitle: p.opportunity?.title ?? null,
+        price: p.price,
+        grossRevenueUsd: Number(gross.toFixed(2)),
+        feesUsd: Number(fees.toFixed(2)),
+        netRevenueUsd: Number(net.toFixed(2)),
+        buildStatus: latestBuild.get(p.id) ?? null,
+        deploymentStatus: latestDeployment.get(p.id) ?? null,
+        publicationStatus: assetStatus.get(p.id) ?? null,
+        nextAction,
+      };
+    });
+
+    const countsByStatus: Record<string, number> = {};
+    for (const status of LIFECYCLE_ORDER) countsByStatus[status] = 0;
+    for (const row of rows) countsByStatus[row.status] = (countsByStatus[row.status] ?? 0) + 1;
+
+    return {
+      products: rows,
+      countsByStatus,
+      totals: {
+        grossRevenueUsd: Number(rows.reduce((s, r) => s + r.grossRevenueUsd, 0).toFixed(2)),
+        netRevenueUsd: Number(rows.reduce((s, r) => s + r.netRevenueUsd, 0).toFixed(2)),
+        estimatedAiCostUsd: Number(totalAiCostUsd.toFixed(2)),
+      },
+      deployment: describeDeploymentStatus(),
+      publishing: describePublishingStatus(),
+    };
+  } catch (error) {
+    logger.error('Product Factory dashboard summary failed; degrading to empty', error);
+    return {
+      products: [],
+      countsByStatus: Object.fromEntries(LIFECYCLE_ORDER.map((s) => [s, 0])),
+      totals: { grossRevenueUsd: 0, netRevenueUsd: 0, estimatedAiCostUsd: 0 },
+      deployment: describeDeploymentStatus(),
+      publishing: describePublishingStatus(),
+    };
   }
 }

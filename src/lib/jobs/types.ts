@@ -20,14 +20,35 @@ export const AGENT_JOB_TYPES = ['RESEARCH', 'VALIDATION', 'PRODUCT', 'ANALYTICS'
 /** Orchestration job types — bounded multi-stage workflows over the pipeline. */
 export const WORKFLOW_JOB_TYPES = ['OPPORTUNITY_PIPELINE'] as const;
 
+/**
+ * Phase 5.3 — Product Factory job types. Deterministic factory operations
+ * (spec gating, build/test/deploy/publish coordination, revenue sync) that
+ * run through the SAME job runner, idempotency, and halal gates as agent
+ * jobs. They never call AI directly and never bypass provider approval.
+ */
+export const FACTORY_JOB_TYPES = [
+  'PRODUCT_CREATE',
+  'PRODUCT_BUILD',
+  'PRODUCT_TEST',
+  'PRODUCT_DEPLOY',
+  'PRODUCT_PUBLISH',
+  'REVENUE_SYNC',
+  'PRODUCT_ANALYZE',
+] as const;
+
 export type AgentJobType = (typeof AGENT_JOB_TYPES)[number];
 export type WorkflowJobType = (typeof WORKFLOW_JOB_TYPES)[number];
-export type JobType = AgentJobType | WorkflowJobType;
+export type FactoryJobType = (typeof FACTORY_JOB_TYPES)[number];
+export type JobType = AgentJobType | WorkflowJobType | FactoryJobType;
 
-export const ALL_JOB_TYPES: JobType[] = [...AGENT_JOB_TYPES, ...WORKFLOW_JOB_TYPES];
+export const ALL_JOB_TYPES: JobType[] = [...AGENT_JOB_TYPES, ...WORKFLOW_JOB_TYPES, ...FACTORY_JOB_TYPES];
 
 export function isJobType(value: unknown): value is JobType {
   return typeof value === 'string' && (ALL_JOB_TYPES as string[]).includes(value);
+}
+
+export function isFactoryJobType(value: unknown): value is FactoryJobType {
+  return typeof value === 'string' && (FACTORY_JOB_TYPES as readonly string[]).includes(value);
 }
 
 /** The existing AgentRegistry agent backing a single-agent job type. */

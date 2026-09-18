@@ -34,6 +34,7 @@ export const WORKFLOW_TYPES = [
   'OPPORTUNITY_TO_PRODUCT',
   'BUSINESS_ANALYSIS',
   'FULL_INCOME_PIPELINE',
+  'PRODUCT_LAUNCH',
 ] as const;
 
 export type WorkflowType = (typeof WORKFLOW_TYPES)[number];
@@ -87,11 +88,65 @@ const BM_STEP: WorkflowStepDefinition = {
   description: 'Business Manager next-best-action over recorded state (deterministic-first).',
 };
 
+// Phase 5.3 — Product Factory steps (all deterministic; PRODUCT_DEPLOY and
+// PRODUCT_PUBLISH additionally require a human approval token in the payload).
+const FACTORY_CREATE_STEP: WorkflowStepDefinition = {
+  key: 'product-create',
+  jobType: 'PRODUCT_CREATE',
+  requiresAi: false,
+  description: 'Mark the product specification ready through the guarded lifecycle (deterministic gates only).',
+};
+const FACTORY_BUILD_STEP: WorkflowStepDefinition = {
+  key: 'product-build',
+  jobType: 'PRODUCT_BUILD',
+  requiresAi: false,
+  description: 'Build through the provider-neutral build contract (unavailable stays unavailable).',
+};
+const FACTORY_TEST_STEP: WorkflowStepDefinition = {
+  key: 'product-test',
+  jobType: 'PRODUCT_TEST',
+  requiresAi: false,
+  description: 'Deterministic quality gates over the recorded specification (no AI, no execution).',
+};
+const FACTORY_DEPLOY_STEP: WorkflowStepDefinition = {
+  key: 'product-deploy',
+  jobType: 'PRODUCT_DEPLOY',
+  requiresAi: false,
+  description: 'Deployment via provider boundary; requires human approval token. NOT_CONNECTED stays honest.',
+};
+const FACTORY_PUBLISH_STEP: WorkflowStepDefinition = {
+  key: 'product-publish',
+  jobType: 'PRODUCT_PUBLISH',
+  requiresAi: false,
+  description: 'Publication via publishing boundary; requires human approval token. PUBLISHING_UNAVAILABLE stays honest.',
+};
+const FACTORY_REVENUE_SYNC_STEP: WorkflowStepDefinition = {
+  key: 'revenue-sync',
+  jobType: 'REVENUE_SYNC',
+  requiresAi: false,
+  description: 'Recompute product economics from recorded revenue rows (VERIFIED figures only).',
+};
+const FACTORY_ANALYZE_STEP: WorkflowStepDefinition = {
+  key: 'product-analyze',
+  jobType: 'PRODUCT_ANALYZE',
+  requiresAi: false,
+  description: 'Deterministic growth classification for the product from recorded results.',
+};
+
 export const WORKFLOW_DEFINITIONS: Record<WorkflowType, WorkflowStepDefinition[]> = {
   OPPORTUNITY_DISCOVERY: [RESEARCH_STEP, VALIDATION_STEP],
   OPPORTUNITY_TO_PRODUCT: [PRODUCT_STEP, EXPERIMENT_STEP],
   BUSINESS_ANALYSIS: [ANALYTICS_STEP, BM_STEP],
   FULL_INCOME_PIPELINE: [RESEARCH_STEP, VALIDATION_STEP, PRODUCT_STEP, EXPERIMENT_STEP, ANALYTICS_STEP, BM_STEP],
+  PRODUCT_LAUNCH: [
+    FACTORY_CREATE_STEP,
+    FACTORY_BUILD_STEP,
+    FACTORY_TEST_STEP,
+    FACTORY_DEPLOY_STEP,
+    FACTORY_PUBLISH_STEP,
+    FACTORY_REVENUE_SYNC_STEP,
+    FACTORY_ANALYZE_STEP,
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -273,6 +328,34 @@ export function planWorkflow(workflowType: WorkflowType, state: WorkflowState): 
         continue;
       }
       const step: PlannedStep = { key: definition.key, jobType: definition.jobType, decision: 'EXECUTE', requiresAi: definition.requiresAi, reason: 'Validated opportunity without a product; product specification is the next necessary step.' };
+      steps.push(step);
+      executed.push(step);
+      continue;
+    }
+
+    // Phase 5.3 — Product Factory steps: deterministic; the runner enforces
+    // the human approval token requirement for DEPLOY/PUBLISH via the factory
+    // boundaries. The planner never adds AI and never bypasses gates.
+    if (definition.key === 'product-create') {
+      const step: PlannedStep = { key: definition.key, jobType: definition.jobType, decision: 'EXECUTE', requiresAi: false, reason: 'Lifecycle gate check (SPEC_READY) through the guarded state machine (deterministic).' };
+      steps.push(step);
+      executed.push(step);
+      continue;
+    }
+    if (definition.key === 'product-build' || definition.key === 'product-test') {
+      const step: PlannedStep = { key: definition.key, jobType: definition.jobType, decision: 'EXECUTE', requiresAi: false, reason: 'Deterministic build-contract / quality-gate operation (no AI, no code execution).' };
+      steps.push(step);
+      executed.push(step);
+      continue;
+    }
+    if (definition.key === 'product-deploy' || definition.key === 'product-publish') {
+      const step: PlannedStep = { key: definition.key, jobType: definition.jobType, decision: 'EXECUTE', requiresAi: false, reason: 'Provider-boundary operation with mandatory human approval token; unconfigured providers report NOT_CONNECTED/UNAVAILABLE (never fake success).' };
+      steps.push(step);
+      executed.push(step);
+      continue;
+    }
+    if (definition.key === 'revenue-sync' || definition.key === 'product-analyze') {
+      const step: PlannedStep = { key: definition.key, jobType: definition.jobType, decision: 'EXECUTE', requiresAi: false, reason: 'Deterministic economics/growth computation from recorded data (no AI).' };
       steps.push(step);
       executed.push(step);
       continue;

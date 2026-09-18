@@ -2,6 +2,8 @@
 export const dynamic = 'force-dynamic';
 
 import { getDashboardStats, getNextBestAction, getRevenueChartData } from '@/actions/dashboard';
+import { getProductFactorySummary } from '@/actions/product-factory';
+import { ProductFactoryCard } from '@/components/dashboard/product-factory-card';
 import { getLifecycleOverview } from '@/actions/lifecycle';
 import { getRecentPipelineRuns } from '@/actions/pipeline';
 import { getOpportunities } from '@/actions/opportunities';
@@ -26,7 +28,7 @@ import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 
 export default async function DashboardPage() {
-  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns] =
+  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary] =
     await Promise.all([
       getDashboardStats(),
       getNextBestAction(),
@@ -41,6 +43,8 @@ export default async function DashboardPage() {
       // Phase 5 status surfaces degrade gracefully; never fabricated.
       Promise.resolve(describeResearchProviderHealth()),
       getRecentWorkflowRuns(5).catch(() => []),
+      // Phase 5.3 — Product Factory summary degrades to null, never fabricated.
+      getProductFactorySummary(12).catch(() => null),
     ]);
   const latestPipelineRun = recentPipelineRuns[0] ?? null;
 
@@ -111,6 +115,14 @@ export default async function DashboardPage() {
           System Status — truthful capability and provenance labels
         </h2>
         <SystemStatusCard data={systemStatus} />
+      </section>
+
+      {/* Phase 5.3 — Product Factory: lifecycle states, economics, provider truthfulness */}
+      <section>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Product Factory — lifecycle, build/deployment status, and recorded economics
+        </h2>
+        <ProductFactoryCard summary={factorySummary} />
       </section>
 
       {/* Next Best Action */}

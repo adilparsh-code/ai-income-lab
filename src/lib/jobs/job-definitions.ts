@@ -151,6 +151,24 @@ export function validateJobPayload(jobType: JobType, payload: JobPayload): JobVa
         }
       }
       break;
+
+    // Phase 5.3 — Product Factory job types. All are productId-scoped and
+    // deterministic; human approval tokens are strings if provided (never
+    // logged, never stored in plaintext by the factory service).
+    case 'PRODUCT_CREATE':
+    case 'PRODUCT_BUILD':
+    case 'PRODUCT_TEST':
+    case 'PRODUCT_DEPLOY':
+    case 'PRODUCT_PUBLISH':
+    case 'PRODUCT_ANALYZE':
+      requireString(payload.productId, 'productId', errors, 128);
+      optionalString(payload.humanApprovalToken, 'humanApprovalToken', errors, 512);
+      optionalString(payload.channel, 'channel', errors, 64);
+      break;
+
+    case 'REVENUE_SYNC':
+      requireString(payload.productId, 'productId', errors, 128);
+      break;
   }
 
   return { valid: errors.length === 0, errors };
