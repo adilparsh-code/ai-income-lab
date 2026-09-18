@@ -51,9 +51,17 @@ export function ProductFactoryCard({ summary }: { summary: ProductFactorySummary
         <h3 className="flex items-center gap-2 text-sm font-semibold">
           <Factory className="h-4 w-4" /> Product Factory
         </h3>
-        <div className="flex gap-1.5">
-          <Badge label="DEPLOYMENT NOT_CONNECTED" tone="bg-slate-100 text-slate-500" />
-          <Badge label="PUBLISHING_UNAVAILABLE" tone="bg-amber-100 text-amber-700" />
+        <div className="flex flex-wrap justify-end gap-1.5">
+          <Badge
+            label={`BUILDER ${summary.capabilities.builder.status}`}
+            tone={summary.capabilities.builder.status === 'LIVE' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}
+          />
+          <Badge
+            label={`DEPLOY ${summary.capabilities.deployment.status === 'LIVE' ? 'LIVE' : 'NOT_CONNECTED'}`}
+            tone={summary.capabilities.deployment.status === 'LIVE' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}
+          />
+          <Badge label={`PUBLISH ${summary.capabilities.publishing.status === 'AVAILABLE' ? 'LIVE' : 'UNAVAILABLE'}`} tone="bg-amber-100 text-amber-700" />
+          <Badge label={`RUFLO ${summary.capabilities.ruflo.status.replace('RUFLO_', '')}`} tone="bg-slate-100 text-slate-500" />
         </div>
       </div>
 
@@ -105,6 +113,24 @@ export function ProductFactoryCard({ summary }: { summary: ProductFactorySummary
           ))}
         </div>
       )}
+
+      {/* Phase 5.4 — capability discovery footer */}
+      <div className="mt-3 space-y-1 rounded-lg bg-muted/30 p-2.5">
+        <div className="flex items-start justify-between gap-2 text-[11px]">
+          <span className="font-medium">Sandboxed builder</span>
+          <span className="text-right text-muted-foreground">{summary.capabilities.builder.sandboxed ? 'sandboxed: yes' : 'sandboxed: NO'} · {summary.capabilities.builder.status}</span>
+        </div>
+        <div className="flex items-start justify-between gap-2 text-[11px]">
+          <span className="font-medium">Deployment provider</span>
+          <span className="text-right text-muted-foreground">{summary.capabilities.deployment.providerId ?? 'none'} · {summary.capabilities.deployment.status}</span>
+        </div>
+        {summary.capabilities.ruflo.unmetRequirements.length > 0 && (
+          <div className="flex items-start justify-between gap-2 text-[11px]">
+            <span className="font-medium">Ruflo</span>
+            <span className="text-right text-muted-foreground">{summary.capabilities.ruflo.unmetRequirements[0]}</span>
+          </div>
+        )}
+      </div>
 
       <p className="mt-3 text-[11px] text-muted-foreground">
         Deploy/publish require an authorized provider + explicit human approval token. Nothing deploys or publishes automatically.

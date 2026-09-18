@@ -82,6 +82,7 @@ model Product {
   builds          ProductBuild[]
   deployments     ProductDeployment[]
   assets          ProductAsset[]
+  events          ProductEvent[]
 }
 
 // Phase 5.3 — Product build runs. One row per build attempt against the
@@ -405,6 +406,45 @@ model WorkflowRun {
   @@index([status])
 }
 
+// Phase 5.4 — Provider-agnostic product event ingestion (VISITOR, PAGE_VIEW,
+// PRODUCT_VIEW, CTA_CLICK, CHECKOUT_STARTED, PURCHASE, REFUND). One row per
+// recorded event with provenance and an idempotency key: re-ingesting the same
+// logical event is a no-op, never a duplicate. No personal data beyond an
+// anonymous session identifier; no fabricated events (rows are written only
+// from validated ingestion calls). The Growth Engine consumes these rows.
+model ProductEvent {
+  id              String   @id @default(cuid())
+
+  productId       String
+  product         Product  @relation(fields: [productId], references: [id])
+
+  eventType       String   // VISITOR, PAGE_VIEW, PRODUCT_VIEW, CTA_CLICK, CHECKOUT_STARTED, PURCHASE, REFUND
+  occurredAt      DateTime
+
+  // Optional business scope.
+  campaignId      String?
+  opportunityId   String?
+  experimentId    String?
+
+  // Anonymous session/visitor identifier (no PII).
+  sessionId       String?
+
+  // For PURCHASE/REFUND: verified monetary value from the recording source.
+  amountUsd       Float?
+
+  // Provenance of the event itself.
+  source          String   // e.g. 'manual', 'provider:<id>' — who recorded it
+  evidenceType    String   @default("VERIFIED_DATA")  // VERIFIED_DATA or USER_ENTERED only
+
+  // Idempotency: re-ingesting the same logical event is a no-op.
+  idempotencyKey  String   @unique
+
+  createdAt       DateTime @default(now())
+
+  @@index([productId, occurredAt])
+  @@index([productId, eventType])
+}
+
 model AgentLog {
   id              String   @id @default(cuid())
   agentType       String
@@ -430,8 +470,20 @@ model AgentLog {
   latencyMs       Int?
   success         Boolean?
 
+  // Phase 5.4 — Product-level AI cost attribution (all optional; additive
+  // only). Historical rows aggregate unchanged. Attribution is written ONCE
+  // per AI execution by the generation choke point; per-product aggregates
+  // sum these rows so the same execution can never be double-counted.
+  productId       String?
+  opportunityId   String?
+  experimentId    String?
+  jobId           String?
+  correlationId   String?
+
   createdAt       DateTime @default(now())
 
   @@index([agentType, createdAt])
   @@index([createdAt])
+  @@index([productId])
+  @@index([opportunityId])
 }

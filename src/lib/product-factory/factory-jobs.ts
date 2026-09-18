@@ -28,6 +28,8 @@ import { requestPublishing, type PublishableProductSpec } from '@/lib/publishing
 import { applyProductTransition } from './lifecycle-service';
 import { computeProductEconomics, attributeRevenueRow, type AttributableRevenueRow } from './economics';
 import { classifyEvidence, recommendGrowthAction, type PerformanceEvidence } from '@/lib/business/growth-engine';
+import { computeProductFunnel } from './events';
+import { getProductAiCostAttribution } from '@/lib/ai/attribution';
 import { logger } from '@/lib/server-log';
 
 // ---------------------------------------------------------------------------
@@ -335,7 +337,7 @@ async function productPublish(product: ProductRecord, token?: string): Promise<F
   };
 }
 
-/** REVENUE_SYNC: recomputes economics from recorded revenue rows. */
+/** REVENUE_SYNC: recomputes economics from recorded revenue + AI attribution. */
 async function revenueSync(product: ProductRecord): Promise<FactoryJobOutcome> {
   const rows = await currentDb().revenue.findMany({ where: { productId: product.id } });
   const attributable = rows.map((row) => attributeRevenueRow(row as AttributableRevenueRow));
@@ -343,11 +345,15 @@ async function revenueSync(product: ProductRecord): Promise<FactoryJobOutcome> {
   const fees = rows.reduce((sum, r) => sum + r.fees, 0);
   const net = rows.reduce((sum, r) => sum + r.netRevenue, 0);
 
+  // Per-product AI cost attribution (Phase 5.4): ESTIMATED token-based sums
+  // from the single AgentLog ledger — one row per execution, no double count.
+  const aiAttribution = await getProductAiCostAttribution(product.id);
+
   const economics = computeProductEconomics({
     grossRevenueUsd: rows.length > 0 ? gross : null,
     feesUsd: rows.length > 0 ? fees : null,
     netRevenueUsd: rows.length > 0 ? net : null,
-    aiCostUsd: null,
+    aiCostUsd: aiAttribution.executions > 0 ? aiAttribution.aiTotalCostUsd : null,
     buildCostUsd: null,
     deploymentCostUsd: null,
     publishingCostUsd: null,
@@ -368,6 +374,9 @@ async function revenueSync(product: ProductRecord): Promise<FactoryJobOutcome> {
           netRevenueUsd: Number(net.toFixed(2)),
           profitabilityClaim: economics.profitabilityClaim,
           unknownSourceCount: attributable.filter((a) => a.source === 'UNKNOWN_SOURCE').length,
+          aiCostBasis: 'ESTIMATED_TOKEN_BASED',
+          aiCostUsd: Number(aiAttribution.aiTotalCostUsd.toFixed(6)),
+          aiExecutions: aiAttribution.executions,
         },
       }),
     },
@@ -382,6 +391,9 @@ async function revenueSync(product: ProductRecord): Promise<FactoryJobOutcome> {
       netRevenueUsd: Number(net.toFixed(2)),
       profitabilityClaim: economics.profitabilityClaim,
       claimBasis: economics.claimBasis,
+      aiCostUsd: Number(aiAttribution.aiTotalCostUsd.toFixed(6)),
+      aiCostBasis: 'ESTIMATED_TOKEN_BASED',
+      aiExecutions: aiAttribution.executions,
     },
   };
 }
@@ -393,9 +405,23 @@ async function productAnalyze(product: ProductRecord): Promise<FactoryJobOutcome
   const net = rows.reduce((sum, r) => sum + r.netRevenue, 0);
   const costs = rows.reduce((sum, r) => sum + (r.grossRevenue - r.netRevenue), 0);
 
+  // Visitors come ONLY from recorded ProductEvent rows (Phase 5.4 ingestion
+  // foundation) — never from a placeholder or an AI inference.
+  let visitors = 0;
+  let visitorEvidenceStatus = 'NO_EVENTS_RECORDED';
+  try {
+    const windowEnd = new Date();
+    const windowStart = new Date(windowEnd.getTime() - 30 * 86_400_000);
+    const funnel = await computeProductFunnel(product.id, { start: windowStart, end: windowEnd });
+    visitors = funnel.visitors;
+    visitorEvidenceStatus = funnel.evidenceStatus;
+  } catch {
+    // Event storage unavailable: honest zero, never a fabricated sample.
+  }
+
   const evidence: PerformanceEvidence = {
     ageDays: rows.length > 0 ? Math.max(1, Math.floor((Date.now() - rows[rows.length - 1].date.getTime()) / 86_400_000)) : 0,
-    visitors: rows.length * 10, // placeholder — visitor counts are not recorded per revenue row
+    visitors,
     revenue,
     costs,
     conversions: rows.length,
@@ -427,7 +453,9 @@ async function productAnalyze(product: ProductRecord): Promise<FactoryJobOutcome
       recommendedAction: recommendation.type,
       dataStatus: recommendation.dataStatus,
       actionReason: recommendation.reason.slice(0, 300),
-      message: 'Deterministic growth classification from recorded revenue rows only. Nothing is predicted.',
+      recordedVisitors: visitors,
+      visitorEvidenceStatus,
+      message: 'Deterministic growth classification from recorded revenue rows and recorded product events only. Nothing is predicted.',
     },
   };
 }

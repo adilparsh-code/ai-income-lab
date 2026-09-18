@@ -15,7 +15,48 @@ import {
 } from '@/lib/product-factory/factory-logic';
 import { describeDeploymentStatus } from '@/lib/product-factory/build-contract';
 import { describePublishingStatus } from '@/lib/publishing/contract';
+import { describeBuilderCapabilities, resolveSandboxedBuilder } from '@/lib/product-factory/sandboxed-builder';
+import { describeVercelConfig } from '@/lib/product-factory/deployment-vercel';
+import { describeRufloIntegration } from '@/lib/ruflo/capability';
 import type { PipelineRunResult } from '@/lib/ruflo/orchestrator';
+
+/**
+ * Phase 5.4 — honest capability discovery across every execution boundary.
+ * Each entry states what is genuinely LIVE vs NOT_CONNECTED. No fake status.
+ */
+function describeFactoryCapabilities(): ProductFactoryDashboardSummary['capabilities'] {
+  const builderCaps = describeBuilderCapabilities();
+  const vercel = describeVercelConfig();
+  const ruflo = describeRufloIntegration();
+  const deploymentStatus = describeDeploymentStatus();
+  return {
+    builder: {
+      status: 'LIVE',
+      sandboxed: resolveSandboxedBuilder().sandboxed,
+      note: builderCaps[0]?.description ?? 'Deterministic sandboxed builder available.',
+    },
+    deployment: vercel.connected
+      ? {
+          status: 'LIVE',
+          providerId: vercel.providerId,
+          note: 'Vercel token configured server-side; deployments additionally require per-request human approval.',
+        }
+      : {
+          status: deploymentStatus.status,
+          providerId: null,
+          note: deploymentStatus.note,
+        },
+    publishing: describePublishingStatus(),
+    ruflo: {
+      status: ruflo.status,
+      unmetRequirements: ruflo.unmetRequirements,
+    },
+    events: {
+      status: 'LIVE',
+      note: 'Event ingestion contract is live; growth consumes only recorded events (no analytics provider required).',
+    },
+  };
+}
 
 /** Lean opportunity list for the factory selector. */
 export interface FactoryOpportunityOption {
@@ -187,6 +228,14 @@ export interface ProductFactoryDashboardSummary {
   };
   deployment: { status: string; note: string };
   publishing: { status: string; note: string };
+  /** Phase 5.4 — honest capability discovery for every execution boundary. */
+  capabilities: {
+    builder: { status: string; sandboxed: boolean; note: string };
+    deployment: { status: string; providerId: string | null; note: string };
+    publishing: { status: string; note: string };
+    ruflo: { status: string; unmetRequirements: string[] };
+    events: { status: string; note: string };
+  };
 }
 
 const LIFECYCLE_ORDER = [
@@ -281,6 +330,7 @@ export async function getProductFactorySummary(limit = 12): Promise<ProductFacto
       },
       deployment: describeDeploymentStatus(),
       publishing: describePublishingStatus(),
+      capabilities: describeFactoryCapabilities(),
     };
   } catch (error) {
     logger.error('Product Factory dashboard summary failed; degrading to empty', error);
@@ -290,6 +340,7 @@ export async function getProductFactorySummary(limit = 12): Promise<ProductFacto
       totals: { grossRevenueUsd: 0, netRevenueUsd: 0, estimatedAiCostUsd: 0 },
       deployment: describeDeploymentStatus(),
       publishing: describePublishingStatus(),
+      capabilities: describeFactoryCapabilities(),
     };
   }
 }

@@ -48,7 +48,7 @@ export interface WorkflowStepResult {
 export interface WorkflowExecutionResult {
   workflowId: string;
   workflowType: WorkflowType;
-  status: 'COMPLETED' | 'PARTIAL' | 'BLOCKED' | 'HUMAN_REVIEW' | 'FAILED';
+  status: 'COMPLETED' | 'PARTIAL' | 'BLOCKED' | 'HUMAN_REVIEW' | 'FAILED' | 'DEGRADED';
   correlationId: string;
   opportunityId: string | null;
   plan: {
@@ -344,13 +344,32 @@ export async function executeWorkflow(
       workflowStatus = 'HUMAN_REVIEW';
       stopped = true;
     } else if (outcome.status === 'FAILED') {
-      workflowStatus = 'PARTIAL';
+      // Release pipelines (PRODUCT_LAUNCH) have no partial success: a failed
+      // step fails the run. Agent workflows keep the PARTIAL convention.
+      workflowStatus = input.workflowType === 'PRODUCT_LAUNCH' ? 'FAILED' : 'PARTIAL';
+      stopped = true;
+    } else if (outcome.status === 'DEGRADED' && input.workflowType === 'PRODUCT_LAUNCH') {
+      // A degraded launch step means a provider boundary reported
+      // NOT_CONNECTED/UNAVAILABLE: stop downstream (never publish an
+      // undeployed product) and report DEGRADED instead of a fabricated
+      // success.
+      workflowStatus = 'DEGRADED';
       stopped = true;
     }
   }
 
-  if (workflowStatus === 'COMPLETED' && steps.some((s) => s.status === 'DEGRADED')) {
-    workflowStatus = 'PARTIAL';
+  if (workflowStatus === 'COMPLETED') {
+    if (steps.some((s) => s.status === 'DEGRADED')) {
+      workflowStatus = 'PARTIAL';
+    } else if (
+      steps.length > 0 &&
+      steps.every((s) => s.status !== 'SUCCEEDED') &&
+      steps.some((s) => s.decision === 'BLOCKED')
+    ) {
+      // The planner blocked every step (e.g. failed validation): reporting
+      // COMPLETED would misrepresent a run in which nothing executed.
+      workflowStatus = 'BLOCKED';
+    }
   }
 
   return finalize({ workflowId: `wf-${randomUUID()}`, workflowType: input.workflowType, status: workflowStatus, correlationId, opportunityId, plan, steps, startedAt, options });

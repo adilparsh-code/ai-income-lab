@@ -336,25 +336,48 @@ export function planWorkflow(workflowType: WorkflowType, state: WorkflowState): 
     // Phase 5.3 — Product Factory steps: deterministic; the runner enforces
     // the human approval token requirement for DEPLOY/PUBLISH via the factory
     // boundaries. The planner never adds AI and never bypasses gates.
+    // Factory steps are state-aware like every other step: no duplicate
+    // product creation, no building/testing when validation failed, no
+    // downstream factory work before a product exists.
     if (definition.key === 'product-create') {
+      if (validationBlocked) {
+        steps.push({ key: definition.key, jobType: definition.jobType, decision: 'BLOCKED', requiresAi: false, reason: 'Product creation blocked: validation failed or produced no go-signal; no product work starts automatically.' });
+        continue;
+      }
+      if (state.hasProduct) {
+        steps.push({ key: definition.key, jobType: definition.jobType, decision: 'SKIP_EXISTS', requiresAi: false, reason: 'A product already exists for this opportunity; creation is skipped (no duplicate).' });
+        continue;
+      }
       const step: PlannedStep = { key: definition.key, jobType: definition.jobType, decision: 'EXECUTE', requiresAi: false, reason: 'Lifecycle gate check (SPEC_READY) through the guarded state machine (deterministic).' };
       steps.push(step);
       executed.push(step);
       continue;
     }
     if (definition.key === 'product-build' || definition.key === 'product-test') {
+      if (validationBlocked) {
+        steps.push({ key: definition.key, jobType: definition.jobType, decision: 'BLOCKED', requiresAi: false, reason: `Factory step blocked: validation failed; ${definition.key === 'product-build' ? 'building' : 'testing'} cannot proceed automatically.` });
+        continue;
+      }
       const step: PlannedStep = { key: definition.key, jobType: definition.jobType, decision: 'EXECUTE', requiresAi: false, reason: 'Deterministic build-contract / quality-gate operation (no AI, no code execution).' };
       steps.push(step);
       executed.push(step);
       continue;
     }
     if (definition.key === 'product-deploy' || definition.key === 'product-publish') {
+      if (validationBlocked) {
+        steps.push({ key: definition.key, jobType: definition.jobType, decision: 'BLOCKED', requiresAi: false, reason: `Downstream step blocked: validation failed; ${definition.key === 'product-deploy' ? 'deployment' : 'publishing'} requires validated state plus a human approval token.` });
+        continue;
+      }
       const step: PlannedStep = { key: definition.key, jobType: definition.jobType, decision: 'EXECUTE', requiresAi: false, reason: 'Provider-boundary operation with mandatory human approval token; unconfigured providers report NOT_CONNECTED/UNAVAILABLE (never fake success).' };
       steps.push(step);
       executed.push(step);
       continue;
     }
     if (definition.key === 'revenue-sync' || definition.key === 'product-analyze') {
+      if (validationBlocked) {
+        steps.push({ key: definition.key, jobType: definition.jobType, decision: 'BLOCKED', requiresAi: false, reason: 'No launch results exist to sync or analyze: validation failed and no product launched; running analytics now would misrepresent the state.' });
+        continue;
+      }
       const step: PlannedStep = { key: definition.key, jobType: definition.jobType, decision: 'EXECUTE', requiresAi: false, reason: 'Deterministic economics/growth computation from recorded data (no AI).' };
       steps.push(step);
       executed.push(step);
