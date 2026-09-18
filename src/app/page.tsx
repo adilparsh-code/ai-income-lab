@@ -8,6 +8,10 @@ import { getOpportunities } from '@/actions/opportunities';
 import { getBusinessIntelligenceSummary } from '@/actions/business-intelligence';
 import { getAiUsageForRange } from '@/lib/ai/usage-server';
 import { getRecentJobActivity, describeRufloIntegration, type JobActivityItem } from '@/lib/jobs/job-registry';
+import { describeResearchProviderHealth } from '@/lib/research/provider';
+import { describePublishingStatus } from '@/lib/publishing/contract';
+import { getRecentWorkflowRuns } from '@/lib/ruflo/workflow-runner';
+import { SystemStatusCard, type SystemStatusData } from '@/components/dashboard/system-status-card';
 import { JobActivity } from '@/components/dashboard/job-activity';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { NextBestAction } from '@/components/dashboard/next-best-action';
@@ -17,11 +21,12 @@ import { LifecyclePipeline } from '@/components/dashboard/lifecycle-pipeline';
 import { BusinessIntelligenceCard } from '@/components/dashboard/business-intelligence-card';
 import { AiUsageCard } from '@/components/dashboard/ai-usage-card';
 import { PageHeader } from '@/components/shared/page-header';
+import { db } from '@/lib/db';
 import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 
 export default async function DashboardPage() {
-  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity] =
+  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns] =
     await Promise.all([
       getDashboardStats(),
       getNextBestAction(),
@@ -33,8 +38,36 @@ export default async function DashboardPage() {
       getAiUsageForRange('7d').catch(() => null),
       // Activity listing is non-critical for page load; degrade to empty.
       getRecentJobActivity(6).catch(() => [] as JobActivityItem[]),
+      // Phase 5 status surfaces degrade gracefully; never fabricated.
+      Promise.resolve(describeResearchProviderHealth()),
+      getRecentWorkflowRuns(5).catch(() => []),
     ]);
   const latestPipelineRun = recentPipelineRuns[0] ?? null;
+
+  // Phase 5 — evidence provenance counts from real stored records.
+  const [verifiedEvidenceCount, discoveryCount] = await Promise.all([
+    db.evidenceItemModel.count({ where: { evidenceType: 'VERIFIED_DATA' } }).catch(() => 0),
+    db.evidenceItemModel.count({ where: { evidenceType: 'SEARCH_DISCOVERY' } }).catch(() => 0),
+  ]);
+  const systemStatus: SystemStatusData = {
+    research: {
+      providerId: researchHealth.providerId,
+      status: researchHealth.status,
+      hint: researchHealth.hint,
+      verifiedEvidenceCount,
+      discoveryCount,
+    },
+    publishing: describePublishingStatus(),
+    ruflo: {
+      status: describeRufloIntegration().status,
+      workflowCount: workflowRuns.length,
+      lastWorkflowStatus: workflowRuns[0]?.status ?? null,
+    },
+    growth: {
+      lastAction: nextAction?.action ? nextAction.action.replace(/_/g, ' ').slice(0, 40) : null,
+      dataStatus: biSummary ? 'RECORDED_DATA' : null,
+    },
+  };
 
   const topOpportunities = opportunities.slice(0, 5);
 
@@ -71,6 +104,14 @@ export default async function DashboardPage() {
 
       {/* Stats Cards */}
       <StatsCards stats={stats} />
+
+      {/* Phase 5 — System Status: real research / publishing / Ruflo / growth */}
+      <section>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          System Status — truthful capability and provenance labels
+        </h2>
+        <SystemStatusCard data={systemStatus} />
+      </section>
 
       {/* Next Best Action */}
       <section>
