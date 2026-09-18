@@ -18,9 +18,11 @@ describe('ruflo capability discovery', () => {
 
   it('lists unmet requirements', () => {
     const status = describeRufloIntegration();
-    assert.ok(status.unmetRequirements.length >= 2);
-    assert.ok(status.unmetRequirements.some((r) => /runtime/i.test(r)));
-    assert.ok(status.unmetRequirements.some((r) => /credential/i.test(r)));
+    // Phase 5.5: a real integration means a registered orchestrator handle —
+    // exactly one honest requirement; no invented credential items.
+    assert.equal(status.unmetRequirements.length, 1);
+    assert.ok(status.unmetRequirements[0].toLowerCase().includes('register'));
+    assert.ok(/handle/i.test(status.unmetRequirements[0]));
   });
 
   it('exposes the workflow contracts Ruflo would orchestrate through', () => {

@@ -14,6 +14,8 @@ import { describeResearchProviderHealth } from '@/lib/research/provider';
 import { describePublishingStatus } from '@/lib/publishing/contract';
 import { getRecentWorkflowRuns } from '@/lib/ruflo/workflow-runner';
 import { SystemStatusCard, type SystemStatusData } from '@/components/dashboard/system-status-card';
+import { CapabilityCard, type CapabilitySummaryData } from '@/components/dashboard/capability-card';
+import { getOperationsSummary } from '@/lib/product-factory/operations';
 import { JobActivity } from '@/components/dashboard/job-activity';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { NextBestAction } from '@/components/dashboard/next-best-action';
@@ -28,7 +30,7 @@ import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 
 export default async function DashboardPage() {
-  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary] =
+  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary, operationsSummary] =
     await Promise.all([
       getDashboardStats(),
       getNextBestAction(),
@@ -45,6 +47,8 @@ export default async function DashboardPage() {
       getRecentWorkflowRuns(5).catch(() => []),
       // Phase 5.3 — Product Factory summary degrades to null, never fabricated.
       getProductFactorySummary(12).catch(() => null),
+      // Phase 5.5 — operations/capability summary degrades to null, never fabricated.
+      getOperationsSummary().catch(() => null),
     ]);
   const latestPipelineRun = recentPipelineRuns[0] ?? null;
 
@@ -116,6 +120,27 @@ export default async function DashboardPage() {
         </h2>
         <SystemStatusCard data={systemStatus} />
       </section>
+
+      {/* Phase 5.5 — Capability Center: every boundary's honest status + operations aggregates */}
+      {operationsSummary && (
+        <section>
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Operations — capability center and recorded business aggregates
+          </h2>
+          <CapabilityCard
+            data={
+              {
+                generatedAt: operationsSummary.generatedAt,
+                capabilities: operationsSummary.capabilities.capabilities,
+                counts: operationsSummary.capabilities.counts,
+                jobs: operationsSummary.jobs,
+                totals: operationsSummary.totals,
+                nextBestAction: operationsSummary.nextBestAction,
+              } satisfies CapabilitySummaryData
+            }
+          />
+        </section>
+      )}
 
       {/* Phase 5.3 — Product Factory: lifecycle states, economics, provider truthfulness */}
       <section>
