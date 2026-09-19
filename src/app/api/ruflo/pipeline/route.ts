@@ -2,10 +2,7 @@ import { NextResponse } from 'next/server';
 import { runPipeline, type PipelineRequest } from '@/lib/ruflo/orchestrator';
 import { logger } from '@/lib/server-log';
 import { PIPELINE_ORDER, type PipelineStage } from '@/lib/ruflo/pipeline-logic';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+import { guardOperatorEndpoint, readJsonBody } from '@/lib/security/guard';
 
 /** Parse the stages option: array of known stages; anything else → full loop. */
 function parseStages(value: unknown): PipelineStage[] | undefined {
@@ -22,25 +19,22 @@ function parseStages(value: unknown): PipelineStage[] | undefined {
  * only validates input shape and maps errors safely.
  */
 export async function POST(request: Request) {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    logger.warn('Ruflo pipeline rejected: malformed JSON body');
-    return NextResponse.json(
-      { success: false, error: 'Request body must be valid JSON' },
-      { status: 400 }
-    );
+  // SECURITY: orchestrator entry point is operator-only (rate-limited,
+  // fail-closed) — pipeline execution is privileged business control.
+  const guard = await guardOperatorEndpoint(request, 'api:ruflo/pipeline', { max: 15, windowSeconds: 60 });
+  if ('response' in guard) {
+    return NextResponse.json(guard.response, { status: guard.status });
   }
 
-  if (!isRecord(body)) {
+  const bodyGuard = await readJsonBody(request, { surface: 'api:ruflo/pipeline', maxChars: 10_000 });
+  if (!bodyGuard.ok) {
+    logger.warn('Ruflo pipeline rejected: unsafe body', { status: bodyGuard.status });
     return NextResponse.json(
-      { success: false, error: 'Request body must be a JSON object' },
-      { status: 400 }
+      { success: false, error: bodyGuard.error },
+      { status: bodyGuard.status }
     );
   }
-
-  const raw = body as Record<string, unknown>;
+  const raw = bodyGuard.value;
   const pipelineRequest: PipelineRequest = {
     objective: typeof raw.objective === 'string' ? raw.objective : '',
     ...(typeof raw.opportunityId === 'string' && raw.opportunityId.length > 0

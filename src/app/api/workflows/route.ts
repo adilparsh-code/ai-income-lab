@@ -12,21 +12,22 @@ import { NextResponse } from 'next/server';
 import { logger } from '@/lib/server-log';
 import { executeWorkflow, getRecentWorkflowRuns } from '@/lib/ruflo/workflow-runner';
 import { isWorkflowType } from '@/lib/ruflo/workflows';
+import { guardOperatorEndpoint, readJsonBody } from '@/lib/security/guard';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: 'Request body must be valid JSON' }, { status: 400 });
-  }
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    return NextResponse.json({ ok: false, error: 'Request body must be a JSON object' }, { status: 400 });
+  // SECURITY: operator-only control endpoint (rate-limited, fail-closed).
+  const guard = await guardOperatorEndpoint(request, 'api:workflows', { max: 20, windowSeconds: 60 });
+  if ('response' in guard) {
+    return NextResponse.json(guard.response, { status: guard.status });
   }
 
-  const raw = body as Record<string, unknown>;
+  const bodyGuard = await readJsonBody(request, { surface: 'api:workflows', maxChars: 10_000 });
+  if (!bodyGuard.ok) {
+    return NextResponse.json({ ok: false, error: bodyGuard.error }, { status: bodyGuard.status });
+  }
+  const raw = bodyGuard.value;
   const { workflowType, objective, opportunityId, correlationId } = raw;
 
   if (!isWorkflowType(workflowType)) {
@@ -65,7 +66,11 @@ export async function POST(request: Request) {
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const guard = await guardOperatorEndpoint(request, 'api:workflows:get', { max: 60, windowSeconds: 60 });
+  if ('response' in guard) {
+    return NextResponse.json(guard.response, { status: guard.status });
+  }
   try {
     const runs = await getRecentWorkflowRuns(10);
     return NextResponse.json({ ok: true, workflows: runs });

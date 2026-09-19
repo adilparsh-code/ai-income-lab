@@ -15,6 +15,7 @@ import { NextResponse } from 'next/server';
 import { logger } from '@/lib/server-log';
 import { getOperationsSummary } from '@/lib/product-factory/operations';
 import { verifyAiProvider } from '@/lib/ai/capability';
+import { guardOperatorEndpoint, readJsonBody } from '@/lib/security/guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,17 +33,19 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: 'Request body must be valid JSON' }, { status: 400 });
-  }
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    return NextResponse.json({ ok: false, error: 'Request body must be a JSON object' }, { status: 400 });
+  // SECURITY: triggering a real AI provider verification costs tokens/money —
+  // operator-only, rate-limited.
+  const guard = await guardOperatorEndpoint(request, 'api:operations', { max: 10, windowSeconds: 60 });
+  if ('response' in guard) {
+    return NextResponse.json(guard.response, { status: guard.status });
   }
 
-  const action = (body as Record<string, unknown>).action;
+  const bodyGuard = await readJsonBody(request, { surface: 'api:operations', maxChars: 2_000 });
+  if (!bodyGuard.ok) {
+    return NextResponse.json({ ok: false, error: bodyGuard.error }, { status: bodyGuard.status });
+  }
+
+  const action = bodyGuard.value.action;
   if (action !== 'verify-ai-provider') {
     return NextResponse.json(
       { ok: false, error: "Unknown action. Supported: 'verify-ai-provider'." },

@@ -170,8 +170,11 @@ export class BusinessManagerAgent extends BaseAgent {
         const last = recentLogs.find(l => l.agentType === agentType);
         agentLastExecutions.push({
           agentType,
+          // SECURITY: upstream reasoning text is untrusted data — strip control
+          // characters that could forge prompt line structure before it is
+          // embedded in any downstream AI prompt.
           summary: last
-            ? 'Last ' + agentType + ' execution recorded: ' + (last.reasoning || '(no reasoning text)').slice(0, 200) + '. Output is ' + (last.evidenceType === 'VERIFIED_DATA' ? 'VERIFIED_DATA from real records' : 'AI_INFERENCE (not independently verified)') + '.'
+            ? 'Last ' + agentType + ' execution recorded: ' + (last.reasoning || '(no reasoning text)').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ').slice(0, 200) + '. Output is ' + (last.evidenceType === 'VERIFIED_DATA' ? 'VERIFIED_DATA from real records' : 'AI_INFERENCE (not independently verified)') + '.'
             : 'No recorded ' + agentType + ' agent execution yet. Its capability has not been used for this context.',
           evidenceType: last && last.evidenceType === 'VERIFIED_DATA' ? 'VERIFIED_DATA' as EvidenceType : 'AI_INFERENCE' as EvidenceType,
           executedAt: last ? last.createdAt : null,

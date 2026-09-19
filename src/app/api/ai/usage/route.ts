@@ -22,10 +22,18 @@ import {
   type UsageLogRow,
 } from '@/lib/ai/usage';
 import { getEfficiencyViews } from '@/lib/ai/usage-server';
+import { guardOperatorEndpoint } from '@/lib/security/guard';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
+  // SECURITY: AI spend/cost telemetry is sensitive business information —
+  // operator-only (rate-limited). The page view uses the same data via a
+  // server component, so the UI is unaffected.
+  const guard = await guardOperatorEndpoint(request, 'api:ai/usage', { max: 60, windowSeconds: 60 });
+  if ('response' in guard) {
+    return NextResponse.json(guard.response, { status: guard.status });
+  }
   try {
     const url = new URL(request.url);
     const rawRange = url.searchParams.get('range') ?? '7d';

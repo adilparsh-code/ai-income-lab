@@ -10,6 +10,7 @@
 import { NextResponse } from 'next/server';
 import { logger } from '@/lib/server-log';
 import { advanceIncomeLoop } from '@/lib/income-engine/engine';
+import { guardBrowserOrOperator, readJsonBody } from '@/lib/security/guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,17 +23,19 @@ export async function POST(
     return NextResponse.json({ ok: false, error: 'opportunityId is required (max 128 chars)' }, { status: 400 });
   }
 
-  let body: unknown = {};
-  try {
-    const text = await request.text();
-    if (text.trim().length > 0) body = JSON.parse(text);
-  } catch {
-    return NextResponse.json({ ok: false, error: 'Request body must be valid JSON when provided' }, { status: 400 });
+  // SECURITY: the income engine drives real business execution — same-origin
+  // browser calls from the workspace UI are allowed; anything else must
+  // present the operator credential. Rate-limited per IP either way.
+  const guard = await guardBrowserOrOperator(request, 'api:income-loop/advance', { max: 30, windowSeconds: 60 });
+  if ('response' in guard) {
+    return NextResponse.json(guard.response, { status: guard.status });
   }
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    return NextResponse.json({ ok: false, error: 'Request body must be a JSON object' }, { status: 400 });
+
+  const bodyGuard = await readJsonBody(request, { surface: 'api:income-loop/advance', maxChars: 8_000 });
+  if (!bodyGuard.ok) {
+    return NextResponse.json({ ok: false, error: bodyGuard.error }, { status: bodyGuard.status });
   }
-  const raw = body as Record<string, unknown>;
+  const raw = bodyGuard.value;
   if (raw.objective !== undefined && (typeof raw.objective !== 'string' || raw.objective.length > 4000)) {
     return NextResponse.json({ ok: false, error: 'objective must be a string of at most 4000 characters' }, { status: 400 });
   }

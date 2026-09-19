@@ -13,6 +13,7 @@
 import { NextResponse } from 'next/server';
 import { logger } from '@/lib/server-log';
 import { recordProductEvent, computeProductFunnel, PRODUCT_EVENT_TYPES } from '@/lib/product-factory/events';
+import { enforceRateLimit, clientIpFrom, readJsonBody, auditSecurityEvent } from '@/lib/security/guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,17 +22,23 @@ function isKnownEventType(value: unknown): value is (typeof PRODUCT_EVENT_TYPES)
 }
 
 export async function POST(request: Request) {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: 'Request body must be valid JSON' }, { status: 400 });
-  }
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    return NextResponse.json({ ok: false, error: 'Request body must be a JSON object' }, { status: 400 });
+  // SECURITY: public ingestion endpoint — the abuse-protection surface.
+  // Per-IP rate limit (shared, DB-backed) + size-capped strict body parse.
+  const ip = clientIpFrom(request);
+  const limit = await enforceRateLimit({ surface: 'api:events', identity: ip, max: 120, windowSeconds: 60 });
+  if (!limit.allowed) {
+    await auditSecurityEvent({ kind: 'RATE_LIMITED', surface: 'api:events', outcome: 'refused' });
+    return NextResponse.json(
+      { ok: false, error: 'Rate limit exceeded. Retry later.' },
+      { status: 429, headers: { 'retry-after': String(limit.retryAfterSeconds) } },
+    );
   }
 
-  const raw = body as Record<string, unknown>;
+  const bodyGuard = await readJsonBody(request, { surface: 'api:events', maxBytes: 16 * 1024, maxChars: 8_000 });
+  if (!bodyGuard.ok) {
+    return NextResponse.json({ ok: false, error: bodyGuard.error }, { status: bodyGuard.status });
+  }
+  const raw = bodyGuard.value;
   if (!isKnownEventType(raw.eventType)) {
     return NextResponse.json(
       { ok: false, error: `eventType must be one of: ${PRODUCT_EVENT_TYPES.join(', ')}` },

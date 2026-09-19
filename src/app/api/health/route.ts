@@ -9,8 +9,12 @@ import { logger } from '@/lib/server-log';
 export async function GET() {
   let databaseOk = false;
   try {
-    // A trivial literal query checks connectivity without leaking anything.
-    await db.$queryRawUnsafe('SELECT 1');
+    // Parameter-free tagged-template query: the SQL text is fixed at compile
+    // time with no interpolation, so no untrusted input can ever reach the
+    // engine. Prisma tagged-template queries are sent as parameterized
+    // statements; the string-building *Unsafe variants are banned from this
+    // codebase (enforced by the security regression suite).
+    await db.$queryRaw`SELECT 1`;
     databaseOk = true;
   } catch (error) {
     logger.warn('Health check: database connectivity failed', {

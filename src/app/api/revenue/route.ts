@@ -22,6 +22,7 @@
 import { NextResponse } from 'next/server';
 import { logger } from '@/lib/server-log';
 import { recordRevenueWithAttribution } from '@/lib/product-factory/economics';
+import { enforceRateLimit, clientIpFrom, readJsonBody, auditSecurityEvent } from '@/lib/security/guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,10 +49,33 @@ export function verifyOperatorToken(presented: string | null): boolean {
 
 export async function POST(request: Request) {
   const authHeader = request.headers.get('authorization');
-  const presented = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : null;
+  const presented = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : null;
+
+  // SECURITY: credential-guessing throttle. Keyed on the presented token (via
+  // the shared rate limiter) so brute-force attempts are refused before the
+  // constant-time comparison even runs; plus a coarse per-IP cap.
+  const ip = clientIpFrom(request);
+  const ipLimit = await enforceRateLimit({ surface: 'api:revenue:ip', identity: ip, max: 30, windowSeconds: 60 });
+  if (!ipLimit.allowed) {
+    await auditSecurityEvent({ kind: 'RATE_LIMITED', surface: 'api:revenue', outcome: 'refused' });
+    return NextResponse.json({ ok: false, error: 'Rate limit exceeded. Retry later.' }, { status: 429 });
+  }
+  if (presented) {
+    const tokenLimit = await enforceRateLimit({ surface: 'api:revenue:token', identity: presented, max: 20, windowSeconds: 60 });
+    if (!tokenLimit.allowed) {
+      await auditSecurityEvent({ kind: 'AUTH_FLOOD', surface: 'api:revenue', outcome: 'refused' });
+      return NextResponse.json({ ok: false, error: 'Too many attempts. Retry later.' }, { status: 429 });
+    }
+  }
 
   if (!verifyOperatorToken(presented)) {
     const configured = Boolean(process.env.OPERATOR_REVENUE_TOKEN?.trim());
+    await auditSecurityEvent({
+      kind: 'AUTH_FAILURE',
+      surface: 'api:revenue',
+      outcome: 'refused',
+      detail: configured ? 'bad-credential' : 'not-configured',
+    });
     logger.warn('Revenue ingestion rejected', { reason: configured ? 'bad-token' : 'not-configured' });
     return NextResponse.json(
       {
@@ -64,17 +88,12 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: 'Request body must be valid JSON' }, { status: 400 });
+  // Body: size-capped, strict-object, prototype-pollution-safe parse.
+  const bodyGuard = await readJsonBody(request, { surface: 'api:revenue', maxBytes: 16 * 1024, maxChars: 8_000 });
+  if (!bodyGuard.ok) {
+    return NextResponse.json({ ok: false, error: bodyGuard.error }, { status: bodyGuard.status });
   }
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    return NextResponse.json({ ok: false, error: 'Request body must be a JSON object' }, { status: 400 });
-  }
-
-  const raw = body as Record<string, unknown>;
+  const raw = bodyGuard.value;
   const result = await recordRevenueWithAttribution({
     date: typeof raw.date === 'string' ? raw.date : '',
     revenueSource: typeof raw.revenueSource === 'string' ? raw.revenueSource : '',

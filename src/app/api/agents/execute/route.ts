@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { agentRegistry } from '@/lib/agents/agent-registry';
 import { AgentRequest, AgentType } from '@/lib/agents/types';
 import { logger } from '@/lib/server-log';
+import { guardBrowserOrOperator, readJsonBody } from '@/lib/security/guard';
 
 const VALID_AGENT_TYPES: AgentType[] = [
   'research', 'validation', 'product', 'analytics', 'business-manager',
@@ -12,24 +13,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export async function POST(request: Request) {
-  // --- Parse/validate the request body safely ---
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    logger.warn('Agent execution rejected: malformed JSON body');
-    return NextResponse.json(
-      { success: false, error: 'Request body must be valid JSON' },
-      { status: 400 }
-    );
+  // --- SECURITY: rate limit + origin/operator gate, then parse the body ---
+  const guard = await guardBrowserOrOperator(request, 'api:agents/execute', { max: 20, windowSeconds: 60 });
+  if ('response' in guard) {
+    logger.warn('Agent execution refused by security guard', { status: guard.status });
+    return NextResponse.json(guard.response, { status: guard.status });
   }
 
-  if (!isRecord(body)) {
+  // --- Parse/validate the request body safely (size-capped) ---
+  const bodyGuard = await readJsonBody(request, { surface: 'api:agents/execute' });
+  if (!bodyGuard.ok) {
+    logger.warn('Agent execution rejected: unsafe body', { status: bodyGuard.status });
     return NextResponse.json(
-      { success: false, error: 'Request body must be a JSON object' },
-      { status: 400 }
+      { success: false, error: bodyGuard.error },
+      { status: bodyGuard.status }
     );
   }
+  const body = bodyGuard.value;
 
   const raw = body;
   const agentRequest: AgentRequest = {

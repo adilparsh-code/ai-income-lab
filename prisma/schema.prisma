@@ -334,6 +334,46 @@ model PipelineRun {
   updatedAt      DateTime @updatedAt
 }
 
+// ============================================================================
+// SECURITY (Security Hardening Phase)
+// ============================================================================
+
+/// Append-only security audit trail. Records security-relevant events
+/// (auth failures, rate-limit rejections, oversized requests, webhook
+/// verification outcomes). NEVER stores secrets, tokens, credentials, or
+/// raw request bodies — `detail` is a short, human-safe classification.
+model SecurityEvent {
+  id        String   @id @default(cuid())
+  /// Event class, e.g. AUTH_FAILURE, RATE_LIMITED, REQUEST_TOO_LARGE, WEBHOOK_REJECTED.
+  kind      String
+  /// Coarse outcome category (ok | refused | error) — never a secret.
+  outcome   String
+  /// Which surface produced the event, e.g. "api:agents/execute", "webhook:polar".
+  surface   String
+  /// Short, safe classification string. Truncated to 300 chars; no secrets.
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([kind, createdAt])
+  @@index([surface, createdAt])
+}
+
+/// Durable rate-limit counters. Process-memory maps are per-instance and
+/// vanish on restart, so they must never be the only production protection.
+/// This table gives every deployment instance a shared, DB-backed counter.
+model RateLimitWindow {
+  id        String   @id @default(cuid())
+  /// Bucket identifier, e.g. "agents_execute|ip:1.2.3.4".
+  bucketKey String
+  /// Epoch-second-aligned window label, e.g. "1700000000-60".
+  windowKey String
+  count     Int      @default(0)
+  expiresAt DateTime
+
+  @@unique([bucketKey, windowKey])
+  @@index([expiresAt])
+}
+
 // Phase 4.5.2 — Ruflo-ready job orchestration.
 // One row per queued/executed job (single agent or bounded pipeline). The job
 // layer ENFORCES the existing safety architecture: a NOT_ALLOWED opportunity

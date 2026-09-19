@@ -20,6 +20,7 @@
 //   implemented here; adapters that need them build on this state machine.
 
 import { db } from '@/lib/db';
+import { credentialFingerprint } from '@/lib/security/guard';
 
 /** Minimal structural view of a ledger row (avoids codegen-only types). */
 interface AuthorizationRow {
@@ -183,8 +184,11 @@ function toSafeView(row: AuthorizationRow): SafeAuthorizationView {
   }
   let fingerprint: string | null = null;
   if (row.accessTokenCiphertext) {
-    // Fingerprint of the ciphertext — correlation without disclosure.
-    fingerprint = row.accessTokenCiphertext.slice(0, 12);
+    // SECURITY: a keyed HMAC fingerprint, not a ciphertext prefix or a plain
+    // digest. A prefix/hash would let an attacker who guesses a low-entropy
+    // token verify the guess offline against the stored value; a keyed HMAC
+    // with a server-side salt does not. Used only for audit correlation.
+    fingerprint = credentialFingerprint(row.accessTokenCiphertext);
   }
   return {
     providerId: row.providerId,
