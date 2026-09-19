@@ -12,9 +12,9 @@
 
 import {
   executeWorkflow,
-  type ExecuteWorkflowInput,
   type ExecuteWorkflowOptions,
 } from '@/lib/ruflo/workflow-runner';
+import { isWorkflowType } from '@/lib/ruflo/workflows';
 import type {
   HarnessCompletionSummary,
   HarnessWorkflowRequest,
@@ -97,7 +97,7 @@ export async function dispatchWorkflowViaPrimeAgent(
   request: HarnessWorkflowRequest,
   options: ExecuteWorkflowOptions = {},
 ): Promise<
-  | { accepted: false; status: 'NOT_CONNECTED'; reason: string }
+  | { accepted: false; status: 'NOT_CONNECTED' | 'INVALID_WORKFLOW'; reason: string }
   | { accepted: true; execution: Awaited<ReturnType<typeof executeWorkflow>> }
 > {
   const registration = getRegisteredPrimeAgent();
@@ -111,11 +111,17 @@ export async function dispatchWorkflowViaPrimeAgent(
     };
   }
 
-  const workflowType = request.workflowType as ExecuteWorkflowInput['workflowType'];
+  if (!isWorkflowType(request.workflowType)) {
+    return {
+      accepted: false,
+      status: 'INVALID_WORKFLOW',
+      reason: 'Workflow type is not registered in AI Income Lab.',
+    };
+  }
 
   const execution = await executeWorkflow(
     {
-      workflowType,
+      workflowType: request.workflowType,
       objective: request.objective,
       ...(request.opportunityId ? { opportunityId: request.opportunityId } : {}),
       ...(request.correlationId ? { correlationId: request.correlationId } : {}),
