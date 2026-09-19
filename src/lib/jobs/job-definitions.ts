@@ -137,6 +137,9 @@ export function validateJobPayload(jobType: JobType, payload: JobPayload): JobVa
       } else if (payload.decisionScope === undefined || payload.decisionScope === null) {
         errors.push('decisionScope is required (one of: ' + BM_SCOPES.join(', ') + ')');
       }
+      // The Business Manager agent itself requires a non-empty objective;
+      // validating it here fails fast instead of at agent execution time.
+      requireString(payload.objective, 'objective', errors);
       optionalString(payload.notes, 'notes', errors);
       break;
 

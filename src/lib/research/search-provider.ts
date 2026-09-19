@@ -183,9 +183,11 @@ export class SearxngSearchProvider implements SearchProvider {
       const results = (Array.isArray(payload.results) ? payload.results : [])
         .slice(0, limit)
         .map((r) => ({
-          title: typeof r.title === 'string' ? r.title : '',
-          url: typeof r.url === 'string' ? r.url : '',
-          snippet: typeof r.content === 'string' ? r.content : '',
+          // Provider-supplied metadata is untrusted: length-capped here at the
+          // boundary so hostile oversized fields cannot flow downstream.
+          title: typeof r.title === 'string' ? r.title.slice(0, 200) : '',
+          url: typeof r.url === 'string' ? r.url.slice(0, 500) : '',
+          snippet: typeof r.content === 'string' ? r.content.slice(0, 1000) : '',
         }))
         .filter((r) => r.url.length > 0 && isAllowedResearchUrl(r.url));
       return { status: 'OK', results };
@@ -272,9 +274,11 @@ export class TavilySearchProvider implements SearchProvider {
       const results = (Array.isArray(payload.results) ? payload.results : [])
         .slice(0, limit)
         .map((r) => ({
-          title: typeof r.title === 'string' ? r.title : '',
-          url: typeof r.url === 'string' ? r.url : '',
-          snippet: typeof r.content === 'string' ? r.content : '',
+          // Provider-supplied metadata is untrusted: length-capped here at the
+          // boundary so hostile oversized fields cannot flow downstream.
+          title: typeof r.title === 'string' ? r.title.slice(0, 200) : '',
+          url: typeof r.url === 'string' ? r.url.slice(0, 500) : '',
+          snippet: typeof r.content === 'string' ? r.content.slice(0, 1000) : '',
         }))
         .filter((r) => r.url.length > 0 && isAllowedResearchUrl(r.url));
       return { status: 'OK', results };
