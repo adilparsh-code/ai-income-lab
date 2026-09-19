@@ -37,7 +37,7 @@ async function seedProduct(status: string, name: string) {
 describe('capability center (pure aggregate)', () => {
   it('derives every capability from real configuration and exposes safe counts', async () => {
     const { describeCapabilityCenter } = await import('../capability-center');
-    const report = describeCapabilityCenter();
+    const report = await describeCapabilityCenter();
 
     assert.ok(report.capabilities.length >= 8);
     const names = report.capabilities.map((c) => c.name);
@@ -55,7 +55,7 @@ describe('capability center (pure aggregate)', () => {
 
   it('reports deployment and publishing as NOT_CONNECTED without credentials — never LIVE', async () => {
     const { describeCapabilityCenter } = await import('../capability-center');
-    const report = describeCapabilityCenter();
+    const report = await describeCapabilityCenter();
     const deployment = report.capabilities.find((c) => c.name === 'Deployment (Vercel)')!;
     const publishing = report.capabilities.find((c) => c.name === 'Publishing')!;
     assert.equal(deployment.status, 'NOT_CONNECTED');

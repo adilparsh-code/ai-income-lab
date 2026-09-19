@@ -21,6 +21,7 @@ import { describeBuilderCapabilities } from '@/lib/product-factory/sandboxed-bui
 import { describeVercelConfig } from '@/lib/product-factory/deployment-vercel';
 import { describePublishingStatus } from '@/lib/publishing/contract';
 import { describeRufloIntegration } from '@/lib/ruflo/capability';
+import { describeRufloRuntime } from '@/lib/ruflo/runtime';
 import { emptyTreasury, deriveTreasury } from '@/lib/business/agent-treasury';
 
 export type CapabilityLabel =
@@ -49,13 +50,14 @@ export interface CapabilityCenterReport {
   counts: Record<CapabilityLabel, number>;
 }
 
-export function describeCapabilityCenter(): CapabilityCenterReport {
+export async function describeCapabilityCenter(): Promise<CapabilityCenterReport> {
   const ai = describeAiCapability();
   const research = describeResearchProviderHealth();
   const builder = describeBuilderCapabilities();
   const vercel = describeVercelConfig();
   const publishing = describePublishingStatus();
   const ruflo = describeRufloIntegration();
+  const rufloRuntime = await describeRufloRuntime();
   const treasury = deriveTreasury(emptyTreasury());
 
   const capabilities: CapabilityEntry[] = [
@@ -113,6 +115,18 @@ export function describeCapabilityCenter(): CapabilityCenterReport {
       status: ruflo.status === 'RUFLO_CONNECTED' ? 'LIVE' : 'NOT_CONNECTED',
       detail: ruflo.detail,
       requiredForLive: ruflo.unmetRequirements,
+      requiresHumanApproval: false,
+    },
+    {
+      name: 'Ruflo Runtime API',
+      // Honest mapping of the 5-state runtime machine onto capability labels:
+      // CONNECTED → LIVE; everything else is explicitly not live.
+      status: rufloRuntime.status === 'CONNECTED' ? 'LIVE'
+        : rufloRuntime.status === 'ERROR' ? 'UNAVAILABLE'
+        : rufloRuntime.status === 'NOT_CONFIGURED' ? 'NOT_CONFIGURED'
+        : 'NOT_CONNECTED',
+      detail: rufloRuntime.detail,
+      requiredForLive: rufloRuntime.unmetRequirements,
       requiresHumanApproval: false,
     },
     {

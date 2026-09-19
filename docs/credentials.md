@@ -66,6 +66,12 @@ Publication claims `PUBLISHED` only after a verified provider round-trip
 | Variable | Purpose | Behavior when missing |
 | --- | --- | --- |
 | `OPERATOR_REVENUE_TOKEN` | Bearer token for `POST /api/revenue`. | Endpoint refuses all writes (503). |
+| `OPERATOR_CONTROL_TOKEN` | Bearer token for control endpoints (jobs, workflows, ruflo/pipeline, operations POST, ai/usage). Falls back to `OPERATOR_REVENUE_TOKEN` when unset. | Control endpoints refuse (401/503). |
+| `SECURITY_FINGERPRINT_SALT` | Salt for keyed HMAC credential fingerprints (audit correlation only). | Stable default salt. |
+| `RUFLO_RUNTIME_TOKEN` | Bearer token for the Ruflo runtime API (`/api/ruflo/runtime/*`). See `docs/ruflo-runtime.md`. | Runtime API refuses (503); capability stays NOT_CONFIGURED. |
+| `RUFLO_RUNTIME_ENABLED` | Must be `true` to register the runtime handle at startup (kill switch). | Handle not registered; posture AUTH_REQUIRED. |
+| `RUFLO_RUNTIME_ID` | Non-secret audit label of the Ruflo runtime. | Defaults to `ruflo-runtime`. |
+| `RUFLO_DISPATCH_TIMEOUT_MS` | Dispatch budget (1000–600000 ms). | Defaults to 120000. |
 
 ## Market configuration (Rule 9 — non-secret)
 

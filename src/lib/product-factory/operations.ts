@@ -366,7 +366,7 @@ export async function getOperationsSummary(): Promise<OperationsSummary> {
       note: 'Agent Treasury is internal accounting only (automaticTransfer=false); no real money movement occurs.',
     },
     nextBestAction,
-    capabilities: describeCapabilityCenter(),
+    capabilities: await describeCapabilityCenter(),
   };
 }
 
