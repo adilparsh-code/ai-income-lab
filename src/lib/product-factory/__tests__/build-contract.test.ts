@@ -76,9 +76,16 @@ describe('build contract: unavailable builder', () => {
 });
 
 describe('deployment provider: not-connected truthfulness', () => {
-  it('default provider is the unavailable adapter', () => {
-    const provider = resolveDeploymentProvider();
-    assert.equal(provider.id, 'unavailable');
+  it('default provider is the unavailable adapter when no token is configured', async () => {
+    const provider = await resolveDeploymentProvider();
+    // Honesty depends on env: with VERCEL_TOKEN unset in the test process the
+    // resolver must still return the unavailable adapter (Rule 2/4).
+    const tokenConfigured = typeof process.env.VERCEL_TOKEN === 'string' && process.env.VERCEL_TOKEN.trim().length >= 20;
+    if (!tokenConfigured) {
+      assert.equal(provider.id, 'unavailable');
+    } else {
+      assert.equal(provider.id, 'vercel');
+    }
   });
 
   it('validate() reports invalid with the honest error', () => {

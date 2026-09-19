@@ -341,6 +341,28 @@ model PipelineRun {
 // to HUMAN_REVIEW with no autonomous execution. Idempotency: idempotencyKey
 // (jobType:correlationId) is unique, so re-queuing the same logical work
 // returns the existing row instead of double-executing.
+// Phase 8 (Rule 11) — OAuth/authorization ledger. One row per (provider,
+// scope); tokens are stored server-side as opaque ciphertext material and are
+// never returned by any accessor. The state machine (NOT_CONNECTED →
+// AUTHORIZING → CONNECTED → EXPIRED/REVOKED/ERROR) is deterministic; expired
+// grants are never silently reused.
+model IntegrationAuthorization {
+  id                     String   @id @default(cuid())
+  providerId             String
+  scope                  String?
+  state                  String   @default("NOT_CONNECTED")
+  accessTokenCiphertext  String?
+  refreshTokenCiphertext String?
+  expiresAt              DateTime?
+  grantedScopes          String   @default("[]")
+  metadata               String   @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([providerId, scope])
+}
+
 model JobRun {
   id             String   @id @default(cuid())
 
@@ -438,12 +460,23 @@ model ProductEvent {
   // For PURCHASE/REFUND: verified monetary value from the recording source.
   amountUsd       Float?
 
+  // Phase 8 (Rules 6–7) — distribution attribution (additive, optional, non-PII).
+  utmSource       String?
+  utmMedium       String?
+  utmCampaign     String?
+  utmContent      String?
+  utmTerm         String?
+  referrer        String?
+  landingPage     String?
+
   // Provenance of the event itself.
   source          String   // e.g. 'manual', 'provider:<id>' — who recorded it
   evidenceType    String   @default("VERIFIED_DATA")  // VERIFIED_DATA or USER_ENTERED only
 
   // Idempotency: re-ingesting the same logical event is a no-op.
   idempotencyKey  String   @unique
+
+  @@index([productId, utmCampaign])
 
   createdAt       DateTime @default(now())
 

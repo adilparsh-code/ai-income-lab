@@ -50,7 +50,7 @@ export async function POST(request: Request) {
   if (raw.evidenceType !== undefined && raw.evidenceType !== 'VERIFIED_DATA' && raw.evidenceType !== 'USER_ENTERED') {
     return NextResponse.json({ ok: false, error: "evidenceType must be 'VERIFIED_DATA' or 'USER_ENTERED'" }, { status: 400 });
   }
-  for (const field of ['sessionId', 'campaignId', 'opportunityId', 'experimentId', 'occurredAt'] as const) {
+  for (const field of ['sessionId', 'campaignId', 'opportunityId', 'experimentId', 'occurredAt', 'utmSource', 'utmMedium', 'utmCampaign', 'utmContent', 'utmTerm', 'referrer', 'landingPage'] as const) {
     if (raw[field] !== undefined && raw[field] !== null && typeof raw[field] !== 'string') {
       return NextResponse.json({ ok: false, error: `${field} must be a string when present` }, { status: 400 });
     }
@@ -67,6 +67,13 @@ export async function POST(request: Request) {
     experimentId: (raw.experimentId as string | undefined) ?? null,
     evidenceType: raw.evidenceType === 'USER_ENTERED' ? 'USER_ENTERED' : 'VERIFIED_DATA',
     amountUsd: typeof raw.amountUsd === 'number' ? raw.amountUsd : null,
+    utmSource: (raw.utmSource as string | undefined) ?? null,
+    utmMedium: (raw.utmMedium as string | undefined) ?? null,
+    utmCampaign: (raw.utmCampaign as string | undefined) ?? null,
+    utmContent: (raw.utmContent as string | undefined) ?? null,
+    utmTerm: (raw.utmTerm as string | undefined) ?? null,
+    referrer: (raw.referrer as string | undefined) ?? null,
+    landingPage: (raw.landingPage as string | undefined) ?? null,
     occurredAt: (raw.occurredAt as string | undefined) ?? null,
   });
 

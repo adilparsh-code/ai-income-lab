@@ -50,6 +50,16 @@ export interface ProductEventInput {
   /** Recorded monetary value in USD; only meaningful for PURCHASE/REFUND. */
   amountUsd?: number | null;
   occurredAt?: string | null;
+  // Phase 8 (Rules 6–7) — distribution attribution (additive, all optional,
+  // bounded, non-PII). These extend the same event contract; funnel logic is
+  // unchanged and older rows simply have null attribution.
+  utmSource?: string | null;
+  utmMedium?: string | null;
+  utmCampaign?: string | null;
+  utmContent?: string | null;
+  utmTerm?: string | null;
+  referrer?: string | null;
+  landingPage?: string | null;
 }
 
 export type EventIngestStatus =
@@ -76,6 +86,19 @@ function validateEventInput(input: ProductEventInput): string[] {
     }
   }
   if (input.sessionId && input.sessionId.length > 256) errors.push('sessionId exceeds 256 chars.');
+  for (const [field, value] of [
+    ['utmSource', input.utmSource],
+    ['utmMedium', input.utmMedium],
+    ['utmCampaign', input.utmCampaign],
+    ['utmContent', input.utmContent],
+    ['utmTerm', input.utmTerm],
+    ['referrer', input.referrer],
+    ['landingPage', input.landingPage],
+  ] as const) {
+    if (value !== undefined && value !== null && (typeof value !== 'string' || value.trim().length > 300)) {
+      errors.push(`${field} must be a string of at most 300 characters.`);
+    }
+  }
   return errors;
 }
 
@@ -102,6 +125,13 @@ export async function recordProductEvent(input: ProductEventInput): Promise<Even
         source: input.source.trim(),
         evidenceType: input.evidenceType ?? 'VERIFIED_DATA',
         amountUsd: input.amountUsd ?? null,
+        utmSource: input.utmSource?.trim() || null,
+        utmMedium: input.utmMedium?.trim() || null,
+        utmCampaign: input.utmCampaign?.trim() || null,
+        utmContent: input.utmContent?.trim() || null,
+        utmTerm: input.utmTerm?.trim() || null,
+        referrer: input.referrer?.trim() || null,
+        landingPage: input.landingPage?.trim() || null,
         occurredAt: input.occurredAt ? new Date(input.occurredAt) : new Date(),
       },
     });

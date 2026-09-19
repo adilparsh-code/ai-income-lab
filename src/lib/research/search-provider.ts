@@ -133,19 +133,40 @@ export class SearxngSearchProvider implements SearchProvider {
     endpoint.searchParams.set('q', query);
     endpoint.searchParams.set('format', 'json');
 
-    let response: Response;
-    try {
-      response = await this.fetchImpl(endpoint, {
-        headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'unknown fetch error';
+    // Phase 8 (Rule 3): bounded retries with backoff for transient outcomes
+    // (network errors / 429 / 5xx). Retries never widen limits and never
+    // change result semantics; final failure is still an honest ERROR.
+    const attempts = 3;
+    let backoffMs = 250;
+    let response: Response | null = null;
+    let transportError: string | null = null;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      transportError = null;
+      try {
+        response = await this.fetchImpl(endpoint, {
+          headers: { Accept: 'application/json' },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (error) {
+        transportError = error instanceof Error ? error.message : 'unknown fetch error';
+      }
+      const retryable =
+        transportError !== null ||
+        (response !== null && (response.status === 429 || response.status >= 500));
+      if (!retryable) break;
+      if (attempt < attempts) {
+        logger.warn('SearXNG search retrying', { attempt, latencyMs: Date.now() - started });
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        backoffMs *= 2;
+      }
+    }
+
+    if (response === null) {
       logger.warn('SearXNG search request failed', { latencyMs: Date.now() - started });
       return {
         status: 'ERROR',
         results: [],
-        error: `SearXNG request failed: ${message.slice(0, 200)}`,
+        error: `SearXNG request failed: ${(transportError ?? 'unknown').slice(0, 200)}`,
       };
     }
 

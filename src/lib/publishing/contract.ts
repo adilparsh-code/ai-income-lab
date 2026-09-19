@@ -84,7 +84,7 @@ export type PublishingChannel =
   | 'AFFILIATE_LISTING'
   | 'CONTENT_PUBLISHING';
 
-export type PublishingProviderStatus = 'AVAILABLE' | 'PUBLISHING_UNAVAILABLE' | 'NOT_CONNECTED';
+export type PublishingProviderStatus = 'AVAILABLE' | 'PUBLISHING_UNAVAILABLE' | 'NOT_CONNECTED' | 'PUBLISHING_READY';
 
 export interface PublishingHealth {
   providerId: string | null;
@@ -110,9 +110,17 @@ export interface PublishingDraft {
 }
 
 export interface PublishAttempt {
-  published: false;
-  status: 'PUBLISHING_UNAVAILABLE' | 'NOT_AUTHORIZED';
+  /**
+   * Phase 8 — widened from a constant `false` so a real authorized adapter can
+   * report a VERIFIED publication (Rule 2: only after a provider round-trip).
+   * Every existing refusal shape is unchanged.
+   */
+  published: boolean;
+  status: 'PUBLISHING_UNAVAILABLE' | 'NOT_AUTHORIZED' | 'PUBLISHED';
   reason: string;
+  /** Present only on verified publications (provider-confirmed). */
+  publicationId?: string;
+  publicationUrl?: string;
 }
 
 export interface PublishingProvider {
@@ -220,20 +228,46 @@ export function requestPublishing(request: PublishingRequest): PublishingRespons
   };
 }
 
-/** Resolve a registered provider. None exist in this milestone — by design. */
+/**
+ * Resolve a registered provider. Phase 8: the Polar adapter serves the
+ * DIGITAL_PRODUCT channel when POLAR_ACCESS_TOKEN is configured; without it
+ * the honest result is still `null` (the boundary reports
+ * PUBLISHING_UNAVAILABLE, AUTH_REQUIRED is surfaced by the capability center).
+ */
 export function resolvePublishingProvider(channel: PublishingChannel): PublishingProvider | null {
+  if (channel === 'DIGITAL_PRODUCT') {
+    // Lazy env probe avoids importing the adapter (and its network surface)
+    // when unconfigured; the adapter itself stays server-only.
+    const token = process.env.POLAR_ACCESS_TOKEN;
+    if (typeof token === 'string' && token.trim().length >= 10) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy load avoids a module cycle; same pattern as job-runner
+      const { PolarPublishingAdapter } = require('./../integrations/polar-publishing') as {
+        PolarPublishingAdapter: new () => PublishingProvider;
+      };
+      return new PolarPublishingAdapter();
+    }
+  }
   void channel;
   return null;
 }
 
 /** Describe publishing readiness truthfully for dashboards. */
 export function describePublishingStatus(): { status: PublishingProviderStatus; note: string; channels: PublishingChannel[] } {
+  // Phase 8 (Rule 2/5): status reflects configuration only — a configured
+  // adapter is reported as AUTHORIZED-READY, never as having published
+  // anything. LIVE publication claims only ever come from a verified provider
+  // round-trip on a specific publication (see the Polar adapter).
+  const configured =
+    typeof process.env.POLAR_ACCESS_TOKEN === 'string' && process.env.POLAR_ACCESS_TOKEN.trim().length >= 10;
   return {
-    status: 'PUBLISHING_UNAVAILABLE',
-    note:
-      'Publishing contracts and adapter boundaries are implemented. No publishing provider is connected, '
+    status: configured ? 'PUBLISHING_READY' : 'PUBLISHING_UNAVAILABLE',
+    note: configured
+      ? 'Polar adapter is configured server-side for DIGITAL_PRODUCT. Each publication still requires an '
+        + 'explicit human approval token, and PUBLISHED is claimed only after a verified provider round-trip '
+        + '(create + confirm). Configuration alone is never reported as live.'
+      : 'Publishing contracts and adapter boundaries are implemented. No publishing provider is connected, '
         + 'so every channel reports PUBLISHING_UNAVAILABLE. No automatic publication exists; '
-        + 'future adapters will additionally require explicit human approval per publication.',
+        + 'adapters additionally require explicit human approval per publication.',
     channels: ['DIGITAL_PRODUCT', 'APP_STORE', 'WEBSITE_DEPLOYMENT', 'MARKETPLACE_LISTING', 'AFFILIATE_LISTING', 'CONTENT_PUBLISHING'],
   };
 }

@@ -60,7 +60,10 @@ export function ProductFactoryCard({ summary }: { summary: ProductFactorySummary
             label={`DEPLOY ${summary.capabilities.deployment.status === 'LIVE' ? 'LIVE' : 'NOT_CONNECTED'}`}
             tone={summary.capabilities.deployment.status === 'LIVE' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}
           />
-          <Badge label={`PUBLISH ${summary.capabilities.publishing.status === 'AVAILABLE' ? 'LIVE' : 'UNAVAILABLE'}`} tone="bg-amber-100 text-amber-700" />
+          <Badge
+            label={`PUBLISH ${summary.capabilities.publishing.status === 'AVAILABLE' ? 'LIVE' : summary.capabilities.publishing.status === 'PUBLISHING_READY' ? 'READY' : 'NOT_CONNECTED'}`}
+            tone={summary.capabilities.publishing.status === 'AVAILABLE' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}
+          />
           <Badge label={`RUFLO ${summary.capabilities.ruflo.status.replace('RUFLO_', '')}`} tone="bg-slate-100 text-slate-500" />
         </div>
       </div>

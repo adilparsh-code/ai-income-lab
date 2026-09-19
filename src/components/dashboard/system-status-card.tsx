@@ -17,7 +17,7 @@ export interface SystemStatusData {
     discoveryCount: number;
   };
   publishing: {
-    status: 'AVAILABLE' | 'PUBLISHING_UNAVAILABLE' | 'NOT_CONNECTED';
+    status: 'AVAILABLE' | 'PUBLISHING_UNAVAILABLE' | 'NOT_CONNECTED' | 'PUBLISHING_READY';
     note: string;
   };
   ruflo: {

@@ -99,11 +99,13 @@ export function describeCapabilityCenter(): CapabilityCenterReport {
     },
     {
       name: 'Publishing',
-      status: publishing.status === 'AVAILABLE' ? 'LIVE' : 'NOT_CONNECTED',
+      status: publishing.status === 'AVAILABLE' ? 'LIVE' : publishing.status === 'PUBLISHING_READY' ? 'NOT_CONFIGURED' : 'NOT_CONNECTED',
       detail: publishing.note,
       requiredForLive: publishing.status === 'AVAILABLE'
         ? []
-        : ['An authorized publishing-channel adapter with credentials', 'Human approval token per publication'],
+        : publishing.status === 'PUBLISHING_READY'
+          ? ['A verified provider round-trip (create + confirm) — configuration alone is never LIVE']
+          : ['POLAR_ACCESS_TOKEN (server-side) for the DIGITAL_PRODUCT channel', 'Human approval token per publication'],
       requiresHumanApproval: true,
     },
     {
@@ -165,6 +167,28 @@ export function describeCapabilityCenter(): CapabilityCenterReport {
         `${treasury.utilizationPercent === null ? 'n/a' : treasury.utilizationPercent.toFixed(1) + '%'}; no real money movement exists.`,
       requiredForLive: [],
       requiresHumanApproval: true,
+    },
+    {
+      name: 'Payment Webhooks (Polar)',
+      status: process.env.POLAR_WEBHOOK_SECRET?.trim() ? 'LIVE' : 'NOT_CONFIGURED',
+      detail: process.env.POLAR_WEBHOOK_SECRET?.trim()
+        ? 'POST /api/webhooks/polar is active: Standard Webhooks signature verification, replay protection, '
+          + 'event-type allowlist, amount/currency validation, product linkage, idempotent recording through '
+          + 'the shared revenue pipeline. Bad events fail safe; nothing is ever fabricated.'
+        : 'POST /api/webhooks/polar exists but refuses every request until POLAR_WEBHOOK_SECRET is set '
+          + 'server-side (fail-closed, 503). No payment event can be recorded without a verified signature.',
+      requiredForLive: process.env.POLAR_WEBHOOK_SECRET?.trim() ? [] : ['POLAR_WEBHOOK_SECRET (server-side)', 'POLAR_ACCESS_TOKEN for product linkage'],
+      requiresHumanApproval: false,
+    },
+    {
+      name: 'Authorization Ledger',
+      status: 'LIVE',
+      detail:
+        'OAuth/authorization state machine is live server-side (NOT_CONNECTED → AUTHORIZING → CONNECTED → '
+        + 'EXPIRED/REVOKED/ERROR). Expired or revoked grants are never silently reused; token material is '
+        + 'never returned by any accessor.',
+      requiredForLive: [],
+      requiresHumanApproval: false,
     },
     {
       name: 'Memory (Durable)',

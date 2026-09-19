@@ -197,21 +197,36 @@ export function createUnavailableDeploymentProvider(channel = 'generic'): Deploy
   };
 }
 
-/** Resolve the configured deployment provider. None exists in this milestone. */
-export function resolveDeploymentProvider(): DeploymentProvider {
-  return createUnavailableDeploymentProvider();
+/**
+ * Resolve the configured deployment provider (Phase 8, Rule 4).
+ *
+ * Delegates to the existing Vercel-aware resolver: when VERCEL_TOKEN is
+ * configured server-side (with build/deploy env synced), the real adapter is
+ * returned and BUILD/DEPLOY jobs go live through verified provider round-trips;
+ * otherwise the honest unavailable adapter remains the default. No caller ever
+ * changes — the boundary stays provider-neutral.
+ */
+export async function resolveDeploymentProvider(): Promise<DeploymentProvider> {
+  const { resolveVercelAwareDeploymentProvider } = await import('./deployment-vercel');
+  return resolveVercelAwareDeploymentProvider();
 }
 
 /** Truthful deployment readiness for dashboards. */
 export function describeDeploymentStatus(): {
-  status: 'DEPLOYMENT_NOT_CONNECTED';
+  status: 'DEPLOYMENT_NOT_CONNECTED' | 'DEPLOYMENT_READY';
   note: string;
   providers: string[];
+  connected: boolean;
 } {
+  // Synchronous best-effort config probe (env-only, no network):
+  const tokenConfigured = typeof process.env.VERCEL_TOKEN === 'string' && process.env.VERCEL_TOKEN.trim().length >= 20;
   return {
-    status: 'DEPLOYMENT_NOT_CONNECTED',
-    note:
-      'Deployment contracts (validate/build/deploy/status/rollback) are implemented with provider-neutral '
+    status: tokenConfigured ? 'DEPLOYMENT_READY' : 'DEPLOYMENT_NOT_CONNECTED',
+    connected: tokenConfigured,
+    note: tokenConfigured
+      ? 'Vercel deployment adapter is configured server-side. Deployment status still becomes DEPLOYED '
+        + 'only after a verified provider round-trip — configuration alone is never reported as live (Rule 2).'
+      : 'Deployment contracts (validate/build/deploy/status/rollback) are implemented with provider-neutral '
         + 'boundaries. No deployment provider is connected, so every deployment reports '
         + 'DEPLOYMENT_NOT_CONNECTED. Credentials stay server-side and are never exposed to AI prompts.',
     providers: ['vercel', 'generic'],

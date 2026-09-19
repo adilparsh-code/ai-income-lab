@@ -266,7 +266,7 @@ async function productTest(product: ProductRecord): Promise<FactoryJobOutcome> {
 
 /** PRODUCT_DEPLOY: provider + human approval. Not connected → honest record. */
 async function productDeploy(product: ProductRecord, token?: string): Promise<FactoryJobOutcome> {
-  const provider = resolveDeploymentProvider();
+  const provider = await resolveDeploymentProvider();
 
   if (!token?.trim()) {
     return {
