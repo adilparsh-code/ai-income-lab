@@ -540,6 +540,36 @@ export interface BusinessManagerResult {
   recommendation: string;
   capabilityStatus: AgentStatus;
   agentLogId?: string;
+  /**
+   * Phase 6 — intelligent-layer view (fully deterministic, derived from the
+   * shared AgentContext). AI never overrides these fields; they exist to make
+   * routing, conflicts, evidence strength, memory, and handoffs auditable.
+   */
+  intelligence?: {
+    nextStep: {
+      action: string;
+      agent: string | null;
+      reason: string;
+      humanApprovalRequired: boolean;
+      requiresAi: boolean;
+    };
+    conflict: {
+      hasConflict: boolean;
+      description: string | null;
+      safeAction: string;
+      resolutionReason: string | null;
+      positions: { agent: string; signal: string; evidenceType: string }[];
+    };
+    evidenceStrength: { strength: string; basis: string };
+    contextSummary: {
+      assembledAt: string;
+      provenance: { verified: number; userEntered: number; aiInference: number; mocked: number };
+      missingEvidence: string[];
+      businessMemory: { label: string; text: string; evidenceType: string }[];
+      handoffCount: number;
+      humanReviewState: { required: boolean; reason: string | null };
+    };
+  };
 }
 
 export interface AgentLogEntry {

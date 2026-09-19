@@ -1,5 +1,7 @@
 import { db } from '@/lib/db';
 import { BaseAgent } from './base-agent';
+import { buildAgentContext } from './agent-context';
+import { buildIntelligenceView, type IntelligenceView } from './intelligence';
 import { buildProfitabilityDecisionFacts, type ProfitabilityDecisionFacts } from '@/lib/business/business-manager-profitability';
 import {
   AgentRequest, AgentResult, AgentStatus, EvidenceType,
@@ -93,6 +95,18 @@ export class BusinessManagerAgent extends BaseAgent {
     let selectedOpportunity: typeof opportunities[number] | null = null;
     let notAllowed = false;
     let humanReviewRequired = false;
+    // Phase 6 — shared agent context + deterministic intelligence view.
+    // Built only when a concrete opportunity is resolved; failures degrade to
+    // absent intelligence (never fabricated, never blocks the decision tree).
+    let intelligence: IntelligenceView | null = null;
+    let contextMemory: { label: string; text: string; evidenceType: string }[] = [];
+    let contextHandoffCount = 0;
+    let contextMissingEvidence: string[] = [];
+    let contextProvenance = { verified: 0, userEntered: 0, aiInference: 0, mocked: 0 };
+    let contextPreviousDecisions: { decision: string; action: string; recordedAt: string; sourceRef: string }[] = [];
+    let contextAssembledAt: string | null = null;
+    let contextHumanReviewState: { required: boolean; reason: string | null } = { required: false, reason: null };
+    let contextEvidenceStrength: { strength: string; basis: string } | null = null;
 
     try {
       const results = await Promise.all([
@@ -167,6 +181,34 @@ export class BusinessManagerAgent extends BaseAgent {
       console.error('Agent coordination lookup failed:', coordError);
       for (const agentType of agentTypesToCoordinate) {
         agentLastExecutions.push({ agentType, summary: 'No recorded ' + agentType + ' agent execution available (lookup failed).', evidenceType: 'AI_INFERENCE' as EvidenceType, executedAt: null });
+      }
+    }
+
+    // 3.6 SHARED AGENT CONTEXT (Phase 6) — assemble the intelligent-layer view
+    // from real records. The decision tree below stays authoritative; this
+    // context enriches evidence, memory, conflicts, and the routing rationale.
+    // Failures degrade to absent intelligence (never fabricated, never block).
+    if (selectedOpportunity) {
+      try {
+        const ctx = await buildAgentContext(selectedOpportunity.id);
+        const view = buildIntelligenceView(ctx);
+        intelligence = view;
+        contextMemory = ctx.businessMemory;
+        contextHandoffCount = ctx.handoffs.length;
+        contextMissingEvidence = ctx.missingEvidence;
+        contextProvenance = ctx.provenance;
+        contextPreviousDecisions = ctx.previousDecisions;
+        contextAssembledAt = ctx.assembledAt;
+        contextEvidenceStrength = { strength: ctx.evidenceStrength.strength, basis: ctx.evidenceStrength.basis };
+        contextHumanReviewState = {
+          required: ctx.humanReviewState.required,
+          reason: ctx.humanReviewState.reason,
+        };
+        // The context's human-review state must reinforce (never relax) the
+        // agent's own halal flags.
+        if (ctx.humanReviewState.required && !notAllowed) humanReviewRequired = true;
+      } catch (contextError) {
+        console.error('Agent context assembly failed:', contextError);
       }
     }
 
@@ -496,6 +538,41 @@ export class BusinessManagerAgent extends BaseAgent {
       evidence.push({ id: uuidv4(), type: coord.evidenceType, content: 'Agent coordination [' + coord.agentType + ']: ' + coord.summary, source: 'AgentLog (existing agent architecture)' });
     }
 
+    // Phase 6 — intelligent-layer evidence: shared context, memory, handoffs,
+    // conflicts, and the deterministic routing decision. All items carry the
+    // provenance they were recorded with; nothing is upgraded to VERIFIED_DATA.
+    if (intelligence) {
+      evidence.push({
+        id: uuidv4(),
+        type: 'AI_INFERENCE' as EvidenceType,
+        content: 'Intelligent routing: ' + intelligence.nextStep.action + ' (' + (intelligence.nextStep.agent ?? 'no agent') + '). ' + intelligence.nextStep.reason,
+        source: 'Deterministic router (intelligent-routing)',
+      });
+      evidence.push({
+        id: uuidv4(),
+        type: 'VERIFIED_DATA' as EvidenceType,
+        content: 'Evidence strength: ' + intelligence.conflicts.considered.length + ' recorded agent position(s) assessed; strength basis: ' + (contextEvidenceStrength?.basis ?? 'not assessed'),
+        source: 'AgentContext (stored provenance)',
+      });
+      if (intelligence.conflicts.hasConflict) {
+        evidence.push({
+          id: uuidv4(),
+          type: 'VERIFIED_DATA' as EvidenceType,
+          content: 'Conflict detected: ' + intelligence.conflicts.conflictDescription + ' Resolution: ' + intelligence.conflicts.resolutionReason,
+          source: 'Deterministic conflict assessment (coordination)',
+        });
+      }
+      if (contextHandoffCount > 0) {
+        evidence.push({ id: uuidv4(), type: 'AI_INFERENCE' as EvidenceType, content: 'Upstream handoffs attached: ' + contextHandoffCount + ' (research → validation → product chain).', source: 'AgentContext handoffs' });
+      }
+      for (const item of contextMemory.slice(0, 5)) {
+        evidence.push({ id: uuidv4(), type: 'AI_INFERENCE' as EvidenceType, content: 'Business memory [' + item.evidenceType + ']: ' + item.text, source: 'AgentContext memory (' + item.label + ')' });
+      }
+      for (const decision of contextPreviousDecisions.slice(0, 3)) {
+        evidence.push({ id: uuidv4(), type: 'VERIFIED_DATA' as EvidenceType, content: 'Previous BM decision: ' + decision.decision + ' → ' + decision.action + ' (' + decision.recordedAt + ').', source: decision.sourceRef });
+      }
+    }
+
     // 12. RECOMMENDATION
     let recommendation: string;
     if (notAllowed) {
@@ -543,6 +620,39 @@ export class BusinessManagerAgent extends BaseAgent {
       executionEligible: executionEligible && !notAllowed && !humanReviewRequired,
       recommendation,
       capabilityStatus: this.status as AgentStatus,
+      ...(intelligence && contextAssembledAt
+        ? {
+            intelligence: {
+              nextStep: {
+                action: intelligence.nextStep.action,
+                agent: intelligence.nextStep.agent,
+                reason: intelligence.nextStep.reason,
+                humanApprovalRequired: intelligence.nextStep.humanApprovalRequired,
+                requiresAi: intelligence.nextStep.requiresAi,
+              },
+              conflict: {
+                hasConflict: intelligence.conflicts.hasConflict,
+                description: intelligence.conflicts.conflictDescription,
+                safeAction: intelligence.conflicts.safeAction,
+                resolutionReason: intelligence.conflicts.resolutionReason,
+                positions: intelligence.conflicts.considered.map((p) => ({
+                  agent: p.agent,
+                  signal: p.signal,
+                  evidenceType: p.evidenceType,
+                })),
+              },
+              evidenceStrength: contextEvidenceStrength ?? { strength: 'MISSING', basis: 'Context assembly unavailable.' },
+              contextSummary: {
+                assembledAt: contextAssembledAt,
+                provenance: contextProvenance,
+                missingEvidence: contextMissingEvidence,
+                businessMemory: contextMemory.slice(0, 6),
+                handoffCount: contextHandoffCount,
+                humanReviewState: contextHumanReviewState,
+              },
+            },
+          }
+        : {}),
     };
 
     // 13. AGENTLOG

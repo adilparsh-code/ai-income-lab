@@ -16,6 +16,8 @@ import { getRecentWorkflowRuns } from '@/lib/ruflo/workflow-runner';
 import { SystemStatusCard, type SystemStatusData } from '@/components/dashboard/system-status-card';
 import { CapabilityCard, type CapabilitySummaryData } from '@/components/dashboard/capability-card';
 import { getOperationsSummary } from '@/lib/product-factory/operations';
+import { getControlCenterView } from '@/lib/agents/control-center';
+import { AgentControlCenter } from '@/components/dashboard/agent-control-center';
 import { JobActivity } from '@/components/dashboard/job-activity';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { NextBestAction } from '@/components/dashboard/next-best-action';
@@ -30,7 +32,7 @@ import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 
 export default async function DashboardPage() {
-  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary, operationsSummary] =
+  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary, operationsSummary, controlCenter] =
     await Promise.all([
       getDashboardStats(),
       getNextBestAction(),
@@ -49,6 +51,8 @@ export default async function DashboardPage() {
       getProductFactorySummary(12).catch(() => null),
       // Phase 5.5 — operations/capability summary degrades to null, never fabricated.
       getOperationsSummary().catch(() => null),
+      // Phase 6 — Intelligent Agent Control Center degrades to null, never fabricated.
+      getControlCenterView().catch(() => null),
     ]);
   const latestPipelineRun = recentPipelineRuns[0] ?? null;
 
@@ -112,6 +116,14 @@ export default async function DashboardPage() {
 
       {/* Stats Cards */}
       <StatsCards stats={stats} />
+
+      {/* Phase 6 — Intelligent Agent Control Center */}
+      <section>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Intelligent Agent Control Center — deterministic routing, evidence, and conflicts
+        </h2>
+        <AgentControlCenter view={controlCenter} />
+      </section>
 
       {/* Phase 5 — System Status: real research / publishing / Ruflo / growth */}
       <section>
