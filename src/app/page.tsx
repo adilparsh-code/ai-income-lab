@@ -18,6 +18,8 @@ import { CapabilityCard, type CapabilitySummaryData } from '@/components/dashboa
 import { getOperationsSummary } from '@/lib/product-factory/operations';
 import { getControlCenterView } from '@/lib/agents/control-center';
 import { AgentControlCenter } from '@/components/dashboard/agent-control-center';
+import { getIncomeEngineSummary } from '@/lib/income-engine/summary';
+import { IncomeEngineCard, type IncomeEngineSummary } from '@/components/dashboard/income-engine-card';
 import { JobActivity } from '@/components/dashboard/job-activity';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { NextBestAction } from '@/components/dashboard/next-best-action';
@@ -32,7 +34,7 @@ import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 
 export default async function DashboardPage() {
-  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary, operationsSummary, controlCenter] =
+  const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary, operationsSummary, controlCenter, incomeEngineSummary] =
     await Promise.all([
       getDashboardStats(),
       getNextBestAction(),
@@ -53,6 +55,8 @@ export default async function DashboardPage() {
       getOperationsSummary().catch(() => null),
       // Phase 6 — Intelligent Agent Control Center degrades to null, never fabricated.
       getControlCenterView().catch(() => null),
+      // Phase 7 — Income Engine summary degrades to null, never fabricated.
+      getIncomeEngineSummary().catch(() => null),
     ]);
   const latestPipelineRun = recentPipelineRuns[0] ?? null;
 
@@ -123,6 +127,14 @@ export default async function DashboardPage() {
           Intelligent Agent Control Center — deterministic routing, evidence, and conflicts
         </h2>
         <AgentControlCenter view={controlCenter} />
+      </section>
+
+      {/* Phase 7 — Real Income Execution Engine */}
+      <section>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Income Engine — real loop execution with human-gated publishing
+        </h2>
+        <IncomeEngineCard summary={incomeEngineSummary as IncomeEngineSummary | null} />
       </section>
 
       {/* Phase 5 — System Status: real research / publishing / Ruflo / growth */}
