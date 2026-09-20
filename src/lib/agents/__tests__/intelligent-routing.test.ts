@@ -18,6 +18,7 @@ function state(overrides: Partial<RoutingOpportunityState> = {}): RoutingOpportu
     hasCompletedExperiment: false,
     hasPositiveExperiment: false,
     hasProduct: false,
+    productStatus: null,
     hasPublishedProduct: false,
     hasRevenue: false,
     netRevenue: 0,
@@ -83,6 +84,27 @@ describe('lifecycle routing', () => {
     assert.ok(decision.contextNeeds.includes('research_context'));
     assert.ok(decision.contextNeeds.includes('validation_context'));
     assert.ok(decision.contextNeeds.includes('verified_data'));
+  });
+
+  it('routes a READY_FOR_PUBLISHING product to CONNECT_PUBLISHING (never fakes availability)', () => {
+    const decision = determineNextAction(
+      state({ hasResearchLog: true, hasValidationData: true, hasProduct: true, productStatus: 'READY_TO_DEPLOY' }),
+    );
+    assert.equal(decision.action, 'CONNECT_PUBLISHING');
+    assert.equal(decision.agent, null);
+    assert.equal(decision.requiresAi, false);
+    assert.ok(/NOT_CONFIGURED|not connected|human approval/i.test(decision.rationale));
+  });
+
+  it('does not divert published or in-progress products through the publishing gate', () => {
+    const building = determineNextAction(
+      state({ hasResearchLog: true, hasValidationData: true, hasProduct: true, productStatus: 'BUILDING' }),
+    );
+    assert.notEqual(building.action, 'CONNECT_PUBLISHING');
+    const published = determineNextAction(
+      state({ hasResearchLog: true, hasValidationData: true, hasProduct: true, hasPublishedProduct: true, productStatus: 'PUBLISHED' }),
+    );
+    assert.notEqual(published.action, 'CONNECT_PUBLISHING');
   });
 
   it('requires a decisive experiment before growth actions', () => {

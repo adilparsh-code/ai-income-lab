@@ -31,6 +31,11 @@ export function routingStateFromContext(ctx: AgentContext): RoutingOpportunitySt
   const hasPublishedProduct = ctx.product.statuses.some((p) =>
     ['PUBLISHED', 'EARNING', 'IMPROVING'].includes(p.status),
   );
+  // Phase B: the most-advanced product status drives the post-build routing
+  // gate (READY_TO_DEPLOY = creation pipeline finished → CONNECT_PUBLISHING).
+  const productStatus = ctx.product.statuses.find((p) => p.status === 'READY_TO_DEPLOY')?.status
+    ?? ctx.product.statuses[0]?.status
+    ?? null;
   const netRevenue = ctx.revenue.netTotal;
   const hasRevenue = ctx.revenue.recordCount > 0;
   const contributionProfit = netRevenue > 0 ? netRevenue : 0;
@@ -50,6 +55,7 @@ export function routingStateFromContext(ctx: AgentContext): RoutingOpportunitySt
     hasCompletedExperiment: ctx.experiments.completedDecisions.some((d) => ['SCALE', 'KILL'].includes(d)),
     hasPositiveExperiment: ctx.experiments.positiveDecisions > 0,
     hasProduct,
+    productStatus,
     hasPublishedProduct,
     hasRevenue,
     netRevenue,

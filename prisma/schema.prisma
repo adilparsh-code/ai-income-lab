@@ -7,82 +7,87 @@ datasource db {
 }
 
 model Opportunity {
-  id                    String   @id @default(cuid())
-  title                 String
-  category              String
-  businessModel         String
-  targetAudience        String
-  problemSolved         String
-  monetizationMethod    String
-  estimatedStartupCost  Float    @default(0)
-  
+  id                   String @id @default(cuid())
+  title                String
+  category             String
+  businessModel        String
+  targetAudience       String
+  problemSolved        String
+  monetizationMethod   String
+  estimatedStartupCost Float  @default(0)
+
   // Scores (0-100)
-  demandScore           Int      @default(0)
-  competitionScore      Int      @default(0)
-  commercialIntentScore Int      @default(0)
-  automationScore       Int      @default(0)
-  differentiationScore  Int      @default(0)
-  monetizationScore     Int      @default(0)
-  halalConfidenceScore  Int      @default(100)
-  overallScore          Int      @default(0)
-  
-  halalStatus           String   @default("HALAL")    // HALAL, REVIEW_REQUIRED, NOT_ALLOWED
-  confidenceLevel       String   @default("MEDIUM")   // VERY_HIGH, HIGH, MEDIUM, LOW, VERY_LOW, SAMPLE_DATA
-  status                String   @default("IDEA")     // IDEA, RESEARCHING, VALIDATING, VALIDATED, BUILDING, PUBLISHED, EARNING, SCALING, PAUSED, REJECTED
-  
-  evidenceNotes         String   @default("")
-  risks                 String   @default("")
-  nextAction            String   @default("")
-  
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  lastReviewedAt        DateTime?
-  
-  products              Product[]
-  experiments           Experiment[]
-  revenues              Revenue[]
-  contents              Content[]
-  pipelineRuns          PipelineRun[]
-  evidenceItems         EvidenceItemModel[]
-  jobRuns               JobRun[]
-  workflowRuns          WorkflowRun[]
+  demandScore           Int @default(0)
+  competitionScore      Int @default(0)
+  commercialIntentScore Int @default(0)
+  automationScore       Int @default(0)
+  differentiationScore  Int @default(0)
+  monetizationScore     Int @default(0)
+  halalConfidenceScore  Int @default(100)
+  overallScore          Int @default(0)
+
+  halalStatus     String @default("HALAL") // HALAL, REVIEW_REQUIRED, NOT_ALLOWED
+  confidenceLevel String @default("MEDIUM") // VERY_HIGH, HIGH, MEDIUM, LOW, VERY_LOW, SAMPLE_DATA
+  status          String @default("IDEA") // IDEA, RESEARCHING, VALIDATING, VALIDATED, BUILDING, PUBLISHED, EARNING, SCALING, PAUSED, REJECTED
+
+  evidenceNotes String @default("")
+  risks         String @default("")
+  nextAction    String @default("")
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  lastReviewedAt DateTime?
+
+  products      Product[]
+  experiments   Experiment[]
+  revenues      Revenue[]
+  contents      Content[]
+  pipelineRuns  PipelineRun[]
+  evidenceItems EvidenceItemModel[]
+  jobRuns       JobRun[]
+  workflowRuns  WorkflowRun[]
 }
 
 model Product {
-  id              String   @id @default(cuid())
-  name            String
-  type            String
-  targetAudience  String   @default("")
-  status          String   @default("IDEA")
-  price           Float    @default(0)
-  cost            Float    @default(0)
-  revenue         Float    @default(0)
-  platform        String   @default("")
-  productUrl      String   @default("")
-  affiliateUrl    String   @default("")
-  notes           String   @default("")
-  
-  opportunityId   String?
-  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  publishedAt     DateTime?
-  
-  revenues        Revenue[]
-  contents        Content[]
+  id             String @id @default(cuid())
+  name           String
+  type           String
+  targetAudience String @default("")
+  status         String @default("IDEA")
+  price          Float  @default(0)
+  cost           Float  @default(0)
+  revenue        Float  @default(0)
+  platform       String @default("")
+  productUrl     String @default("")
+  affiliateUrl   String @default("")
+  notes          String @default("")
+
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  publishedAt DateTime?
+
+  revenues Revenue[]
+  contents Content[]
 
   // Phase 5.3 — Product Factory additions (all optional; additive only).
-  solution        String   @default("")
-  userFlows       String   @default("[]")   // JSON array of {name, steps[]}
-  techRequirements String  @default("[]")   // JSON array of strings
-  acceptanceCriteria String @default("[]")  // JSON array of strings
-  lifecycleHistory String  @default("[]")   // JSON array of transition records
+  solution           String @default("")
+  userFlows          String @default("[]") // JSON array of {name, steps[]}
+  techRequirements   String @default("[]") // JSON array of strings
+  acceptanceCriteria String @default("[]") // JSON array of strings
+  lifecycleHistory   String @default("[]") // JSON array of transition records
 
-  builds          ProductBuild[]
-  deployments     ProductDeployment[]
-  assets          ProductAsset[]
-  events          ProductEvent[]
+  builds      ProductBuild[]
+  deployments ProductDeployment[]
+  assets      ProductAsset[]
+  events      ProductEvent[]
+
+  // Phase B — durable product pipeline artifacts.
+  specifications ProductSpecification[]
+  versions       ProductVersion[]
+  landingPages   ProductLandingPage[]
 }
 
 // Phase 5.3 — Product build runs. One row per build attempt against the
@@ -91,18 +96,18 @@ model Product {
 // a product DEPLOYED/PUBLISHED by itself — only the deployment/publishing
 // provider confirmations can.
 model ProductBuild {
-  id            String   @id @default(cuid())
-  productId     String
-  product       Product  @relation(fields: [productId], references: [id])
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
 
-  status        String   // NOT_BUILT, SUCCEEDED, FAILED, UNAVAILABLE
-  version       String?
-  artifactRef   String?
+  status      String // NOT_BUILT, SUCCEEDED, FAILED, UNAVAILABLE
+  version     String?
+  artifactRef String?
 
   // Bounded test/log summaries (JSON; safe fields only).
-  tests         String   @default("{}")
-  logSummary    String   @default("")
-  qualityGates  String   @default("[]")
+  tests        String @default("{}")
+  logSummary   String @default("")
+  qualityGates String @default("[]")
 
   sandboxed     Boolean  @default(true)
   correlationId String?
@@ -115,21 +120,21 @@ model ProductBuild {
 // provider confirmation (deploymentId + url) exists on a row here; the
 // unavailable adapter writes DEPLOYMENT_NOT_CONNECTED rows with no ids.
 model ProductDeployment {
-  id            String   @id @default(cuid())
-  productId     String
-  product       Product  @relation(fields: [productId], references: [id])
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
 
-  status        String   // DEPLOYMENT_NOT_CONNECTED, DEPLOYED, FAILED, ROLLED_BACK, ...
-  providerId    String?
-  deploymentId  String?
-  url           String?
-  version       String?
-  errors        String   @default("[]")
+  status       String // DEPLOYMENT_NOT_CONNECTED, DEPLOYED, FAILED, ROLLED_BACK, ...
+  providerId   String?
+  deploymentId String?
+  url          String?
+  version      String?
+  errors       String  @default("[]")
 
   // Publication of the action requires an explicit human approval token.
   // The token itself is NEVER stored — only its presence and a hash hint.
-  approved      Boolean  @default(false)
-  approvalTokenHash String @default("")
+  approved          Boolean @default(false)
+  approvalTokenHash String  @default("")
 
   correlationId String?
   createdAt     DateTime @default(now())
@@ -141,47 +146,150 @@ model ProductDeployment {
 // can only be marked publishable when rights are CLEAR/OWNED; unclear rights
 // force HUMAN_REVIEW and blocked assets stay unpublishable.
 model ProductAsset {
-  id                String   @id @default(cuid())
-  productId         String
-  product           Product  @relation(fields: [productId], references: [id])
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
 
-  assetType         String   // PRODUCT_IMAGE, SCREENSHOT, THUMBNAIL, PREVIEW, LISTING_GRAPHIC
-  source            String   // GENERATED, MANUAL_UPLOAD, THIRD_PARTY
-  provenance        String   // AI_GENERATED, USER_ENTERED, VERIFIED_DATA, MOCKED
-  rightsStatus      String   // CLEAR, OWNED, UNCLEAR, HUMAN_REVIEW
-  publicationStatus String   // NOT_PUBLISHABLE, PUBLISHABLE, PUBLISHED, HUMAN_REVIEW
+  assetType         String // PRODUCT_IMAGE, SCREENSHOT, THUMBNAIL, PREVIEW, LISTING_GRAPHIC
+  source            String // GENERATED, MANUAL_UPLOAD, THIRD_PARTY
+  provenance        String // AI_GENERATED, USER_ENTERED, VERIFIED_DATA, MOCKED
+  rightsStatus      String // CLEAR, OWNED, UNCLEAR, HUMAN_REVIEW
+  publicationStatus String // NOT_PUBLISHABLE, PUBLISHABLE, PUBLISHED, HUMAN_REVIEW
 
-  origin            String   @default("")  // URL or description of origin (no credentials)
-  createdAt         DateTime @default(now())
+  origin    String   @default("") // URL or description of origin (no credentials)
+  createdAt DateTime @default(now())
 
   @@index([productId, createdAt])
 }
 
-model Experiment {
+// Phase B — durable Product Specification. One row per spec version per
+// product. Provenance rules: AI-derived fields stay AI_INFERENCE; the
+// deterministic fallback is MOCKED/DETERMINISTIC; VERIFIED_DATA only ever
+// describes fields copied from database records. Market evidence is
+// explicitly UNAVAILABLE unless a real evidence reference exists — no fake
+// market claims. Pipeline status (DRAFT→GENERATING→GENERATED→VALIDATING→
+// READY_FOR_PUBLISHING | QUALITY_FAILED | SAFETY_FAILED | FAILED) is a
+// pipeline-level record; the authoritative product status remains the
+// guarded lifecycle machine on Product.status.
+model ProductSpecification {
+  id            String  @id @default(cuid())
+  productId     String
+  product       Product @relation(fields: [productId], references: [id])
+  opportunityId String?
+  version       Int     @default(1)
+
+  title               String
+  shortDescription    String @default("")
+  detailedDescription String @default("")
+  targetAudience      String @default("")
+  problemSolved       String @default("")
+  coreValue           String @default("")
+  productType         String
+  productFormat       String @default("")
+
+  // JSON columns (bounded arrays) — additive Phase B fields.
+  features          String @default("[]")
+  deliverables      String @default("[]")
+  requirements      String @default("[]")
+  usageInstructions String @default("[]")
+  contentOutline    String @default("[]")
+  assetRequirements String @default("[]")
+  qualityCriteria   String @default("[]")
+  qualityGates      String @default("[]")
+
+  pricingPlaceholder String @default("")
+  marketPositioning  String @default("")
+  marketEvidence     String @default("UNAVAILABLE")
+
+  halalSafetyStatus  String    @default("PENDING")
+  halalReasons       String    @default("[]")
+  halalCheckedAt     DateTime?
+  halalPolicyVersion String    @default("")
+
+  provenance     String  @default("MOCKED")
+  generationMode String  @default("DETERMINISTIC")
+  providerModel  String  @default("")
+  status         String  @default("DRAFT")
+  correlationId  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId, version])
+  @@index([opportunityId])
+}
+
+// Phase B — product version history. A new row per regeneration/material
+// change; previous versions are preserved, never silently overwritten.
+model ProductVersion {
   id              String   @id @default(cuid())
-  hypothesis      String
-  target          String   @default("")
-  budget          Float    @default(0)
-  startDate       DateTime?
-  endDate         DateTime?
-  expectedResult  String   @default("")
-  actualResult    String   @default("")
-  
-  visitors        Int      @default(0)
-  leads           Int      @default(0)
-  clicks          Int      @default(0)
-  sales           Int      @default(0)
-  revenue         Float    @default(0)
-  profit          Float    @default(0)
-  conversionRate  Float    @default(0)
-  
-  decision        String?  // SCALE, ITERATE, PAUSE, KILL
-  
-  opportunityId   String?
-  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
-  
+  productId       String
+  product         Product  @relation(fields: [productId], references: [id])
+  specificationId String?
+  version         Int
+  changelog       String   @default("[]")
+  status          String   @default("GENERATED")
+  provenance      String   @default("MOCKED")
+  generationMode  String   @default("DETERMINISTIC")
+  correlationId   String?
   createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+
+  @@index([productId, version])
+}
+
+// Phase B — durable landing-page specification/content per product.
+// CTA is a non-payment placeholder (COMING_SOON | GET_ACCESS | LEARN_MORE);
+// no checkout, no fake purchase functionality.
+model ProductLandingPage {
+  id               String  @id @default(cuid())
+  productId        String
+  product          Product @relation(fields: [productId], references: [id])
+  headline         String  @default("")
+  problem          String  @default("")
+  targetAudience   String  @default("")
+  valueProposition String  @default("")
+  features         String  @default("[]")
+  whatsIncluded    String  @default("[]")
+  howItWorks       String  @default("[]")
+  faq              String  @default("[]")
+  ctaType          String  @default("COMING_SOON")
+  ctaLabel         String  @default("Coming Soon")
+  safetyNote       String  @default("")
+  status           String  @default("DRAFT")
+  provenance       String  @default("MOCKED")
+  correlationId    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+}
+
+model Experiment {
+  id             String    @id @default(cuid())
+  hypothesis     String
+  target         String    @default("")
+  budget         Float     @default(0)
+  startDate      DateTime?
+  endDate        DateTime?
+  expectedResult String    @default("")
+  actualResult   String    @default("")
+
+  visitors       Int   @default(0)
+  leads          Int   @default(0)
+  clicks         Int   @default(0)
+  sales          Int   @default(0)
+  revenue        Float @default(0)
+  profit         Float @default(0)
+  conversionRate Float @default(0)
+
+  decision String? // SCALE, ITERATE, PAUSE, KILL
+
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Revenue {
@@ -195,58 +303,58 @@ model Revenue {
   netRevenue      Float    @default(0)
   currency        String   @default("USD")
   referenceNote   String   @default("")
-  
-  productId       String?
-  product         Product? @relation(fields: [productId], references: [id])
-  
-  opportunityId   String?
-  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
-  
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+
   // Phase 5.5 — idempotent revenue ingestion (additive, optional). Null for
   // historical rows; when present, a unique violation is a DUPLICATE, so the
   // same payment can never be recorded twice. Written by the shared
   // revenueIdempotencyKey() rule — never by the API caller.
-  idempotencyKey  String?  @unique
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  idempotencyKey String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Affiliate {
-  id              String   @id @default(cuid())
-  merchant        String
-  product         String
-  category        String   @default("")
-  affiliateProgram String  @default("")
-  commissionType  String   @default("")
-  commissionRate  Float    @default(0)
-  affiliateUrl    String   @default("")
-  productUrl      String   @default("")
-  lastChecked     DateTime?
-  linkStatus      String   @default("ACTIVE")
-  disclosureStatus String  @default("REQUIRED")
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id               String    @id @default(cuid())
+  merchant         String
+  product          String
+  category         String    @default("")
+  affiliateProgram String    @default("")
+  commissionType   String    @default("")
+  commissionRate   Float     @default(0)
+  affiliateUrl     String    @default("")
+  productUrl       String    @default("")
+  lastChecked      DateTime?
+  linkStatus       String    @default("ACTIVE")
+  disclosureStatus String    @default("REQUIRED")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Content {
-  id              String   @id @default(cuid())
+  id              String @id @default(cuid())
   title           String
   type            String
-  body            String   @default("")
-  seoTitle        String   @default("")
-  metaDescription String   @default("")
-  status          String   @default("DRAFT")
-  
-  opportunityId   String?
-  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
-  
-  productId       String?
-  product         Product? @relation(fields: [productId], references: [id])
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  body            String @default("")
+  seoTitle        String @default("")
+  metaDescription String @default("")
+  status          String @default("DRAFT")
+
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // Persistent record of one bounded Opportunity → Product pipeline run
@@ -266,37 +374,37 @@ model Content {
 // - No market size, customer counts, prices, or revenue figures are stored
 //   here; extraction only keeps observed page text (see extraction.ts).
 model EvidenceItemModel {
-  id             String   @id @default(cuid())
+  id String @id @default(cuid())
 
-  opportunityId  String?
-  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
 
   // Identity + provenance of the source.
-  url            String
-  domain         String
-  query          String   @default("")
-  sourceType     String   @default("WEB_PAGE")
+  url        String
+  domain     String
+  query      String @default("")
+  sourceType String @default("WEB_PAGE")
 
   // VERIFIED_DATA (fetched + validated) or SEARCH_DISCOVERY (search metadata only).
-  evidenceType   String
+  evidenceType String
 
   // Extraction output.
-  title          String   @default("")
-  excerpt        String   @default("")
+  title   String @default("")
+  excerpt String @default("")
 
   // Fetch metadata (verifiability).
-  httpStatus     Int?
-  contentType    String?
-  contentLength  Int?
-  fetchedAt      DateTime
-  retrievedVia   String   @default("direct_fetch")
+  httpStatus    Int?
+  contentType   String?
+  contentLength Int?
+  fetchedAt     DateTime
+  retrievedVia  String   @default("direct_fetch")
 
   // Cache control.
   fetchDurationMs Int?
-  cache          Boolean  @default(true)
+  cache           Boolean @default(true)
 
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([url, query])
   @@index([opportunityId])
@@ -304,34 +412,34 @@ model EvidenceItemModel {
 }
 
 model PipelineRun {
-  id             String   @id @default(cuid())
+  id String @id @default(cuid())
 
   // The opportunity this run operated on. Optional: a run may start from a
   // free-form objective before any opportunity record is selected.
-  opportunityId  String?
-  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
 
   // Snapshot of the objective at run time (never mutated afterwards).
-  objective      String
+  objective String
 
   // Denormalized display state for fast dashboards: lifecycle stage + run outcome.
-  currentStage   String
-  status         String   // COMPLETED, PARTIAL, BLOCKED, HUMAN_REVIEW, FAILED
+  currentStage String
+  status       String // COMPLETED, PARTIAL, BLOCKED, HUMAN_REVIEW, FAILED
 
   // Full machine-readable run payload (steps, outputs, provenance, actions).
-  result         String
+  result String
 
   // Aggregated AI usage for the whole run (sums across steps; estimates only).
-  aiInputTokens  Int?
-  aiOutputTokens Int?
+  aiInputTokens    Int?
+  aiOutputTokens   Int?
   estimatedCostUsd Float?
 
-  startedAt      DateTime @default(now())
-  completedAt    DateTime?
-  durationMs     Int?
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  durationMs  Int?
 
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ============================================================================
@@ -387,15 +495,15 @@ model RateLimitWindow {
 // AUTHORIZING → CONNECTED → EXPIRED/REVOKED/ERROR) is deterministic; expired
 // grants are never silently reused.
 model IntegrationAuthorization {
-  id                     String   @id @default(cuid())
+  id                     String    @id @default(cuid())
   providerId             String
   scope                  String?
-  state                  String   @default("NOT_CONNECTED")
+  state                  String    @default("NOT_CONNECTED")
   accessTokenCiphertext  String?
   refreshTokenCiphertext String?
   expiresAt              DateTime?
-  grantedScopes          String   @default("[]")
-  metadata               String   @default("{}")
+  grantedScopes          String    @default("[]")
+  metadata               String    @default("{}")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -404,38 +512,38 @@ model IntegrationAuthorization {
 }
 
 model JobRun {
-  id             String   @id @default(cuid())
+  id String @id @default(cuid())
 
-  jobType        String   // RESEARCH, VALIDATION, PRODUCT, ANALYTICS, BUSINESS_MANAGER, OPPORTUNITY_PIPELINE
-  status         String   // QUEUED, RUNNING, SUCCEEDED, FAILED, BLOCKED, HUMAN_REVIEW, DEGRADED
+  jobType String // RESEARCH, VALIDATION, PRODUCT, ANALYTICS, BUSINESS_MANAGER, OPPORTUNITY_PIPELINE
+  status  String // QUEUED, RUNNING, SUCCEEDED, FAILED, BLOCKED, HUMAN_REVIEW, DEGRADED
 
   // Idempotency/dedup identifier. Unique per (jobType, correlationId).
   correlationId  String
-  idempotencyKey String   @unique
+  idempotencyKey String @unique
 
   // Optional opportunity scope; halal gating applies when present.
-  opportunityId  String?
-  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
 
   // Resolved executor: an agent type (single-agent jobs) or the pipeline.
-  agentType      String?
+  agentType String?
 
   // Job payload (JSON). Contains user inputs only — never secrets.
-  input          String   @default("{}")
+  input String @default("{}")
 
   // Output reference: AgentLog id / PipelineRun id, plus a compact provenance
   // summary. Full payloads stay in AgentLog/PipelineRun — no duplication.
-  resultRef      String?
-  output         String?
-  error          String?
+  resultRef String?
+  output    String?
+  error     String?
 
-  retryCount     Int      @default(0)
-  executionMode  String?  // LIVE or MOCKED at execution time
+  retryCount    Int     @default(0)
+  executionMode String? // LIVE or MOCKED at execution time
 
-  createdAt      DateTime @default(now())
-  startedAt      DateTime?
-  completedAt    DateTime?
-  updatedAt      DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  updatedAt   DateTime  @updatedAt
 
   @@index([status])
   @@index([jobType, createdAt])
@@ -450,24 +558,24 @@ model JobRun {
 // execute through the existing JobRun/AgentLog stack; this model only records
 // workflow-level state and never bypasses halal or human-review gates.
 model WorkflowRun {
-  id            String   @id @default(cuid())
+  id String @id @default(cuid())
 
-  workflowType  String   // OPPORTUNITY_DISCOVERY, OPPORTUNITY_TO_PRODUCT, BUSINESS_ANALYSIS, FULL_INCOME_PIPELINE
-  status        String   // COMPLETED, PARTIAL, BLOCKED, HUMAN_REVIEW, FAILED
+  workflowType String // OPPORTUNITY_DISCOVERY, OPPORTUNITY_TO_PRODUCT, BUSINESS_ANALYSIS, FULL_INCOME_PIPELINE
+  status       String // COMPLETED, PARTIAL, BLOCKED, HUMAN_REVIEW, FAILED
 
   correlationId String
   opportunityId String?
   opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
 
   // Planner decisions and per-step outcomes (JSON; safe fields only).
-  plan          String   @default("{}")
-  steps         String   @default("[]")
+  plan  String @default("{}")
+  steps String @default("[]")
 
-  startedAt     DateTime
-  completedAt   DateTime
-  durationMs    Int?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  startedAt   DateTime
+  completedAt DateTime
+  durationMs  Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@index([workflowType, createdAt])
   @@index([correlationId])
@@ -481,63 +589,62 @@ model WorkflowRun {
 // anonymous session identifier; no fabricated events (rows are written only
 // from validated ingestion calls). The Growth Engine consumes these rows.
 model ProductEvent {
-  id              String   @id @default(cuid())
+  id String @id @default(cuid())
 
-  productId       String
-  product         Product  @relation(fields: [productId], references: [id])
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
 
-  eventType       String   // VISITOR, PAGE_VIEW, PRODUCT_VIEW, CTA_CLICK, CHECKOUT_STARTED, PURCHASE, REFUND
-  occurredAt      DateTime
+  eventType  String // VISITOR, PAGE_VIEW, PRODUCT_VIEW, CTA_CLICK, CHECKOUT_STARTED, PURCHASE, REFUND
+  occurredAt DateTime
 
   // Optional business scope.
-  campaignId      String?
-  opportunityId   String?
-  experimentId    String?
+  campaignId    String?
+  opportunityId String?
+  experimentId  String?
 
   // Anonymous session/visitor identifier (no PII).
-  sessionId       String?
+  sessionId String?
 
   // For PURCHASE/REFUND: verified monetary value from the recording source.
-  amountUsd       Float?
+  amountUsd Float?
 
   // Phase 8 (Rules 6–7) — distribution attribution (additive, optional, non-PII).
-  utmSource       String?
-  utmMedium       String?
-  utmCampaign     String?
-  utmContent      String?
-  utmTerm         String?
-  referrer        String?
-  landingPage     String?
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  utmContent  String?
+  utmTerm     String?
+  referrer    String?
+  landingPage String?
 
   // Provenance of the event itself.
-  source          String   // e.g. 'manual', 'provider:<id>' — who recorded it
-  evidenceType    String   @default("VERIFIED_DATA")  // VERIFIED_DATA or USER_ENTERED only
+  source       String // e.g. 'manual', 'provider:<id>' — who recorded it
+  evidenceType String @default("VERIFIED_DATA") // VERIFIED_DATA or USER_ENTERED only
 
   // Idempotency: re-ingesting the same logical event is a no-op.
-  idempotencyKey  String   @unique
+  idempotencyKey String @unique
+
+  createdAt DateTime @default(now())
 
   @@index([productId, utmCampaign])
-
-  createdAt       DateTime @default(now())
-
   @@index([productId, occurredAt])
   @@index([productId, eventType])
 }
 
 model AgentLog {
-  id              String   @id @default(cuid())
-  agentType       String
-  action          String
-  input           String   @default("")
-  output          String   @default("")
-  reasoning       String   @default("")
-  evidenceType    String   @default("AI_INFERENCE")  // AI_INFERENCE, VERIFIED_DATA, USER_ENTERED
-  aiProvider      String?
-  aiModel         String?
-  inputTokens     Int?
-  outputTokens    Int?
+  id               String  @id @default(cuid())
+  agentType        String
+  action           String
+  input            String  @default("")
+  output           String  @default("")
+  reasoning        String  @default("")
+  evidenceType     String  @default("AI_INFERENCE") // AI_INFERENCE, VERIFIED_DATA, USER_ENTERED
+  aiProvider       String?
+  aiModel          String?
+  inputTokens      Int?
+  outputTokens     Int?
   estimatedCostUsd Float?
-  fallbackUsed    Boolean  @default(false)
+  fallbackUsed     Boolean @default(false)
 
   // Phase 4.5.1 (AI Usage & Cost Center): additive usage-attribution fields.
   // purpose is the AiPurpose label from the generation layer (e.g.
@@ -545,21 +652,21 @@ model AgentLog {
   // agent step; success records the AgentResult outcome. All three are
   // optional so historical rows (written before this change) aggregate
   // unchanged — unknown values are reported as 'unknown', never guessed.
-  purpose         String?
-  latencyMs       Int?
-  success         Boolean?
+  purpose   String?
+  latencyMs Int?
+  success   Boolean?
 
   // Phase 5.4 — Product-level AI cost attribution (all optional; additive
   // only). Historical rows aggregate unchanged. Attribution is written ONCE
   // per AI execution by the generation choke point; per-product aggregates
   // sum these rows so the same execution can never be double-counted.
-  productId       String?
-  opportunityId   String?
-  experimentId    String?
-  jobId           String?
-  correlationId   String?
+  productId     String?
+  opportunityId String?
+  experimentId  String?
+  jobId         String?
+  correlationId String?
 
-  createdAt       DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@index([agentType, createdAt])
   @@index([createdAt])

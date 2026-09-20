@@ -30,6 +30,7 @@ import { computeProductEconomics, attributeRevenueRow, type AttributableRevenueR
 import { classifyEvidence, recommendGrowthAction, type PerformanceEvidence } from '@/lib/business/growth-engine';
 import { computeProductFunnel } from './events';
 import { getProductAiCostAttribution } from '@/lib/ai/attribution';
+import { runProductPipeline } from './pipeline';
 import { logger } from '@/lib/server-log';
 
 // ---------------------------------------------------------------------------
@@ -46,6 +47,8 @@ export interface FactoryJobOptions {
   humanApprovalToken?: string;
   /** Test seam: skip durable build/deploy/asset persistence. */
   skipPersistence?: boolean;
+  /** Correlation id threaded from the JobRun row (Phase B pipeline provenance). */
+  correlationId?: string;
 }
 
 /** Map a factory outcome onto the shared job statuses (halal dominates). */
@@ -166,11 +169,17 @@ function specFromProduct(product: ProductRecord): PublishableProductSpec {
 
 export async function executeFactoryJob(
   jobType: string,
-  payload: { productId?: string; humanApprovalToken?: string; channel?: string; [key: string]: unknown },
+  payload: { productId?: string; opportunityId?: string; productType?: unknown; humanApprovalToken?: string; channel?: string; [key: string]: unknown },
   options: FactoryJobOptions = {},
 ): Promise<FactoryJobOutcome> {
   const productId = typeof payload.productId === 'string' ? payload.productId : '';
   if (!productId) {
+    // Phase B: PRODUCT_CREATE with an opportunityId runs the full durable
+    // product-creation pipeline (spec → generation → quality → safety →
+    // landing → package → READY_FOR_PUBLISHING) through the guarded lifecycle.
+    if (jobType === 'PRODUCT_CREATE' && typeof payload.opportunityId === 'string' && payload.opportunityId.trim()) {
+      return runProductCreatePipeline(payload.opportunityId.trim(), payload, options);
+    }
     return { status: 'FAILED', summary: null, error: 'productId is required for factory jobs.' };
   }
 
@@ -207,6 +216,49 @@ export async function executeFactoryJob(
     default:
       return { status: 'FAILED', summary: null, error: `Unknown factory job type: ${jobType}` };
   }
+}
+
+/**
+ * Phase B — PRODUCT_CREATE via the creation pipeline (opportunityId path).
+ * Maps the pipeline result onto shared job statuses; halal outcomes dominate.
+ */
+async function runProductCreatePipeline(
+  opportunityId: string,
+  payload: { productType?: unknown; [key: string]: unknown },
+  options: FactoryJobOptions,
+): Promise<FactoryJobOutcome> {
+  const result = await runProductPipeline({
+    opportunityId,
+    productType: payload.productType,
+    correlationId: options.correlationId
+      ?? (typeof payload.correlationId === 'string' ? payload.correlationId : null),
+  });
+  const status: FactoryJobOutcome['status'] = result.ok
+    ? 'SUCCEEDED'
+    : result.finalStatus === 'BLOCKED'
+      ? 'BLOCKED'
+      : result.finalStatus === 'HUMAN_REVIEW'
+        ? 'HUMAN_REVIEW'
+        : 'FAILED';
+  return {
+    status,
+    summary: {
+      pipeline: 'PHASE_B_PRODUCT_PIPELINE',
+      finalStatus: result.finalStatus,
+      productId: result.productId || null,
+      specificationId: result.specificationId || null,
+      specVersion: result.version,
+      landingPageId: result.landingPageId,
+      productLifecycleStatus: result.productLifecycleStatus,
+      correlationId: result.correlationId,
+      stages: result.stages.map((s) => ({ id: s.id, name: s.name, status: s.status })),
+      qualityGates: result.qualityGates,
+      generationMode: 'DETERMINISTIC',
+      provenance: 'MOCKED',
+      failureReason: result.failureReason,
+    },
+    ...(result.ok ? {} : { error: result.failureReason ?? result.finalStatus }),
+  };
 }
 
 /** PRODUCT_CREATE: mark spec ready through the guarded lifecycle. */

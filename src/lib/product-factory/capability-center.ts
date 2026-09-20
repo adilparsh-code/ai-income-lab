@@ -91,6 +91,21 @@ export async function describeCapabilityCenter(): Promise<CapabilityCenterReport
       requiresHumanApproval: false,
     },
     {
+      name: 'Product Pipeline (Phase B)',
+      // Truthful: the DETERMINISTIC pipeline is code-complete and executes
+      // through the Job Runner with zero credentials (proven by tests). AI
+      // narration inside generation stays MOCKED until a real key exists,
+      // and publishing downstream is NOT_CONNECTED — never conflated here.
+      status: 'LIVE',
+      detail:
+        'Deterministic creation pipeline is live: validated opportunity → specification → '
+        + 'generation → quality gate → halal/safety screening → landing page → versioned package '
+        + '(READY_FOR_PUBLISHING). Content is DETERMINISTIC/MOCKED provenance; market evidence is '
+        + 'recorded as UNAVAILABLE; publishing remains the next, not-yet-connected capability.',
+      requiredForLive: [],
+      requiresHumanApproval: false,
+    },
+    {
       name: 'Deployment (Vercel)',
       status: vercel.connected ? 'LIVE' : 'NOT_CONNECTED',
       detail: vercel.hint,

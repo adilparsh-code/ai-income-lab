@@ -327,7 +327,10 @@ async function executeFactoryJobViaRunner(
 ): Promise<JobOutcome> {
   const outcome = await (options.executeFactoryJob
     ? options.executeFactoryJob(jobType, payload)
-    : executeFactoryJob(jobType, payload, options.factory));
+    : executeFactoryJob(jobType, payload, {
+        ...options.factory,
+        correlationId: row.correlationId,
+      }));
 
   const status = mapFactoryOutcomeToStatus(outcome, opportunity?.halalStatus === 'NOT_ALLOWED');
   const executionMode: JobExecutionMode = 'MOCKED'; // deterministic ops; no AI, no network claims

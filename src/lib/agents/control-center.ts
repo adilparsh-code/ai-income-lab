@@ -56,6 +56,8 @@ function stageFromContext(view: IntelligenceView): string {
       return 'Validation';
     case 'BUILD_PRODUCT':
       return 'Product';
+    case 'CONNECT_PUBLISHING':
+      return 'Publishing (not connected)';
     case 'ANALYZE':
     case 'REVIEW_REVENUE':
       return 'Analytics';
