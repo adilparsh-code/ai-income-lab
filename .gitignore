@@ -44,3 +44,10 @@ next-env.d.ts
 # database (local SQLite, not version-controlled)
 dev.db
 prisma/dev.db
+
+# generated SQLite test schema/client (from scripts/generate-test-schema.mjs)
+prisma/schema.test.prisma
+prisma/test-client/
+
+# AutoClaw KDream data
+.autoclaw/
