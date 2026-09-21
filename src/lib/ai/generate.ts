@@ -1,0 +1,417 @@
+// Server-only AI generation orchestration.
+// Phase 4.2.1: foundation. Phase 4.2.2: real Gemini adapter wired in.
+// Default behavior is safe: AI_PROVIDER=mock resolves a deterministic in-process
+// provider, so no API key or network is required. Setting AI_PROVIDER=gemini
+// with a valid AI_PROVIDER_API_KEY resolves the Gemini adapter; openai is still
+// NOT implemented and is an explicit config error — never a silent mock fallback.
+//
+// Provenance rule: everything produced here is AI_INFERENCE. Callers must never
+// classify it as VERIFIED_DATA.
+
+import { logger } from '@/lib/server-log';
+import {
+  AiErrorCategory,
+  AiGenerateOptions,
+  AiGenerateResult,
+  AiProvider,
+  AiProviderError,
+  AiProviderId,
+  RETRYABLE_CATEGORIES,
+  classifyGenericError,
+  isAiProviderError,
+  isRealProvider,
+  resolveProviderId,
+} from './provider';
+import { clampMaxOutputTokens, clampTemperature, estimateCostUsd, estimateTokens, getDailyBudgetUsd, getModelPolicyOrDefault } from './models';
+import { buildGeminiProvider } from './gemini';
+import { parseAndValidate } from './schemas';
+import {
+  accountCacheHit,
+  accountCacheMiss,
+  accountDuplicatePrevented,
+  buildRequestSignature,
+  checkDuplicate,
+  checkTokenBudgets,
+  lookupCache,
+  recordTokenUsage,
+  storeCache,
+  type EfficiencySnapshot,
+} from './efficiency';
+
+/**
+ * Process-local efficiency snapshot (Phase 4.5.3): cache hits/misses, prevented
+ * duplicates, and estimated avoided cost/tokens for THIS server instance.
+ * Read by the usage surfaces; reset on process restart (deliberately not
+ * durable — savings are estimates for observability, not business data).
+ */
+const efficiencySnapshot: EfficiencySnapshot = {
+  cacheHits: 0,
+  cacheMisses: 0,
+  duplicateRequestsPrevented: 0,
+  dedupAvoidedInputTokens: 0,
+  dedupAvoidedCostUsd: 0,
+  cacheAvoidedInputTokens: 0,
+  cacheAvoidedCostUsd: 0,
+};
+
+/** Read-only view of the process-local efficiency counters. */
+export function getEfficiencySnapshot(): Readonly<EfficiencySnapshot> {
+  return efficiencySnapshot;
+}
+
+/** Test seam: reset the process-local efficiency counters. */
+export function __resetEfficiencySnapshot(): void {
+  efficiencySnapshot.cacheHits = 0;
+  efficiencySnapshot.cacheMisses = 0;
+  efficiencySnapshot.duplicateRequestsPrevented = 0;
+  efficiencySnapshot.dedupAvoidedInputTokens = 0;
+  efficiencySnapshot.dedupAvoidedCostUsd = 0;
+  efficiencySnapshot.cacheAvoidedInputTokens = 0;
+  efficiencySnapshot.cacheAvoidedCostUsd = 0;
+}
+
+export type { AiGenerateOptions, AiGenerateResult };
+export { estimateTokens } from './models';
+
+function readPositiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  const parsed = raw ? Number(raw) : fallback;
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+export function getTimeoutMs(): number {
+  return readPositiveInt('AI_TIMEOUT_MS', 25000);
+}
+
+export function getMaxRetries(): number {
+  return Math.min(5, readPositiveInt('AI_MAX_RETRIES', 2));
+}
+
+/** Deterministic in-process mock provider. No key, no network. */
+class MockProvider implements AiProvider {
+  readonly id: AiProviderId = 'mock';
+
+  async generate(prompt: string, opts: AiGenerateOptions): Promise<AiGenerateResult> {
+    const started = Date.now();
+    const document = {
+      mock: true,
+      purpose: opts.purpose,
+      note: 'Mock provider output. Deterministic placeholder for Phase 4.2.1.',
+    };
+    const text = JSON.stringify(document);
+    const inputTokens = estimateTokens(prompt);
+    const outputTokens = estimateTokens(text);
+    return {
+      text,
+      parsed: document,
+      inputTokens,
+      outputTokens,
+      model: opts.model,
+      provider: 'mock',
+      latencyMs: Date.now() - started,
+    };
+  }
+}
+
+const mockProvider = new MockProvider();
+
+export function getProvider(): AiProvider {
+  const id = resolveProviderId();
+  if (id === 'mock') return mockProvider;
+  if (id === 'gemini') {
+    // Missing credentials for an IMPLEMENTED provider are an OPERATIONAL
+    // condition, not a config error: the configured provider simply cannot
+    // run right now. Surface it as a typed provider error so the generation
+    // orchestrator (and therefore every agent) fails CLOSED into its
+    // documented deterministic fallback instead of crashing the business
+    // workflow. This is not a silent mock fallback — callers see
+    // fallbackUsed=true, a MOCKED capability status, and this exact reason.
+    const apiKey = process.env.AI_PROVIDER_API_KEY;
+    if (!apiKey || apiKey.trim().length === 0) {
+      throw new AiProviderError(
+        'AI provider "gemini" is selected but AI_PROVIDER_API_KEY is not set. '
+          + 'The deterministic fallback was used instead; no live AI output was produced.',
+        { category: 'authentication' },
+      );
+    }
+    return buildGeminiProvider(apiKey);
+  }
+  if (id === 'openai') {
+    // Explicitly unsupported: fail loudly BEFORE any env validation so the
+    // error names the real problem (unsupported provider), never a confusing
+    // missing-key message, and never a silent mock fallback.
+    throw new Error(
+      `AI provider "openai" is not enabled yet. Only "mock" and "gemini" are implemented in this phase. ` +
+        `Set AI_PROVIDER to "mock" or "gemini" (or set the fallback).`
+    );
+  }
+  throw new Error(`Unknown AI provider "${id}".`);
+}
+
+export function identifyExecutionMode(): { provider: AiProviderId; isLive: boolean; isMocked: boolean } {
+  const provider = resolveProviderId();
+  return { provider, isLive: isRealProvider(provider), isMocked: provider === 'mock' };
+}
+
+async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Build sanitized usage metadata; never NaN/Infinity, never key material. */
+function buildUsage(
+  result: { provider: string; model: string; inputTokens: number; outputTokens: number; latencyMs: number },
+  started: number
+): { provider: string; model: string; inputTokens: number; outputTokens: number; estimatedCostUsd: number; latencyMs: number } {
+  const inputTokens = Number.isFinite(result.inputTokens) && result.inputTokens >= 0 ? Math.floor(result.inputTokens) : 0;
+  const outputTokens = Number.isFinite(result.outputTokens) && result.outputTokens >= 0 ? Math.floor(result.outputTokens) : 0;
+  return {
+    provider: result.provider,
+    model: result.model,
+    inputTokens,
+    outputTokens,
+    estimatedCostUsd: estimateCostUsd(result.model, inputTokens, outputTokens),
+    latencyMs: Math.max(0, Date.now() - started),
+  };
+}
+
+/**
+ * Summarize an error for logs/results WITHOUT leaking env values or key
+ * material. Provider messages may echo configuration; strip anything that
+ * looks like a key/token before it reaches the error list.
+ */
+function summarizeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return redactKeyMaterial(message).slice(0, 300);
+}
+
+const KEY_LIKE_PATTERNS: RegExp[] = [
+  /AIza[0-9A-Za-z_\-]{10,}/g,
+  /sk-[A-Za-z0-9_\-]{10,}/g,
+  /key=[A-Za-z0-9_\-]{10,}/gi,
+  /(?:api[_-]?key|token|password|secret)\s*[=:]\s*["']?[A-Za-z0-9_\-./:@]{8,}/gi,
+];
+
+function redactKeyMaterial(text: string): string {
+  let output = text;
+  for (const pattern of KEY_LIKE_PATTERNS) {
+    output = output.replace(pattern, '[REDACTED]');
+  }
+  return output;
+}
+
+export interface ValidatedGeneration<T> {
+  ok: true;
+  value: T;
+  usage: { provider: string; model: string; inputTokens: number; outputTokens: number; estimatedCostUsd: number; latencyMs: number };
+  fallbackUsed: boolean;
+  attempts: number;
+  /** Phase 4.5.3: true when the validated result came from the TTL cache. */
+  servedFromCache?: boolean;
+}
+
+export interface FailedGeneration {
+  ok: false;
+  errors: string[];
+  fallbackUsed: true;
+  attempts: number;
+  categories?: AiErrorCategory[];
+  /** Phase 4.5.3: why an efficiency policy blocked the call (when it did). */
+  blockedBy?: 'token_budget' | 'dedup';
+  budgetKind?: 'request' | 'daily' | 'monthly' | 'agent' | 'purpose' | null;
+}
+
+export type GenerationOutcome<T> = ValidatedGeneration<T> | FailedGeneration;
+
+export async function generateValidated<T extends Record<string, unknown>>(
+  prompt: string,
+  purpose: string,
+  schema: AiGenerateOptions['jsonSchema'],
+  overrides?: Partial<Pick<AiGenerateOptions, 'model' | 'maxOutputTokens' | 'temperature' | 'timeoutMs' | 'cacheKey'>>
+): Promise<GenerationOutcome<T>> {
+  const started = Date.now();
+  // Provider resolution can fail for OPERATIONAL reasons (configured provider
+  // has no credentials). Those resolve to a FailedGeneration outcome so callers
+  // fail closed into their deterministic fallback paths. Genuine CONFIG errors
+  // (unsupported provider id, invalid AI_PROVIDER value) still throw loudly.
+  let provider: AiProvider;
+  try {
+    provider = getProvider();
+  } catch (error) {
+    if (isAiProviderError(error)) {
+      return {
+        ok: false,
+        errors: [summarizeError(error)],
+        fallbackUsed: true,
+        attempts: 0,
+        categories: [error.category],
+      };
+    }
+    throw error;
+  }
+  // Model selection follows the PURPOSE-SPECIFIC model policy. Callers may
+  // override, but when they do not, the policy for this purpose decides the
+  // model — never a hardcoded default buried in the call site. Unknown purpose
+  // labels resolve to a conservative generic policy instead of crashing.
+  const policy = getModelPolicyOrDefault(purpose);
+  const timeoutMs = overrides?.timeoutMs ?? getTimeoutMs();
+  const maxRetries = getMaxRetries();
+  const maxOutputTokens = clampMaxOutputTokens(overrides?.maxOutputTokens ?? policy.maxOutputTokens);
+  const temperature = clampTemperature(overrides?.temperature ?? policy.temperature);
+  const model = overrides?.model ?? policy.model;
+
+  const estimatedInputTokens = estimateTokens(prompt);
+  const estimatedCostRaw = estimateCostUsd(model, estimatedInputTokens, maxOutputTokens);
+  const estimatedCost = Number.isFinite(estimatedCostRaw) && estimatedCostRaw >= 0 ? estimatedCostRaw : 0;
+  const budget = getDailyBudgetUsd();
+  if (estimatedCost > budget) {
+    return { ok: false, errors: [`Estimated cost $${estimatedCost.toFixed(6)} exceeds daily budget $${budget.toFixed(2)}. Request blocked.`], fallbackUsed: true, attempts: 0 };
+  }
+
+  // Phase 4.5.3 — TOKEN BUDGETS (per request/agent/purpose/daily/monthly).
+  // The agent label is derived from the purpose ('research.findings' →
+  // 'research'); unknown purposes use the purpose itself as the agent label.
+  const budgetAgentLabel = purpose.includes('.') ? purpose.split('.')[0] : purpose;
+  const tokenBudget = checkTokenBudgets({
+    estimatedTotalTokens: estimatedInputTokens + maxOutputTokens,
+    agent: budgetAgentLabel,
+    purpose,
+  });
+  if (!tokenBudget.allowed) {
+    logger.warn('AI generation blocked by token budget policy', { purpose, budgetKind: tokenBudget.budgetKind });
+    return {
+      ok: false,
+      errors: [tokenBudget.reason ?? 'Token budget policy blocked this request.'],
+      fallbackUsed: true,
+      attempts: 0,
+      blockedBy: 'token_budget',
+      budgetKind: tokenBudget.budgetKind,
+    };
+  }
+
+  const opts: AiGenerateOptions = { model, maxOutputTokens, temperature, timeoutMs, jsonSchema: schema, purpose };
+  if (overrides?.cacheKey) opts.cacheKey = overrides.cacheKey;
+
+  // Phase 4.5.3 — RESULT CACHE (checked BEFORE dedup): only an explicit
+  // caller-supplied cacheKey can hit the cache; keys never outlive their TTL
+  // (freshness stays the caller's contract). A hit is the cheapest outcome —
+  // no AI call, no dedup penalty — and returns fallbackUsed=false because the
+  // validated value IS the productive output of this request.
+  if (overrides?.cacheKey) {
+    const cached = lookupCache<{ value: T; usage: ValidatedGeneration<T>['usage'] }>(overrides.cacheKey);
+    if (cached.hit && cached.value) {
+      accountCacheHit(efficiencySnapshot, { inputTokens: estimatedInputTokens, costUsd: estimatedCost });
+      logger.info('AI generation served from result cache', { purpose });
+      return {
+        ok: true,
+        value: cached.value.value,
+        usage: cached.value.usage,
+        fallbackUsed: false,
+        attempts: 0,
+        servedFromCache: true,
+      };
+    }
+    accountCacheMiss(efficiencySnapshot);
+  }
+
+  // Phase 4.5.3 — REQUEST DEDUPLICATION: an identical (provider, model,
+  // purpose, prompt, options) request inside the dedup window is prevented.
+  const signature = buildRequestSignature({ provider: provider.id, model, purpose, prompt, maxOutputTokens, temperature });
+  const dedup = checkDuplicate(signature);
+  if (dedup.duplicate) {
+    accountDuplicatePrevented(efficiencySnapshot, { inputTokens: estimatedInputTokens, costUsd: estimatedCost });
+    logger.info('AI generation deduplicated an identical in-window request', { purpose });
+    return {
+      ok: false,
+      errors: ['Duplicate request prevented: an identical request already ran inside the dedup window. Use a fresh cacheKey or wait for the window to elapse if this work is genuinely new.'],
+      fallbackUsed: true,
+      attempts: 0,
+      blockedBy: 'dedup',
+    };
+  }
+
+  const errors: string[] = [];
+  const categories: AiErrorCategory[] = [];
+  const maxAttempts = maxRetries + 1;
+  let attempts = 0;
+  let succeeded = false;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    attempts = attempt;
+    try {
+      const result = await withTimeout(provider.generate(prompt, opts), timeoutMs, `AI generation (attempt ${attempt})`);
+      const validated = parseAndValidate(result.text, schema);
+      if (validated.valid) {
+        const usage = buildUsage(result, started);
+        recordTokenUsage({ agent: budgetAgentLabel, purpose, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, at: new Date() });
+        dedup.record(signature, usage.inputTokens, usage.estimatedCostUsd);
+        if (overrides?.cacheKey) {
+          storeCache({ cacheKey: overrides.cacheKey, value: { value: validated.value as T, usage }, inputTokens: usage.inputTokens, costUsd: usage.estimatedCostUsd });
+        }
+        succeeded = true;
+        return {
+          ok: true,
+          value: validated.value as T,
+          usage,
+          fallbackUsed: false,
+          attempts,
+        };
+      }
+      errors.push(`Attempt ${attempt}: schema validation failed: ${validated.errors.join('; ')}`);
+      categories.push('invalid_response');
+    } catch (error) {
+      errors.push(`Attempt ${attempt} failed: ${summarizeError(error)}`);
+      categories.push(classifyGenericError(error));
+      // Bounded retry: only retry error categories that are actually retryable.
+      // Malformed/invalid responses and auth failures cannot improve on retry;
+      // fail closed immediately instead of burning budget on hopeless retries.
+      if (!RETRYABLE_CATEGORIES.has(categories[categories.length - 1])) break;
+    }
+    if (attempt < maxAttempts) await sleep(Math.min(4000, 250 * 2 ** (attempt - 1)));
+  }
+
+  if (!succeeded) {
+    try {
+      const repair = await withTimeout(provider.generate(prompt, opts), timeoutMs, 'AI generation (repair attempt)');
+      const revalidated = parseAndValidate(repair.text, schema);
+      attempts += 1;
+      if (revalidated.valid) {
+        const usage = buildUsage(repair, started);
+        recordTokenUsage({ agent: budgetAgentLabel, purpose, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, at: new Date() });
+        dedup.record(signature, usage.inputTokens, usage.estimatedCostUsd);
+        if (overrides?.cacheKey) {
+          storeCache({ cacheKey: overrides.cacheKey, value: { value: revalidated.value as T, usage }, inputTokens: usage.inputTokens, costUsd: usage.estimatedCostUsd });
+        }
+        return {
+          ok: true,
+          value: revalidated.value as T,
+          usage,
+          fallbackUsed: false,
+          attempts,
+        };
+      }
+      errors.push(`Repair attempt: schema validation failed: ${revalidated.errors.join('; ')}`);
+      categories.push('invalid_response');
+    } catch (repairError) {
+      errors.push(`Repair attempt failed: ${summarizeError(repairError)}`);
+      categories.push(classifyGenericError(repairError));
+    }
+  }
+
+  logger.warn('AI generation failed closed after retries', { purpose, attempts });
+  return { ok: false, errors, fallbackUsed: true, attempts, categories };
+}

@@ -1,0 +1,44 @@
+{
+  "name": "ai-income-lab",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "prisma:generate": "prisma generate",
+    "postinstall": "prisma generate && node scripts/generate-test-schema.mjs",
+    "pretest": "node scripts/generate-test-schema.mjs",
+    "pretypecheck": "node scripts/generate-test-schema.mjs",
+    "prebuild": "node scripts/generate-test-schema.mjs",
+    "test": "tsx --test src/lib/ai/__tests__/*.test.ts src/lib/ruflo/__tests__/*.test.ts src/lib/research/__tests__/*.test.ts src/lib/product-factory/__tests__/*.test.ts src/lib/jobs/__tests__/*.test.ts src/lib/agents/__tests__/*.test.ts src/lib/business/__tests__/*.test.ts src/lib/publishing/__tests__/*.test.ts src/lib/income-engine/__tests__/*.test.ts src/lib/integrations/__tests__/*.test.ts src/lib/security/__tests__/*.test.ts"
+  },
+  "dependencies": {
+    "@prisma/adapter-libsql": "^7.10.0",
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
+    "@types/uuid": "^10.0.0",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.45.0",
+    "next": "16.3.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "recharts": "^3.10.1",
+    "tailwind-merge": "^3.6.0",
+    "uuid": "^14.0.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.5",
+    "prisma": "^7.10.0",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.13",
+    "typescript": "^5"
+  }
+}
