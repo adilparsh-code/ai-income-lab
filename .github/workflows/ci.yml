@@ -17,7 +17,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install AI Income Lab dependencies
@@ -57,6 +57,17 @@ jobs:
       - name: Install Ruflo dependencies
         working-directory: .ci/ruflo
         run: npm ci
+
+      - name: Patch Ruflo type-only re-exports for runtime execution
+        working-directory: .ci/ruflo
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('v3/mcp/transport/index.ts')
+          s = p.read_text()
+          s = s.replace("export { HttpTransport, HttpTransportConfig } from './http.js';", "export { HttpTransport } from './http.js';\nexport type { HttpTransportConfig } from './http.js';")
+          p.write_text(s)
+          PY
 
       - name: Start Ruflo V3 HTTP runtime
         working-directory: .ci/ruflo
