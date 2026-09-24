@@ -11,6 +11,7 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/*": ["./node_modules/@libsql/**/*"],
   },
+  allowedDevOrigins: ['*.monkeycode-ai.live', '**.monkeycode-ai.live'],
   experimental: {
     /*
      * Bound build parallelism. Next defaults experimental.cpus to core-count
