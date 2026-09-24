@@ -46,6 +46,11 @@ model Opportunity {
   evidenceItems         EvidenceItemModel[]
   jobRuns               JobRun[]
   workflowRuns          WorkflowRun[]
+  missions              AgentMission[]
+  loopTransitions       LoopTransition[]
+  simulationRuns        SimulationRun[]
+  operationalMemories   OperationalMemory[]
+  failureRecords        FailureRecord[]
 }
 
 model Product {
@@ -565,4 +570,134 @@ model AgentLog {
   @@index([createdAt])
   @@index([productId])
   @@index([opportunityId])
+}
+
+// ============================================================================
+// PHASE 8 — Production Hardening + Autonomous Operations Layer
+// Additive only. Never stores simulated revenue as real Revenue rows.
+// ============================================================================
+
+/// Durable agent mission. Execution always goes through the Job Runner;
+/// this model never bypasses halal, human-review, or publishing gates.
+model AgentMission {
+  id                   String   @id @default(cuid())
+  objective            String
+  opportunityId        String?
+  opportunity          Opportunity? @relation(fields: [opportunityId], references: [id])
+  agentType            String
+  constraints          String   @default("[]")
+  budgetUsd            Float    @default(0)
+  allowedCapabilities  String   @default("[]")
+  expectedOutput       String   @default("")
+  successCriteria      String   @default("")
+  failureCriteria      String   @default("")
+  deadlineAt           DateTime?
+  timeoutMs            Int      @default(120000)
+  approvalRequired     Boolean  @default(false)
+  status               String   @default("QUEUED")
+  failureReason        String?
+  correlationId        String
+  retryCount           Int      @default(0)
+  resumePoint          String?
+  lastError            String?
+  failureClass         String?
+  jobId                String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  startedAt            DateTime?
+  completedAt          DateTime?
+
+  @@unique([correlationId])
+  @@index([status])
+  @@index([opportunityId, createdAt])
+  @@index([agentType, createdAt])
+}
+
+/// Auditable autonomous-loop transition. One row per attempted stage move.
+/// from/to/reason/evidence/correlationId/timestamp/status are always present.
+model LoopTransition {
+  id              String   @id @default(cuid())
+  opportunityId   String
+  opportunity     Opportunity @relation(fields: [opportunityId], references: [id])
+  fromStage       String
+  toStage         String
+  reason          String
+  evidence        String   @default("")
+  evidenceType    String   @default("VERIFIED_DATA")
+  correlationId   String
+  status          String
+  mode            String   @default("LIVE")
+  createdAt       DateTime @default(now())
+
+  @@index([opportunityId, createdAt])
+  @@index([correlationId])
+}
+
+/// Paper-income / simulation run. Label is always SIMULATED.
+/// These rows MUST never be copied into the Revenue table.
+model SimulationRun {
+  id               String   @id @default(cuid())
+  seed             String
+  opportunityId    String?
+  opportunity      Opportunity? @relation(fields: [opportunityId], references: [id])
+  mode             String   @default("SIMULATION")
+  traffic          Int      @default(0)
+  conversionRate   Float    @default(0)
+  revenueUsd       Float    @default(0)
+  costsUsd         Float    @default(0)
+  profitUsd        Float    @default(0)
+  label            String   @default("SIMULATED")
+  stages           String   @default("[]")
+  decision         String?
+  realTransaction  Boolean  @default(false)
+  correlationId    String
+  createdAt        DateTime @default(now())
+
+  @@index([opportunityId, createdAt])
+  @@index([correlationId])
+}
+
+/// Structured operational memory (not chat history). Entries without
+/// sufficient provenance must never be treated as verified truth.
+model OperationalMemory {
+  id                 String   @id @default(cuid())
+  category           String
+  source             String
+  evidenceType       String
+  relatedEntityType  String?
+  relatedEntityId    String?
+  opportunityId      String?
+  opportunity        Opportunity? @relation(fields: [opportunityId], references: [id])
+  observation        String
+  outcome            String   @default("")
+  applicability      String   @default("")
+  confidence         Float    @default(0)
+  createdAt          DateTime @default(now())
+
+  @@index([category, createdAt])
+  @@index([relatedEntityType, relatedEntityId])
+  @@index([opportunityId])
+}
+
+/// Classified failure + recovery state. Bounded retries; dead-letter when exhausted.
+model FailureRecord {
+  id                 String   @id @default(cuid())
+  classification     String
+  retryCount         Int      @default(0)
+  maxRetries         Int      @default(3)
+  lastError          String
+  recoveryState      String   @default("OPEN")
+  deadLettered       Boolean  @default(false)
+  resumePoint        String?
+  correlationId      String
+  relatedEntityType  String?
+  relatedEntityId    String?
+  opportunityId      String?
+  opportunity        Opportunity? @relation(fields: [opportunityId], references: [id])
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([classification, createdAt])
+  @@index([correlationId])
+  @@index([recoveryState])
 }
