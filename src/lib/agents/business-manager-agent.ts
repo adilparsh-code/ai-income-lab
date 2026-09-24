@@ -268,7 +268,7 @@ export class BusinessManagerAgent extends BaseAgent {
     // pipeline stage, never on a guess; lookup failure degrades to absent
     // pipeline state (NOT_STARTED semantics are NOT fabricated for specs
     // that could not be read).
-    let latestSpecByProduct = new Map<string, { status: string; version: number }>();
+    const latestSpecByProduct = new Map<string, { status: string; version: number }>();
     let pipelineStateLookupFailed = false;
     if (oppProducts.length > 0) {
       try {

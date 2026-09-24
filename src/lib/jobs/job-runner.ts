@@ -33,6 +33,7 @@ import {
   type FactoryJobOptions,
 } from '@/lib/product-factory/factory-jobs';
 import { validateJobPayload } from './job-definitions';
+import { classifyFailure, decideRecovery } from '@/lib/operations/failure-recovery';
 import {
   JOB_TYPE_TO_AGENT,
   isFactoryJobType,
@@ -80,6 +81,10 @@ export interface JobRunRow {
   error: string | null;
   retryCount: number;
   executionMode: string | null;
+  failureCategory?: string | null;
+  recoveryState?: string | null;
+  deadLettered?: boolean;
+  resumePoint?: string | null;
   createdAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -91,9 +96,27 @@ export interface JobDb {
   };
   jobRun: {
     findUnique(args: { where: { idempotencyKey: string } }): Promise<JobRunRow | null>;
+    findMany?(args: { where: { jobType: string; input: string; status: string } }): Promise<JobRunRow[]>;
     create(args: { data: NewJobRunData }): Promise<JobRunRow>;
     update(args: { where: { id: string }; data: Partial<NewJobRunData> }): Promise<JobRunRow>;
   };
+  failureRecovery?: {
+    create(args: { data: NewFailureRecoveryData }): Promise<unknown>;
+  };
+}
+
+export interface NewFailureRecoveryData {
+  opportunityId: string | null;
+  jobId: string;
+  category: string;
+  lastError: string;
+  retryCount: number;
+  maxRetries: number;
+  nextRetryAt: Date | null;
+  state: string;
+  deadLetter: boolean;
+  resumePoint: string | null;
+  correlationId: string;
 }
 
 export interface NewJobRunData {
@@ -109,6 +132,10 @@ export interface NewJobRunData {
   error: string | null;
   retryCount: number;
   executionMode: string | null;
+  failureCategory: string | null;
+  recoveryState: string | null;
+  deadLettered: boolean;
+  resumePoint: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
 }
@@ -205,6 +232,8 @@ export interface RunJobOptions {
    * seam). Ignored for non-factory job types.
    */
   factory?: FactoryJobOptions;
+  /** Durable attempt number for bounded recovery decisions. */
+  retryCount?: number;
 }
 
 export async function runJob(
@@ -257,8 +286,12 @@ export async function runJob(
         output: null,
         resultRef: null,
         error: null,
-        retryCount: 0,
+        retryCount: Math.max(0, Math.min(MAX_RETRIES, options.retryCount ?? 0)),
         executionMode: null,
+        failureCategory: null,
+        recoveryState: null,
+        deadLettered: false,
+        resumePoint: null,
         startedAt: null,
         completedAt: null,
       },
@@ -281,16 +314,16 @@ export async function runJob(
     }
     if (!opportunity) {
       return finishRow(db, row, 'FAILED', null,
-        `Opportunity "${opportunityId}" was not found.`, null, 0);
+        `Opportunity "${opportunityId}" was not found.`, null, row.retryCount);
     }
     if (opportunity.halalStatus === 'NOT_ALLOWED') {
       logger.info('Job blocked by halal gate (NOT_ALLOWED); no agent or AI call made', { jobType, opportunityId });
       return finishRow(db, row, 'BLOCKED', null,
-        'Blocked: opportunity halalStatus is NOT_ALLOWED. No agent or AI provider was invoked.', null, 0);
+        'Blocked: opportunity halalStatus is NOT_ALLOWED. No agent or AI provider was invoked.', null, row.retryCount);
     }
     if (opportunity.halalStatus === 'REVIEW_REQUIRED') {
       return finishRow(db, row, 'HUMAN_REVIEW', null,
-        'Paused: opportunity halalStatus is REVIEW_REQUIRED. A qualified human must review before any execution.', null, 0);
+        'Paused: opportunity halalStatus is REVIEW_REQUIRED. A qualified human must review before any execution.', null, row.retryCount);
     }
   }
 
@@ -306,7 +339,7 @@ export async function runJob(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error('Job execution threw', error, { jobType, jobId: row.id });
-    return finishRow(db, row, 'FAILED', null, `Job execution failed: ${message}`.slice(0, 500), null, 0);
+    return finishRow(db, row, 'FAILED', null, `Job execution failed: ${message}`.slice(0, 500), null, row.retryCount);
   }
 }
 
@@ -338,7 +371,7 @@ async function executeFactoryJobViaRunner(
     factoryJob: jobType,
     productId: typeof payload.productId === 'string' ? payload.productId : null,
     ...(outcome.summary ?? {}),
-  }, outcome.error ?? null, null, 0, executionMode);
+  }, outcome.error ?? null, null, row.retryCount, executionMode);
 }
 
 async function executeSingleAgentJob(
@@ -374,7 +407,7 @@ async function executeSingleAgentJob(
   const executionMode: JobExecutionMode = result.capabilityStatus === 'LIVE' ? 'LIVE' : 'MOCKED';
   const resultRef = summary.agentLogId ? { agentLogId: summary.agentLogId } : null;
 
-  return finishRow(db, row, status, summary, result.error ?? null, resultRef, 0, executionMode);
+  return finishRow(db, row, status, summary, result.error ?? null, resultRef, row.retryCount, executionMode);
 }
 
 async function executeWorkflowJob(
@@ -406,7 +439,7 @@ async function executeWorkflowJob(
   };
   const resultRef = run.runId ? { pipelineRunId: run.runId } : null;
 
-  return finishRow(db, row, status, output, null, resultRef, 0);
+  return finishRow(db, row, status, output, null, resultRef, row.retryCount);
 }
 
 // ---------------------------------------------------------------------------
@@ -443,21 +476,52 @@ export async function retryJob(
       retryCount: retryIndex - 1,
     };
   }
-  return runJob(jobType, payload, `retry-${retryIndex}-${randomUUID()}`, options);
+  return runJob(jobType, payload, `retry-${retryIndex}-${randomUUID()}`, { ...options, retryCount: retryIndex - 1 });
 }
 
 async function nextRetryIndex(db: JobDb, jobType: JobType, payload: JobPayload): Promise<number> {
-  // Count prior DEGRADED attempts for this exact payload signature.
-  const signature = JSON.stringify(payload);
-  void signature;
-  // The narrow JobDb surface intentionally has no generic query; retries are
-  // tracked via distinct correlation ids and the caller-visible retryCount.
-  return 1;
+  if (!db.jobRun.findMany) return 1;
+  try {
+    const priorAttempts = await db.jobRun.findMany({
+      where: { jobType, input: JSON.stringify(payload), status: 'DEGRADED' },
+    });
+    return priorAttempts.length + 1;
+  } catch (error) {
+    logger.warn('Retry history lookup failed; refusing autonomous retry', {
+      error: String(error).slice(0, 150),
+      jobType,
+    });
+    return MAX_RETRIES + 1;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Finalization helpers
 // ---------------------------------------------------------------------------
+
+function recoveryFor(status: string, error: string | null, retryCount: number): {
+  fields: Partial<NewJobRunData>;
+  category: string | null;
+  decision: ReturnType<typeof decideRecovery> | null;
+} {
+  if (status === 'SUCCEEDED') {
+    return { fields: { recoveryState: null, failureCategory: null, deadLettered: false, resumePoint: null }, category: null, decision: null };
+  }
+  const category = status === 'DEGRADED'
+    ? 'PROVIDER_UNAVAILABLE'
+    : classifyFailure({ status, message: error ?? '' });
+  const decision = decideRecovery(category, retryCount, MAX_RETRIES);
+  return {
+    fields: {
+      failureCategory: category,
+      recoveryState: decision.state,
+      deadLettered: decision.deadLetter,
+      resumePoint: decision.resumePoint,
+    },
+    category,
+    decision,
+  };
+}
 
 function isTerminal(status: string): boolean {
   return ['SUCCEEDED', 'FAILED', 'BLOCKED', 'HUMAN_REVIEW', 'DEGRADED'].includes(status);
@@ -515,6 +579,7 @@ async function finishRow(
   retryCount: number,
   executionMode: JobExecutionMode | null = null,
 ): Promise<JobOutcome> {
+  const recovery = recoveryFor(status, error, retryCount);
   try {
     await db.jobRun.update({
       where: { id: row.id },
@@ -525,9 +590,27 @@ async function finishRow(
         resultRef: resultRef ? JSON.stringify(resultRef) : null,
         retryCount,
         executionMode,
+        ...recovery.fields,
         completedAt: new Date(),
       },
     });
+    if (recovery.category && recovery.decision && db.failureRecovery) {
+      await db.failureRecovery.create({
+        data: {
+          opportunityId: row.opportunityId,
+          jobId: row.id,
+          category: recovery.category,
+          lastError: (error ?? status).slice(0, 500),
+          retryCount,
+          maxRetries: MAX_RETRIES,
+          nextRetryAt: recovery.decision.nextRetryAt,
+          state: recovery.decision.state,
+          deadLetter: recovery.decision.deadLetter,
+          resumePoint: recovery.decision.resumePoint,
+          correlationId: row.correlationId,
+        },
+      });
+    }
   } catch (updateError) {
     logger.warn('Job row finalization failed; execution outcome is still returned', {
       error: String(updateError).slice(0, 150),

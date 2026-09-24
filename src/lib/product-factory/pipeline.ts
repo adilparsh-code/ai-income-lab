@@ -128,7 +128,6 @@ export type PipelineProductType = (typeof PIPELINE_PRODUCT_TYPES)[number];
 
 const MAX_TEXT = 500;
 const MAX_TITLE = 160;
-const MAX_POINTS = 6;
 const MAX_POINT = 240;
 const MAX_SECTIONS = 6;
 
@@ -768,11 +767,6 @@ export async function runProductPipeline(input: RunProductPipelineInput): Promis
   let product: { id: string; status: string } | null = existing
     ? { id: existing.id, status: existing.status }
     : null;
-  let spec: {
-    id: string; version: number; status: string; title: string;
-    [key: string]: unknown;
-  } | null = null;
-
   const existingLatest = existing?.specifications?.[0] ?? null;
   const alreadyReady = existing
     && existing.status === 'READY_TO_DEPLOY'
@@ -837,7 +831,6 @@ export async function runProductPipeline(input: RunProductPipelineInput): Promis
       ...fields,
     },
   });
-  spec = createdSpec as unknown as NonNullable<typeof spec>;
   stages.push(stage('specification', 'PRODUCT_SPECIFICATION', 'Product specification', 'PASSED', `Spec v${version} persisted (status GENERATING).`));
 
   // Lifecycle: VALIDATE → SPEC_READY (guarded; refusals recorded, not fatal).

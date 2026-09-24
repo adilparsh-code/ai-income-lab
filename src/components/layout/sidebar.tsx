@@ -18,6 +18,7 @@ import {
   TrendingUp,
   Gauge,
   CircleDollarSign,
+  Activity,
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -25,6 +26,7 @@ const navItems = [
   { label: 'Dashboard', href: '/', icon: LayoutDashboard },
   { label: 'Pipeline', href: '/pipeline', icon: Workflow },
   { label: 'Income Engine', href: '/income-engine', icon: CircleDollarSign },
+  { label: 'Operations', href: '/operations', icon: Activity },
   { label: 'Product Factory', href: '/product-factory', icon: Factory },
   { label: 'Opportunities', href: '/opportunities', icon: Lightbulb },
   { label: 'Products', href: '/products', icon: Package },

@@ -46,6 +46,9 @@ model Opportunity {
   evidenceItems EvidenceItemModel[]
   jobRuns       JobRun[]
   workflowRuns  WorkflowRun[]
+  missions      AgentMission[]
+  loopTransitions LoopTransition[]
+  failureRecoveries FailureRecovery[]
 }
 
 model Product {
@@ -539,14 +542,94 @@ model JobRun {
 
   retryCount    Int     @default(0)
   executionMode String? // LIVE or MOCKED at execution time
+  failureCategory String?
+  recoveryState  String? // NONE, RETRY_SCHEDULED, DEAD_LETTER, HUMAN_REVIEW, RESUMABLE
+  deadLettered   Boolean @default(false)
+  resumePoint    String?
 
   createdAt   DateTime  @default(now())
   startedAt   DateTime?
   completedAt DateTime?
   updatedAt   DateTime  @updatedAt
+  failureRecoveries FailureRecovery[]
 
   @@index([status])
   @@index([jobType, createdAt])
+  @@index([correlationId])
+  @@index([recoveryState])
+}
+
+// Phase 8 — durable mission contract. Missions are bounded, auditable work
+// intents; they never grant capabilities outside the existing Job Runner.
+model AgentMission {
+  id             String   @id @default(cuid())
+  objective      String
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+  agentType      String
+  constraints    String   @default("[]")
+  budget         Float    @default(0)
+  allowedTools   String   @default("[]")
+  expectedOutput String   @default("")
+  successCriteria String  @default("[]")
+  failureCriteria String  @default("[]")
+  deadlineAt     DateTime?
+  approvalRequired Boolean @default(false)
+  status         String   @default("QUEUED")
+  failureReason  String?
+  correlationId  String
+  createdAt      DateTime @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  updatedAt      DateTime @updatedAt
+
+  @@index([opportunityId, status])
+  @@index([status, createdAt])
+  @@index([correlationId])
+}
+
+// Phase 8 — one durable, idempotent loop transition. The controller writes
+// this record for every attempted action, including refused/blocked actions.
+model LoopTransition {
+  id             String   @id @default(cuid())
+  opportunityId  String
+  opportunity    Opportunity @relation(fields: [opportunityId], references: [id])
+  fromStage      String
+  toStage        String
+  reason         String
+  evidence       String   @default("{}")
+  evidenceType   String   @default("VERIFIED_DATA")
+  correlationId  String
+  executionStatus String
+  executedAt     DateTime @default(now())
+  createdAt      DateTime @default(now())
+
+  @@index([opportunityId, executedAt])
+  @@index([correlationId])
+}
+
+// Phase 8 — bounded failure classification/recovery ledger. No credentials or
+// raw provider payloads are stored; resume points are symbolic stage names.
+model FailureRecovery {
+  id             String   @id @default(cuid())
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+  jobId          String?
+  job            JobRun? @relation(fields: [jobId], references: [id])
+  category       String
+  lastError      String
+  retryCount     Int      @default(0)
+  maxRetries     Int      @default(2)
+  nextRetryAt    DateTime?
+  state          String   @default("OPEN")
+  deadLetter     Boolean  @default(false)
+  resumePoint    String?
+  correlationId  String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([state, createdAt])
+  @@index([jobId])
   @@index([correlationId])
 }
 
