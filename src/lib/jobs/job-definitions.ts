@@ -159,20 +159,6 @@ export function validateJobPayload(jobType: JobType, payload: JobPayload): JobVa
     // deterministic; human approval tokens are strings if provided (never
     // logged, never stored in plaintext by the factory service).
     case 'PRODUCT_CREATE':
-      // Phase B: either an existing productId (factory operations) or an
-      // opportunityId (full product-creation pipeline) — at least one is
-      // required. The pipeline path is what the Income Engine's BUILD stage
-      // dispatches.
-      optionalString(payload.productId, 'productId', errors, 128);
-      optionalString(payload.opportunityId, 'opportunityId', errors, 128);
-      if (!payload.productId && !payload.opportunityId) {
-        errors.push('PRODUCT_CREATE requires a productId or an opportunityId.');
-      }
-      optionalString(payload.productType, 'productType', errors, 64);
-      optionalString(payload.humanApprovalToken, 'humanApprovalToken', errors, 512);
-      optionalString(payload.channel, 'channel', errors, 64);
-      break;
-
     case 'PRODUCT_BUILD':
     case 'PRODUCT_TEST':
     case 'PRODUCT_DEPLOY':

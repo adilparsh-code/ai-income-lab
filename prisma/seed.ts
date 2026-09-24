@@ -1,11 +1,16 @@
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaLibSql } from '@prisma/adapter-libsql';
+import { SqliteClient } from './sqlite-client';
 
-const adapter = new PrismaLibSql({
-  url: process.env.DATABASE_URL ?? 'file:./dev.db',
-});
-
-const prisma = new PrismaClient({ adapter });
+// Mirrors src/lib/db.ts dialect selection: postgres:// → PostgreSQL driver
+// adapter (Supabase transaction pooler), file: → the hermetic SQLite test
+// client. The URL itself is never printed.
+const url = process.env.DATABASE_URL ?? '';
+const prisma =
+  url.startsWith('file:')
+    ? (new SqliteClient({ adapter: new PrismaLibSql({ url }) }) as unknown as PrismaClient)
+    : new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
 
 async function main() {
   console.log('Seeding database with sample opportunities...');

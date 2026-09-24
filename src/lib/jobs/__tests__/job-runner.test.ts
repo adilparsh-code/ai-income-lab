@@ -3,7 +3,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { runJob, retryJob, isRetryableFailure, mapAgentOutcomeToStatus, type JobDb, type JobRunRow, type NewFailureRecoveryData } from '../job-runner';
+import { runJob, retryJob, isRetryableFailure, mapAgentOutcomeToStatus, type JobDb, type JobRunRow, type NewFailureRecordData } from '../job-runner';
 import { validateJobPayload } from '../job-definitions';
 
 /** Shape the runner's executeAgentJob seam accepts (subset of AgentResult). */
@@ -24,9 +24,9 @@ type JobTypeLike = Parameters<typeof runJob>[0];
 function fakeDb(overrides: {
   opportunity?: Record<string, unknown> | null;
   existing?: JobRunRow | null;
-} = {}): { db: JobDb; rows: JobRunRow[]; recoveries: NewFailureRecoveryData[] } {
+} = {}): { db: JobDb; rows: JobRunRow[]; recoveries: NewFailureRecordData[] } {
   const rows: JobRunRow[] = [];
-  const recoveries: NewFailureRecoveryData[] = [];
+  const recoveries: NewFailureRecordData[] = [];
   if (overrides.existing) rows.push(overrides.existing);
   let seq = 0;
   const db: JobDb = {
@@ -76,7 +76,7 @@ function fakeDb(overrides: {
         return row;
       },
     },
-    failureRecovery: {
+    failureRecord: {
       async create({ data }) {
         recoveries.push(data);
         return data;
@@ -166,8 +166,8 @@ describe('job execution (Phase 4.5.2)', () => {
     const degradedOutcome = await runJob('RESEARCH', { researchObjective: 'x' }, 'c1',
       { db: degraded.db, executeAgentJob: okAgent({ fallbackUsed: true }) });
     assert.equal(degradedOutcome.status, 'DEGRADED');
-    assert.equal(degraded.recoveries[0]?.category, 'PROVIDER_UNAVAILABLE');
-    assert.equal(degraded.recoveries[0]?.state, 'RETRY_SCHEDULED');
+    assert.equal(degraded.recoveries[0]?.classification, 'PROVIDER_UNAVAILABLE');
+    assert.equal(degraded.recoveries[0]?.recoveryState, 'RETRYING');
 
     const failed = fakeDb();
     const failedOutcome = await runJob('RESEARCH', { researchObjective: 'x' }, 'c2',

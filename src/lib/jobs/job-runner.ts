@@ -33,7 +33,7 @@ import {
   type FactoryJobOptions,
 } from '@/lib/product-factory/factory-jobs';
 import { validateJobPayload } from './job-definitions';
-import { classifyFailure, decideRecovery } from '@/lib/operations/failure-recovery';
+import { classifyFailure, planRecovery, type FailureClassification, type RecoveryPlan } from '@/lib/ops/failure-recovery';
 import {
   JOB_TYPE_TO_AGENT,
   isFactoryJobType,
@@ -81,10 +81,6 @@ export interface JobRunRow {
   error: string | null;
   retryCount: number;
   executionMode: string | null;
-  failureCategory?: string | null;
-  recoveryState?: string | null;
-  deadLettered?: boolean;
-  resumePoint?: string | null;
   createdAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -100,23 +96,23 @@ export interface JobDb {
     create(args: { data: NewJobRunData }): Promise<JobRunRow>;
     update(args: { where: { id: string }; data: Partial<NewJobRunData> }): Promise<JobRunRow>;
   };
-  failureRecovery?: {
-    create(args: { data: NewFailureRecoveryData }): Promise<unknown>;
+  failureRecord?: {
+    create(args: { data: NewFailureRecordData }): Promise<unknown>;
   };
 }
 
-export interface NewFailureRecoveryData {
-  opportunityId: string | null;
-  jobId: string;
-  category: string;
-  lastError: string;
+export interface NewFailureRecordData {
+  classification: string;
   retryCount: number;
   maxRetries: number;
-  nextRetryAt: Date | null;
-  state: string;
-  deadLetter: boolean;
+  lastError: string;
+  recoveryState: string;
+  deadLettered: boolean;
   resumePoint: string | null;
   correlationId: string;
+  relatedEntityType: string;
+  relatedEntityId: string;
+  opportunityId: string | null;
 }
 
 export interface NewJobRunData {
@@ -132,10 +128,6 @@ export interface NewJobRunData {
   error: string | null;
   retryCount: number;
   executionMode: string | null;
-  failureCategory: string | null;
-  recoveryState: string | null;
-  deadLettered: boolean;
-  resumePoint: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
 }
@@ -288,10 +280,6 @@ export async function runJob(
         error: null,
         retryCount: Math.max(0, Math.min(MAX_RETRIES, options.retryCount ?? 0)),
         executionMode: null,
-        failureCategory: null,
-        recoveryState: null,
-        deadLettered: false,
-        resumePoint: null,
         startedAt: null,
         completedAt: null,
       },
@@ -360,10 +348,7 @@ async function executeFactoryJobViaRunner(
 ): Promise<JobOutcome> {
   const outcome = await (options.executeFactoryJob
     ? options.executeFactoryJob(jobType, payload)
-    : executeFactoryJob(jobType, payload, {
-        ...options.factory,
-        correlationId: row.correlationId,
-      }));
+    : executeFactoryJob(jobType, payload, options.factory));
 
   const status = mapFactoryOutcomeToStatus(outcome, opportunity?.halalStatus === 'NOT_ALLOWED');
   const executionMode: JobExecutionMode = 'MOCKED'; // deterministic ops; no AI, no network claims
@@ -499,27 +484,22 @@ async function nextRetryIndex(db: JobDb, jobType: JobType, payload: JobPayload):
 // Finalization helpers
 // ---------------------------------------------------------------------------
 
-function recoveryFor(status: string, error: string | null, retryCount: number): {
-  fields: Partial<NewJobRunData>;
-  category: string | null;
-  decision: ReturnType<typeof decideRecovery> | null;
-} {
-  if (status === 'SUCCEEDED') {
-    return { fields: { recoveryState: null, failureCategory: null, deadLettered: false, resumePoint: null }, category: null, decision: null };
-  }
-  const category = status === 'DEGRADED'
-    ? 'PROVIDER_UNAVAILABLE'
-    : classifyFailure({ status, message: error ?? '' });
-  const decision = decideRecovery(category, retryCount, MAX_RETRIES);
+function failureFor(status: string, error: string | null, retryCount: number): {
+  classification: FailureClassification;
+  plan: RecoveryPlan;
+} | null {
+  if (status === 'SUCCEEDED') return null;
+  const classification = status === 'DEGRADED'
+    ? classifyFailure({ error: 'Provider unavailable; degraded execution.', status: 'PROVIDER_UNAVAILABLE' })
+    : classifyFailure({ error, status });
   return {
-    fields: {
-      failureCategory: category,
-      recoveryState: decision.state,
-      deadLettered: decision.deadLetter,
-      resumePoint: decision.resumePoint,
-    },
-    category,
-    decision,
+    classification,
+    plan: planRecovery({
+      classification: classification.classification,
+      retryCount,
+      maxRetries: MAX_RETRIES,
+      resumePoint: 'CURRENT_STAGE',
+    }),
   };
 }
 
@@ -579,7 +559,7 @@ async function finishRow(
   retryCount: number,
   executionMode: JobExecutionMode | null = null,
 ): Promise<JobOutcome> {
-  const recovery = recoveryFor(status, error, retryCount);
+  const recovery = failureFor(status, error, retryCount);
   try {
     await db.jobRun.update({
       where: { id: row.id },
@@ -590,24 +570,31 @@ async function finishRow(
         resultRef: resultRef ? JSON.stringify(resultRef) : null,
         retryCount,
         executionMode,
-        ...recovery.fields,
         completedAt: new Date(),
       },
     });
-    if (recovery.category && recovery.decision && db.failureRecovery) {
-      await db.failureRecovery.create({
+    if (recovery && db.failureRecord) {
+      const deadLettered = recovery.plan.action === 'DEAD_LETTER';
+      const recoveryState = recovery.plan.action === 'RETRY'
+        ? 'RETRYING'
+        : recovery.plan.action === 'HUMAN_REVIEW'
+          ? 'HUMAN_REVIEW'
+          : deadLettered
+            ? 'DEAD_LETTER'
+            : 'RESOLVED';
+      await db.failureRecord.create({
         data: {
-          opportunityId: row.opportunityId,
-          jobId: row.id,
-          category: recovery.category,
-          lastError: (error ?? status).slice(0, 500),
-          retryCount,
+          classification: recovery.classification.classification,
+          retryCount: recovery.plan.nextRetryCount,
           maxRetries: MAX_RETRIES,
-          nextRetryAt: recovery.decision.nextRetryAt,
-          state: recovery.decision.state,
-          deadLetter: recovery.decision.deadLetter,
-          resumePoint: recovery.decision.resumePoint,
+          lastError: recovery.classification.reason.slice(0, 400),
+          recoveryState,
+          deadLettered,
+          resumePoint: recovery.plan.resumePoint,
           correlationId: row.correlationId,
+          relatedEntityType: 'JOB_RUN',
+          relatedEntityId: row.id,
+          opportunityId: row.opportunityId,
         },
       });
     }

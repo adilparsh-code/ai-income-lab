@@ -461,7 +461,6 @@ export type ActionType =
   | 'RESEARCH'
   | 'VALIDATE'
   | 'BUILD_PRODUCT'
-  | 'CONNECT_PUBLISHING'
   | 'RUN_EXPERIMENT'
   | 'ANALYZE'
   | 'IMPROVE_PRODUCT'

@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated artifacts (scripts/generate-test-schema.mjs):
+    "prisma/test-client/**",
+    "prisma/schema.test.prisma",
   ]),
 ]);
 

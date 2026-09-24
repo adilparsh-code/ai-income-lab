@@ -1,11 +1,32 @@
 # Failure Recovery
 
-Status: **implemented and tested**.
+Status: IMPLEMENTED / TESTED
 
-Failures are classified as transient, permanent, configuration, authentication, provider unavailable, validation failure, business-rule rejection, human-review required, timeout, or unknown. Only transient/provider-unavailable/timeout failures can retry. Backoff is bounded (`30 * 2^attempt`, capped at one hour), retries are capped at five, and exhausted or unsafe failures enter dead-letter state.
+Classifications:
 
-`FailureRecovery` stores a bounded error summary, category, retry counts, symbolic resume point, state, dead-letter flag, and correlation ID. The authoritative Job Runner writes this ledger alongside `JobRun`, counts matching degraded attempts before retrying, and refuses retry when history cannot be read. It never stores credentials or raw provider payloads.
+`TRANSIENT PERMANENT CONFIGURATION AUTHENTICATION PROVIDER_UNAVAILABLE VALIDATION BUSINESS_RULE HUMAN_REVIEW TIMEOUT UNKNOWN`
 
-Authentication/configuration/validation/business-rule/human-review failures are not retried. Human review remains a terminal safe state until a human acts.
+## Policy
 
-Implemented: `src/lib/operations/failure-recovery.ts`, `FailureRecovery` Prisma model, and primitive tests.
+- Bounded retries (default 3, hard cap 5).
+- Exponential backoff: `250 * 2^attempt` ms, capped at 8s.
+- Retry count, last error, classification, recovery state, dead-letter flag, resume point are persisted on `FailureRecord`.
+- Unclassified failures fail closed (`UNKNOWN`, non-retryable).
+
+Never retried:
+
+- authorization failures
+- halal blocks (`BUSINESS_RULE`)
+- human-review requirements
+- permanent invalid input (`VALIDATION`)
+- missing configuration
+
+Exhausted retryable failures are dead-lettered. Nothing retries endlessly.
+
+## Labels
+
+| Path | Status |
+|---|---|
+| Classifier + backoff + plans | IMPLEMENTED / TESTED |
+| Durable `FailureRecord` | IMPLEMENTED / TESTED |
+| Live provider retry storms | NOT_CONNECTED (no live provider in default config) |

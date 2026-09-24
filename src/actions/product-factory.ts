@@ -18,7 +18,6 @@ import { describePublishingStatus } from '@/lib/publishing/contract';
 import { describeBuilderCapabilities, resolveSandboxedBuilder } from '@/lib/product-factory/sandboxed-builder';
 import { describeVercelConfig } from '@/lib/product-factory/deployment-vercel';
 import { describeRufloIntegration } from '@/lib/ruflo/capability';
-import { runProductPipeline } from '@/lib/product-factory/pipeline';
 import type { PipelineRunResult } from '@/lib/ruflo/orchestrator';
 
 /**
@@ -120,143 +119,6 @@ export async function getRecentFactoryRuns(limit = 5): Promise<FactoryRunSummary
       }));
   } catch (error) {
     logger.error('Factory run history could not be loaded', error);
-    return [];
-  }
-}
-
-/**
- * Phase B — run the durable product-creation pipeline for a validated
- * opportunity, through the Job Runner's PRODUCT_CREATE contract and the
- * guarded lifecycle machine. Server-only; no secrets in the result.
- */
-export type ProductPipelineActionResult =
-  | {
-      ok: true;
-      finalStatus: string;
-      productId: string;
-      specificationId: string;
-      version: number;
-      productLifecycleStatus: string;
-      stages: { id: string; label: string; status: string; detail: string }[];
-      qualityGates: { id: string; label: string; passed: boolean; reason: string }[];
-    }
-  | { ok: false; error: string };
-
-export async function runProductCreationPipeline(input: {
-  opportunityId?: string;
-}): Promise<ProductPipelineActionResult> {
-  const opportunityId = typeof input?.opportunityId === 'string' ? input.opportunityId.trim() : '';
-  if (!opportunityId || opportunityId.length > 128) {
-    return { ok: false, error: 'Select a valid opportunity to run the creation pipeline.' };
-  }
-
-  try {
-    const result = await runProductPipeline({ opportunityId });
-    revalidatePath('/product-factory');
-    revalidatePath('/');
-    if (!result.ok) {
-      return {
-        ok: false,
-        error: result.failureReason
-          ?? `Pipeline stopped at ${result.finalStatus}. No publishable product was produced.`,
-      };
-    }
-    return {
-      ok: true,
-      finalStatus: result.finalStatus,
-      productId: result.productId,
-      specificationId: result.specificationId,
-      version: result.version,
-      productLifecycleStatus: result.productLifecycleStatus,
-      stages: result.stages.map((s) => ({ id: s.id, label: s.label, status: s.status, detail: s.detail })),
-      qualityGates: result.qualityGates,
-    };
-  } catch (error) {
-    logger.error('Product pipeline action failed', error, { opportunityId });
-    return { ok: false, error: 'The product pipeline failed unexpectedly. Nothing was published; check the run history.' };
-  }
-}
-
-/** Phase B — per-product pipeline state for the factory panel. */
-export interface ProductPipelineSummaryRow {
-  productId: string;
-  productName: string;
-  productType: string;
-  productStatus: string;
-  opportunityId: string | null;
-  opportunityTitle: string | null;
-  specVersion: number | null;
-  specStatus: string | null;
-  generationMode: string | null;
-  provenance: string | null;
-  halalSafetyStatus: string | null;
-  qualityPassed: number | null;
-  qualityTotal: number | null;
-  landingPageStatus: string | null;
-  landingCta: string | null;
-  versions: number;
-  nextAction: string;
-}
-
-export async function getProductPipelineSummaries(limit = 12): Promise<ProductPipelineSummaryRow[]> {
-  try {
-    const products = await db.product.findMany({
-      orderBy: { updatedAt: 'desc' },
-      take: Math.min(50, Math.max(1, limit)),
-      include: {
-        opportunity: { select: { title: true } },
-        specifications: { orderBy: { version: 'desc' }, take: 1 },
-        versions: { select: { id: true } },
-        landingPages: { orderBy: { updatedAt: 'desc' }, take: 1 },
-      },
-    });
-    return products.map((p) => {
-      const spec = p.specifications[0] ?? null;
-      const landing = p.landingPages[0] ?? null;
-      let qualityPassed: number | null = null;
-      let qualityTotal: number | null = null;
-      if (spec) {
-        try {
-          const gates = JSON.parse(spec.qualityGates);
-          if (Array.isArray(gates)) {
-            qualityTotal = gates.length;
-            qualityPassed = gates.filter((g: { passed?: unknown }) => g?.passed === true).length;
-          }
-        } catch { /* recorded gates unreadable → nulls stay truthful */ }
-      }
-      const nextAction = p.status === 'READY_TO_DEPLOY'
-        ? 'Connect a publishing capability (NOT_CONFIGURED); publication requires human approval'
-        : p.status === 'BLOCKED'
-          ? 'Blocked by the safety gate — human review required'
-          : spec?.status === 'QUALITY_FAILED'
-            ? 'Quality gate failed — fix the recorded gate reasons and re-run'
-            : spec?.status === 'SAFETY_FAILED'
-              ? 'Safety screening failed — prohibited content recorded'
-              : spec?.status === 'GENERATING' || spec?.status === 'VALIDATING'
-                ? 'Pipeline in progress — check run history'
-                : 'No Phase B spec yet — run the creation pipeline';
-      return {
-        productId: p.id,
-        productName: p.name,
-        productType: p.type,
-        productStatus: p.status,
-        opportunityId: p.opportunityId,
-        opportunityTitle: p.opportunity?.title ?? null,
-        specVersion: spec?.version ?? null,
-        specStatus: spec?.status ?? null,
-        generationMode: spec?.generationMode ?? null,
-        provenance: spec?.provenance ?? null,
-        halalSafetyStatus: spec?.halalSafetyStatus ?? null,
-        qualityPassed,
-        qualityTotal,
-        landingPageStatus: landing?.status ?? null,
-        landingCta: landing ? `${landing.ctaLabel} (${landing.ctaType})` : null,
-        versions: p.versions.length,
-        nextAction,
-      };
-    });
-  } catch (error) {
-    logger.error('Product pipeline summaries could not be loaded', error);
     return [];
   }
 }
@@ -431,7 +293,7 @@ export async function getProductFactorySummary(limit = 12): Promise<ProductFacto
         : p.status === 'DEPLOYED'
           ? 'Prepare listing draft; publishing requires human approval'
           : p.status === 'READY_TO_DEPLOY'
-            ? 'Product is READY_FOR_PUBLISHING — connect a publishing capability (NOT_CONFIGURED); publication requires human approval'
+            ? 'Deployment requires a human approval token'
             : p.status === 'BLOCKED'
               ? 'Blocked by halal gate — human review required'
               : 'Continue lifecycle: research → validation → spec';

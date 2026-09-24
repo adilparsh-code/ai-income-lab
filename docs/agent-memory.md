@@ -1,9 +1,30 @@
-# Agent Memory
+# Agent Memory (Operational)
 
-Status: **implemented and tested**.
+Status: IMPLEMENTED / TESTED
 
-The existing durable memory foundation is retained and extended through `src/lib/operations/operations-summary.ts` for mission/recovery context. Memory is domain-specific, bounded, timestamped, scope-filtered, and provenance-preserving. It is derived from AgentLog, Experiment, Product, Revenue, and JobRun records; there is no unrestricted chat-history store.
+Structured operational memory — not chat history.
 
-Categories cover verified facts, user-entered data, AI inference, experiment results, business decisions, failed hypotheses, and successful patterns. `VERIFIED_DATA` is never upgraded by an AI interpretation. Retrieval favors verified/user evidence over weaker signals.
+Categories: `opportunity product experiment failure market agent provider`
 
-Human approval and safety gates are memory context, not permissions. Memory cannot authorize publishing, deployment, spending, or lifecycle override.
+Each entry: source, timestamp, evidence/confidence classification, related entity, observation, outcome, applicability.
+
+## Provenance rule
+
+Memory without sufficient provenance is **not** treated as verified truth.
+
+`treatedAsVerified` is true only when:
+
+- evidence type ranks at `VERIFIED_DATA`, and
+- source is present and is not `ai` / `inference` / `chat`
+
+`recallOperationalMemory({ verifiedOnly: true })` filters to that subset. AI inference can be stored, but it cannot be promoted.
+
+This layer is additive to the existing Phase 5.2 derived memory (`src/lib/agents/memory-store.ts`), which remains the read model over AgentLog / Experiment.
+
+## Labels
+
+| Path | Status |
+|---|---|
+| OperationalMemory table + recall | IMPLEMENTED / TESTED |
+| Derived AgentLog memory | IMPLEMENTED (Phase 5.2, reused) |
+| Unrestricted conversational memory | Not implemented (structurally refused) |

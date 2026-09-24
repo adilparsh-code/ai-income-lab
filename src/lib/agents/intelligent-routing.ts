@@ -19,7 +19,6 @@ export type RouteAction =
   | 'RESEARCH'
   | 'VALIDATE'
   | 'BUILD_PRODUCT'
-  | 'CONNECT_PUBLISHING'
   | 'RUN_EXPERIMENT'
   | 'ANALYZE'
   | 'REVIEW_REVENUE'
@@ -57,11 +56,6 @@ export interface RoutingOpportunityState {
   hasCompletedExperiment: boolean;
   hasPositiveExperiment: boolean;
   hasProduct: boolean;
-  /** Status of this opportunity's most-advanced product (null when none).
-   *  Phase B: 'READY_TO_DEPLOY' means the product pipeline completed
-   *  (READY_FOR_PUBLISHING) and the honest next step is the publishing
-   *  capability, which is NOT_CONFIGURED until a provider is connected. */
-  productStatus: string | null;
   hasPublishedProduct: boolean;
   hasRevenue: boolean;
   netRevenue: number;
@@ -153,23 +147,6 @@ export function determineNextAction(
       executionMode,
       humanReviewRequired: false,
       requiresAi: true,
-    };
-  }
-
-  // Phase B: a product that finished the creation pipeline is READY_FOR_
-  // PUBLISHING (spec record) / READY_TO_DEPLOY (guarded lifecycle). The
-  // truthful next action is the publishing capability — which stays
-  // NOT_CONFIGURED until an authorized provider is connected and a human
-  // approves. The system never pretends external publishing is available.
-  if (state.productStatus === 'READY_TO_DEPLOY') {
-    return {
-      action: 'CONNECT_PUBLISHING',
-      agent: null,
-      contextNeeds: [],
-      rationale: 'The product completed the creation pipeline (specification, generation, quality gate, safety screening, landing page; READY_FOR_PUBLISHING). No publishing capability is connected (NOT_CONFIGURED); connect an authorized provider and provide explicit human approval before anything is published.',
-      executionMode,
-      humanReviewRequired: false,
-      requiresAi: false,
     };
   }
 

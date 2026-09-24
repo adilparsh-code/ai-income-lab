@@ -4,11 +4,6 @@ import { buildAgentContext } from './agent-context';
 import { buildIntelligenceView, type IntelligenceView } from './intelligence';
 import { buildProfitabilityDecisionFacts, type ProfitabilityDecisionFacts } from '@/lib/business/business-manager-profitability';
 import {
-  resolveProductPipelineState,
-  selectRoutingPipelineState,
-  type ProductPipelineState,
-} from '@/lib/product-factory/pipeline';
-import {
   AgentRequest, AgentResult, AgentStatus, EvidenceType,
   BusinessManagerRequest, BusinessManagerResult, BusinessManagerScope,
   ActionType, DecisionState, NextBestAction, EvidenceItem,
@@ -21,7 +16,7 @@ const VALID_SCOPES: BusinessManagerScope[] = [
 ];
 
 const VALID_ACTIONS: ActionType[] = [
-  'RESEARCH', 'VALIDATE', 'BUILD_PRODUCT', 'CONNECT_PUBLISHING', 'RUN_EXPERIMENT',
+  'RESEARCH', 'VALIDATE', 'BUILD_PRODUCT', 'RUN_EXPERIMENT',
   'ANALYZE', 'IMPROVE_PRODUCT', 'REVIEW_REVENUE', 'COLLECT_DATA',
   'HUMAN_REVIEW', 'NO_ACTION',
 ];
@@ -262,38 +257,6 @@ export class BusinessManagerAgent extends BaseAgent {
     const hasPositiveExperiment = oppExperiments.some(e => e.decision === 'SCALE');
     const hasProduct = oppProducts.length > 0;
     const hasPublishedProduct = oppProducts.some(p => ['PUBLISHED', 'EARNING', 'IMPROVING'].includes(p.status));
-
-    // Phase B — durable product-pipeline state (VERIFIED_DATA from the
-    // ProductSpecification rows). The decision engine branches on the REAL
-    // pipeline stage, never on a guess; lookup failure degrades to absent
-    // pipeline state (NOT_STARTED semantics are NOT fabricated for specs
-    // that could not be read).
-    const latestSpecByProduct = new Map<string, { status: string; version: number }>();
-    let pipelineStateLookupFailed = false;
-    if (oppProducts.length > 0) {
-      try {
-        const specRows = await db.productSpecification.findMany({
-          where: { productId: { in: oppProducts.map(p => p.id) } },
-          orderBy: { version: 'desc' },
-          select: { productId: true, status: true, version: true },
-        });
-        for (const row of specRows) {
-          if (!latestSpecByProduct.has(row.productId)) {
-            latestSpecByProduct.set(row.productId, { status: row.status, version: row.version });
-          }
-        }
-      } catch (specError) {
-        console.error('Product pipeline state lookup failed:', specError);
-        pipelineStateLookupFailed = true;
-      }
-    }
-    const pipelineStates: ProductPipelineState[] = pipelineStateLookupFailed
-      ? []
-      : oppProducts.map(p => resolveProductPipelineState({
-          productStatus: p.status,
-          latestSpecStatus: latestSpecByProduct.get(p.id)?.status ?? null,
-        }));
-    const pipelineState = selectRoutingPipelineState(pipelineStates);
     const hasRevenue = combinedRevenues.length > 0;
     const totalNetRevenue = combinedRevenues.reduce((s, r) => s + r.netRevenue, 0);
     const hasProfitData = oppProducts.some(p => p.cost > 0);
@@ -336,10 +299,7 @@ export class BusinessManagerAgent extends BaseAgent {
         : 'No opportunity selected for validation assessment.';
 
     const productSummary = hasProduct
-      ? oppProducts.length + ' product(s) linked to opportunity. ' + (hasPublishedProduct ? 'At least one published/earning product exists.' : 'No published products yet. ')
-        + (pipelineStateLookupFailed
-          ? 'Product pipeline state could not be read (lookup failed); nothing was assumed.'
-          : 'Product creation pipeline state: ' + pipelineState + ' (from ProductSpecification records).')
+      ? oppProducts.length + ' product(s) linked to opportunity. ' + (hasPublishedProduct ? 'At least one published/earning product exists.' : 'No published products yet.')
       : hasOpportunity
         ? 'No products exist for this opportunity. Product Agent can generate a product concept (AI_INFERENCE).'
         : 'No opportunity selected for product assessment.';
@@ -368,9 +328,6 @@ export class BusinessManagerAgent extends BaseAgent {
     if (hasOpportunity && !hasProduct) missingInformation.push('No product created.');
     if (hasOpportunity && !hasRevenue) missingInformation.push('No revenue data recorded.');
     if (hasProduct && !hasProfitData) missingInformation.push('Product cost data missing; profitability unknown.');
-    if (hasProduct && !pipelineStateLookupFailed && pipelineState === 'NOT_STARTED') {
-      missingInformation.push('No Phase B product specification on file; run the product creation pipeline.');
-    }
 
     // 8. DECISION ENGINE
     let decision: DecisionState = 'NO_ACTION';
@@ -460,54 +417,14 @@ export class BusinessManagerAgent extends BaseAgent {
         executionEligible = true;
         alternativeActionsConsidered.push({ action: 'RUN_EXPERIMENT', reasonRejected: 'Already validated', evidenceType: 'VERIFIED_DATA' });
       } else if (hasProduct && !hasPublishedProduct) {
-        // Phase B — the product-pipeline state decides what "improve" means:
-        //   READY_FOR_PUBLISHING → the creation pipeline is DONE; the next
-        //     step is the publishing capability (NOT_CONFIGURED, human-gated).
-        //     Never autonomous: executionEligible stays false.
-        //   BLOCKED / SAFETY_FAILED → the safety gate refused this product;
-        //     a qualified human must review before any further product work.
-        //   IN_PROGRESS / QUALITY_FAILED → resume the deterministic creation
-        //     pipeline through the Job Runner (PRODUCT_CREATE with the
-        //     opportunityId creates the next spec version).
-        //   NOT_STARTED → legacy product without a Phase B spec; improve it.
-        if (pipelineState === 'READY_FOR_PUBLISHING') {
-          decision = 'PROCEED';
-          primaryAction = 'CONNECT_PUBLISHING';
-          primaryReason = 'The product creation pipeline completed all stages (specification → generation → content/assets → quality → safety → landing → package) and the package is READY_FOR_PUBLISHING. No publishing capability is connected (NOT_CONFIGURED); connect an authorized provider and obtain explicit human approval before anything is published.';
-          primaryEvidence = 'Latest product specification status READY_FOR_PUBLISHING; product lifecycle status ' + (oppProducts[0]?.status || 'unknown') + '.';
-          primaryPurpose = 'Connect an authorized publishing provider and record explicit human approval before any publication.';
-          executionEligible = false; // external, irreversible, human-gated
-          alternativeActionsConsidered.push({ action: 'IMPROVE_PRODUCT', reasonRejected: 'Creation pipeline is complete; the next step is the publishing capability, not more generation', evidenceType: 'VERIFIED_DATA' });
-          alternativeActionsConsidered.push({ action: 'BUILD_PRODUCT', reasonRejected: 'Package already READY_FOR_PUBLISHING; re-running would duplicate a finished product', evidenceType: 'VERIFIED_DATA' });
-        } else if (pipelineState === 'BLOCKED' || pipelineState === 'SAFETY_FAILED') {
-          decision = 'HUMAN_REVIEW';
-          primaryAction = 'HUMAN_REVIEW';
-          primaryReason = 'A product was stopped by the halal/safety gate (pipeline state: ' + pipelineState + '). A qualified human must review before any further product work; no autonomous execution.';
-          primaryEvidence = 'Product pipeline state ' + pipelineState + ' (ProductSpecification/Product records).';
-          primaryPurpose = 'Human review of the safety-gated product before any further work.';
-          blockers.push('SAFETY_GATE: Product pipeline state ' + pipelineState + ' requires human review.');
-          alternativeActionsConsidered.push({ action: 'BUILD_PRODUCT', reasonRejected: 'The safety gate stopped this product; human review comes first', evidenceType: 'VERIFIED_DATA' });
-          alternativeActionsConsidered.push({ action: 'IMPROVE_PRODUCT', reasonRejected: 'Product work must not resume before human review clears the safety gate', evidenceType: 'VERIFIED_DATA' });
-        } else if (pipelineState === 'IN_PROGRESS' || pipelineState === 'QUALITY_FAILED') {
-          const latestSpec = latestSpecByProduct.get(oppProducts[0]!.id) ?? null;
-          decision = 'PROCEED';
-          primaryAction = 'BUILD_PRODUCT';
-          primaryReason = 'A product specification exists but the creation pipeline has not completed (pipeline state: ' + pipelineState + (latestSpec ? ', latest spec v' + latestSpec.version + ' status ' + latestSpec.status : '') + '). Re-running the deterministic pipeline resumes with a new version through the Job Runner; the quality gate will re-verify.';
-          primaryEvidence = 'Product pipeline state ' + pipelineState + (latestSpec ? '; latest spec v' + latestSpec.version + ' (' + latestSpec.status + ')' : '') + '; product lifecycle ' + (oppProducts[0]?.status || 'unknown') + '.';
-          primaryPurpose = 'Resume the deterministic product creation pipeline (specification → generation → content/assets → quality → safety → landing → package → READY_FOR_PUBLISHING).';
-          executionEligible = true;
-          alternativeActionsConsidered.push({ action: 'IMPROVE_PRODUCT', reasonRejected: 'The creation pipeline has not completed; resume the pipeline instead', evidenceType: 'VERIFIED_DATA' });
-        } else {
-          // NOT_STARTED (or state unreadable): legacy product without a
-          // Phase B specification.
-          decision = 'IMPROVE';
-          primaryAction = 'IMPROVE_PRODUCT';
-          primaryReason = 'Product exists but is not yet published/earning. Improve and prepare for launch.';
-          primaryEvidence = oppProducts.length + ' product(s), none in PUBLISHED/EARNING status.';
-          primaryPurpose = 'Complete and publish the product.';
-          executionEligible = true;
-          alternativeActionsConsidered.push({ action: 'RUN_EXPERIMENT', reasonRejected: 'Product already exists', evidenceType: 'VERIFIED_DATA' });
-        }
+        // Product exists but not published
+        decision = 'IMPROVE';
+        primaryAction = 'IMPROVE_PRODUCT';
+        primaryReason = 'Product exists but is not yet published/earning. Improve and prepare for launch.';
+        primaryEvidence = oppProducts.length + ' product(s), none in PUBLISHED/EARNING status.';
+        primaryPurpose = 'Complete and publish the product.';
+        executionEligible = true;
+        alternativeActionsConsidered.push({ action: 'RUN_EXPERIMENT', reasonRejected: 'Product already exists', evidenceType: 'VERIFIED_DATA' });
       } else if (hasPublishedProduct && !hasRevenue) {
         // Published but no revenue
         decision = 'IMPROVE';
@@ -622,18 +539,6 @@ export class BusinessManagerAgent extends BaseAgent {
     // Agent coordination context (orchestrated agent outputs, provenance preserved)
     for (const coord of agentLastExecutions) {
       evidence.push({ id: uuidv4(), type: coord.evidenceType, content: 'Agent coordination [' + coord.agentType + ']: ' + coord.summary, source: 'AgentLog (existing agent architecture)' });
-    }
-
-    // Phase B — durable product-pipeline state as VERIFIED_DATA evidence.
-    for (const [productId, spec] of Array.from(latestSpecByProduct.entries()).slice(0, 3)) {
-      const product = oppProducts.find(p => p.id === productId);
-      evidence.push({
-        id: uuidv4(),
-        type: 'VERIFIED_DATA' as EvidenceType,
-        content: 'Product pipeline [' + (product?.name ?? productId) + ']: latest spec v' + spec.version + ' status ' + spec.status
-          + '; product lifecycle ' + (product?.status ?? 'unknown') + '.',
-        source: 'Prisma db.productSpecification',
-      });
     }
 
     // Phase 6 — intelligent-layer evidence: shared context, memory, handoffs,

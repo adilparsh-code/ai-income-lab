@@ -36,7 +36,7 @@ Object.assign(process.env, {
 
 before(async () => {
   const { execSync } = await import('node:child_process');
-  execSync('npx prisma db push', { stdio: 'pipe', cwd: process.cwd(), env: process.env });
+  execSync('npx prisma db push --schema prisma/schema.test.prisma', { stdio: 'pipe', cwd: process.cwd(), env: process.env });
 });
 
 after(() => {

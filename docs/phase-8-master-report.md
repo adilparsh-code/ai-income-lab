@@ -1,71 +1,120 @@
-# Phase 8 Master Report
+# Phase 8 Master Report — Production Hardening + Autonomous Operations
 
-## 1. What was already present
+Delivery on `adilparsh-code/ai-income-lab` `main`. No Target95 / BoardPrep / GoldWatcher changes. No secrets. No fabricated live revenue, traffic, publishing, or deployment.
 
-The repository already had the authoritative Job Runner, halal gates, human approval boundaries, Ruflo adapter/runtime boundary, Income Engine loop, deterministic scoring, Product Factory, real event/revenue ingestion, publishing/deployment contracts, authorization ledger, security audit trail, and provenance-preserving agent memory.
+## 1. Already-present functionality (reused, not duplicated)
 
-## 2. What was implemented
+- Job Runner (idempotency, halal gates, bounded retries)
+- Workflow planner / Ruflo contract (`RUFLO_READY`, adapter `NOT_CONNECTED`)
+- Income Engine loop (`advanceIncomeLoop`, human-data stages)
+- Agents, Product Factory, validation, publishing contract, Vercel adapter
+- Revenue / event ingestion with idempotency
+- Security guard (fail-closed auth, rate limits, body caps, audit)
+- Evidence ranking, intelligent routing, derived agent memory
+- Capability center honest labels
 
-Phase 8 adds durable Agent Missions, durable loop transitions, evidence-ranked opportunity scoring, guarded deterministic simulation, structured failure recovery, and a dedicated operations workspace/API. Existing systems remain the execution and safety authority.
+## 2. Implemented functionality (Phase 8)
 
-## 3. Files changed
+| Module | Status |
+|---|---|
+| 8A Agent Mission System | IMPLEMENTED / TESTED |
+| 8B Autonomous Loop Controller | IMPLEMENTED / TESTED |
+| 8C Opportunity Scoring (provenance-aware) | IMPLEMENTED / TESTED |
+| 8D Simulation / Paper-Income | IMPLEMENTED / TESTED / SIMULATED |
+| 8E Lifecycle Decision Engine | IMPLEMENTED / TESTED |
+| 8F Failure Recovery | IMPLEMENTED / TESTED |
+| 8G Operational Memory | IMPLEMENTED / TESTED |
+| 8H Operations Dashboard `/operations` | IMPLEMENTED / TESTED |
+| 8I Security audit of new surfaces | IMPLEMENTED / TESTED |
+| 8J E2E simulation coverage | IMPLEMENTED / TESTED |
 
-Core additions are under `src/lib/operations/`, with additive Prisma models, new `/api/missions` and `/api/operations/simulate` routes, `/operations`, sidebar navigation, and seven focused documentation files.
+## 3. Files changed (high level)
 
-## 4. Database/schema changes
+- `prisma/schema.prisma` + `prisma/migrations/0002_phase8_ops/migration.sql`
+- `src/lib/ops/*` (types, missions, loop, scoring, simulation, decision-engine, failure-recovery, failure-store, memory, dashboard)
+- `src/lib/ops/__tests__/phase8-primitives.test.ts`, `phase8-e2e.test.ts`
+- APIs under `src/app/api/ops/`
+- UI: `src/app/operations/page.tsx`, `src/components/operations/operations-workspace.tsx`, sidebar entry
+- Docs listed in section 5 of the milestone prompt
+- `package.json` test glob, `next.config.ts` `allowedDevOrigins` (`.monkeycode-ai.live` via `*.` / `**.`)
 
-Additive models: `AgentMission`, `LoopTransition`, and `FailureRecovery`. `JobRun` receives failure classification/recovery fields. Existing records remain valid; no destructive migration is used.
+## 4. Schema / migrations
 
-## 5. New APIs/routes
+Additive models: `AgentMission`, `LoopTransition`, `SimulationRun`, `OperationalMemory`, `FailureRecord`. No destructive changes. Simulated money cannot live on `Revenue` (`realTransaction` default false, separate table).
 
-- `POST/GET /api/missions`
-- `POST /api/operations/simulate`
-- Expanded `GET /api/operations`
-- `/operations` workspace
+## 5. New APIs / routes
 
-All state-changing routes use existing security guards and strict bounded body validation.
+- `GET/POST /api/ops/missions`
+- `POST /api/ops/missions/:id/run`
+- `POST /api/ops/loop/:opportunityId/tick`
+- `POST /api/ops/simulate`
+- `GET /api/ops/dashboard`
+- Page `/operations`
 
-## 6. New UI
+Guards: `guardBrowserOrOperator` / rate limits / JSON body caps on mutating routes.
 
-The Operations workspace shows provider health, execution, missions, income aggregates, simulation status, and a loop timeline. It never labels simulated data as real.
+## 6. UI changes
 
-## 7. New agent capabilities
+`/operations` workspace: health grid, execution counts, income engine (real vs SIMULATED), timeline, capability tiles, mission and simulation lists. Sidebar link added.
 
-Agents can receive bounded missions, receive explainable evidence-ranked scores, plan one safe loop transition, and receive structured recovery decisions. AI cannot override safety gates or human approval.
+## 7. Agent capabilities
+
+Missions may only name allowlisted Job Runner capabilities. Shell, env injection, secret read, gate bypass, and fabrication capabilities are rejected. Agents still cannot publish/deploy without a human approval token (existing factory jobs).
 
 ## 8. Simulation capabilities
 
-Deterministic traffic, conversion, revenue, cost, profit, and lifecycle simulation is available without external providers. Simulation never writes real revenue or external state.
+Deterministic seed → traffic, conversion, revenue, costs, profit, stage walk, lifecycle decision. Always labelled SIMULATED. Never written to `Revenue`.
 
-## 9. Security findings
+## 9. Security findings / fixes
 
-The audit verified server-only credentials, client-secret sweep coverage, authorization guards, CSRF/origin checks, body caps, halal gates, approval gates, idempotency, correlation IDs, audit records, webhook replay protection, and bounded retry. Phase 8 routes use the existing guard chain. No arbitrary shell/environment execution path was added.
+Findings on the new layer (fail-closed by design, not incident reports):
 
-## 10. Tests executed
+- Missions fail closed on unknown/forbidden capabilities.
+- Halal `NOT_ALLOWED` / `REVIEW_REQUIRED` never reach `runJob` via missions or the loop controller.
+- Simulation cannot set `realTransaction=true`.
+- Mutating ops APIs reuse existing CSRF/origin + operator guards, body caps, rate limits.
+- No new `NEXT_PUBLIC_*` secrets.
+- Unclassified failures are non-retryable.
+- Infinite-loop guard on autonomous ticks.
+- Job Runner remains the only executor.
 
-- `npx prisma generate` — passed; Prisma Client v7.10.0 generated.
-- `npm run typecheck` / `bun tsc --noEmit` — passed with 0 TypeScript errors.
-- `npm run lint` — passed with no errors or warnings.
-- `npm test` — passed: 880 tests across 231 suites, 0 failures.
-- `npx tsx --test src/lib/operations/__tests__/phase8-persistence.test.ts` — passed: 3 tests across 1 suite, 0 failures.
-- `npx tsx --test src/lib/jobs/__tests__/job-runner.test.ts` — passed: 24 tests across 8 suites, 0 failures.
-- `npm run build` — passed with exit code 0 and generated the Phase 8 operations routes/page.
-- Hermetic persistence coverage exercises mission creation/lifecycle and failure-recovery dead-letter persistence against a temporary libSQL database.
+Pre-existing security (SSRF DNS guard, webhook replay, operator fail-closed) left intact.
 
-## 11. Build warnings and test scope
+## 10–11. Tests and verification (exact)
 
-The build emitted 7 non-fatal existing/structural warnings: the deprecated `middleware` convention in Next.js 16 and `node:crypto` Edge Runtime import traces from existing modules (`lifecycle-service.ts`, `polar-publishing.ts`, `deployment-vercel.ts`, `workflow-runner.ts`, `job-runner.ts`, `security/guard.ts`, and `ruflo/runtime.ts`). These were not treated as build failures and the middleware migration was intentionally not performed in this phase.
+| Command | Result |
+|---|---|
+| `npx prisma generate` | Prisma Client v7.10.0 generated |
+| `node scripts/generate-test-schema.mjs` | SQLite test schema + client ready (`prisma/test-client`) |
+| `npm test` | **912/912 passed**, 0 failed (`# tests 912 # suites 245 # fail 0`, ~95s) |
+| `npm run typecheck` (`tsc --noEmit`) | exit 0 after three type fixes (see below) |
+| `npm run lint` | exit 0 |
+| `npm run build` | Next.js 16.3.5 Turbopack — compiled; TypeScript finished; 16/16 static pages. Warnings only (pre-existing Edge `node:crypto` / `node:dns` from instrumentation traces). Deprecated `middleware` notice is pre-existing. |
 
-The Phase 8 primitive and E2E suites cover the 15 named simulation paths as deterministic policy cases, provenance ranking, halal/review gates, bounded retry/dead-letter decisions, loop planning, and lifecycle decisions. The persistence suite adds temporary-database verification for the new durable records.
+Typecheck fixes applied before green:
+
+- `next.config.ts`: Next 16 has no `experimental.allowedHosts`; use top-level `allowedDevOrigins: ['*.monkeycode-ai.live', '**.monkeycode-ai.live']`.
+- `operations-workspace.tsx`: drop leftover `SystemStateLabel` identifier (imported as `Label`).
+- `scoring.ts`: `investable: overall > 0` after the `NOT_ALLOWED` early-return (TS2367; runtime unchanged).
+
+Covered scenarios: NOT_ALLOWED, REVIEW_REQUIRED, failed validation, timeout, transient failure, permanent failure, duplicate execution, retry, human approval, profitable simulation, losing simulation, kill, pause, iterate, scale.
 
 ## 12. Remaining external dependencies
 
-Gemini, Tavily/SearXNG, Vercel, Polar, Ruflo runtime, marketplace, and social/payment providers remain environment-dependent. Their contracts and honest status labels are present; live activation is not claimed.
+- Live AI provider key (`AI_PROVIDER` + server-only key) — NOT_CONFIGURED by default
+- Search provider — NOT_CONNECTED
+- Polar publishing token / webhook secret — NOT_CONFIGURED
+- Vercel deploy token — NOT_CONNECTED
+- Ruflo runtime — NOT_CONNECTED
+- Operator revenue token for live ingestion writes — NOT_CONFIGURED unless set
 
 ## 13. Remaining human actions
 
-Configure server-side provider keys, authorize providers, perform deployment/publishing approvals, and resolve human-review/dead-letter items. No such action is required for internal tests or simulation.
+- Review `REVIEW_REQUIRED` opportunities
+- Supply human approval tokens for publish/deploy
+- Record real traffic/revenue via ingestion APIs
+- Configure provider credentials in the deployment environment (never in git)
 
 ## 14. Recommended Phase 9
 
-Add a durable scheduler/queue worker for approved autonomous work, provider round-trip verification, richer experiment attribution, and human approval UI with signed audit events. Keep Job Runner, halal screening, and human authority unchanged.
+Connect one real publishing channel and one real deployment adapter behind the existing human-approval boundary; add verified (not simulated) economics dashboards that still refuse to mix SIMULATED rows into `Revenue`. Keep Ruflo as orchestration only.

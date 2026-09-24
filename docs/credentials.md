@@ -21,7 +21,7 @@ endpoints refuse writes rather than pretending to work.
 
 | Variable | Purpose |
 | --- | --- |
-| `DATABASE_URL` | SQLite file URL for Prisma (default `file:./dev.db`). |
+| `DATABASE_URL` | PostgreSQL connection string for Prisma (Supabase transaction pooler in production). See `.env.example`. |
 
 ## AI provider (optional — mock mode when unset)
 
