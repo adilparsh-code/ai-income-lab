@@ -163,10 +163,6 @@ function safeHostOf(origin: string): string | null {
 }
 
 export const config = {
-  // Vercel was compiling this middleware as an Edge Function. The application
-  // has server-only transitive dependencies elsewhere in the build graph
-  // (node:crypto/node:dns), so run middleware on the Node.js runtime instead.
-  runtime: 'nodejs',
   // Static assets and Next internals skip the middleware entirely.
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };
