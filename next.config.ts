@@ -13,6 +13,9 @@ const nextConfig: NextConfig = {
   },
   allowedDevOrigins: ['*.monkeycode-ai.live', '**.monkeycode-ai.live'],
   experimental: {
+    // Next.js Node.js middleware support. This prevents Vercel from treating
+    // the middleware as an Edge Function and rejecting Node built-ins.
+    nodeMiddleware: true,
     /*
      * Bound build parallelism. Next defaults experimental.cpus to core-count
      * minus one (e.g. 63 workers on a 64-core CI host), which spawns dozens of
