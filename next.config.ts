@@ -13,7 +13,7 @@ const nextConfig: NextConfig = {
   },
   allowedDevOrigins: ['*.monkeycode-ai.live', '**.monkeycode-ai.live'],
   experimental: {
-      /*
+    /*
      * Bound build parallelism. Next defaults experimental.cpus to core-count
      * minus one (e.g. 63 workers on a 64-core CI host), which spawns dozens of
      * static-generation workers and gets OOM-killed in memory-constrained
