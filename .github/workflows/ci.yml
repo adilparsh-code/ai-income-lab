@@ -9,7 +9,7 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,17 +17,81 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
-      - name: Install dependencies
+      - name: Install AI Income Lab dependencies
         run: npm ci
 
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
+      - name: Unit tests
         run: npm test
 
       - name: Build
         run: npm run build
+
+  ruflo-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout AI Income Lab
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install AI Income Lab dependencies
+        run: npm ci
+
+      - name: Checkout Ruflo
+        uses: actions/checkout@v4
+        with:
+          repository: ruvnet/ruflo
+          ref: 9c61c86f06b439af2a95085ae9bb0ca839662e41
+          path: .ci/ruflo
+
+      - name: Install Ruflo dependencies
+        working-directory: .ci/ruflo
+        run: npm ci
+
+      - name: Patch Ruflo type-only re-exports for runtime execution
+        working-directory: .ci/ruflo
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('v3/mcp/transport/index.ts')
+          s = p.read_text()
+          s = s.replace("export { HttpTransport, HttpTransportConfig } from './http.js';", "export { HttpTransport } from './http.js';\nexport type { HttpTransportConfig } from './http.js';")
+          p.write_text(s)
+          PY
+
+      - name: Start Ruflo V3 HTTP runtime
+        working-directory: .ci/ruflo
+        run: |
+          nohup npx tsx v3/mcp/server-entry.ts --transport http --host 127.0.0.1 --port 3000 > /tmp/ruflo.log 2>&1 &
+          echo $! > /tmp/ruflo.pid
+
+      - name: Wait for Ruflo health
+        run: |
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/health > /tmp/ruflo-health.json; then
+              cat /tmp/ruflo-health.json
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/ruflo.log
+          exit 1
+
+      - name: Run live Ruflo integration smoke test
+        env:
+          RUFLO_LIVE_TEST_URL: http://127.0.0.1:3000
+        run: npx tsx --test src/lib/ruflo/__tests__/live-runtime.test.ts
+
+      - name: Dump Ruflo logs on failure
+        if: failure()
+        run: cat /tmp/ruflo.log
