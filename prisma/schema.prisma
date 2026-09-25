@@ -51,6 +51,11 @@ model Opportunity {
   simulationRuns        SimulationRun[]
   operationalMemories   OperationalMemory[]
   failureRecords        FailureRecord[]
+  portfolioItems        PortfolioItem[]
+  growthExperiments     GrowthExperiment[]
+  growthDecisions       GrowthDecision[]
+  learningEntries       LearningEntry[]
+  resourceAllocations   ResourceAllocation[]
 }
 
 model Product {
@@ -187,6 +192,156 @@ model Experiment {
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+}
+
+// ============================================================================
+// PHASE 9 — Autonomous Growth + Optimization Engine
+// Additive only. Deterministic, explainable, bounded. Reuses the existing
+// Experiment/ProductEvent/Revenue/JobRunner boundaries; never stores secrets
+// and never mixes simulated figures with real revenue.
+// ============================================================================
+
+/// Portfolio view of one opportunity. One row per opportunity (upserted).
+/// Aggregates are recomputed from REAL rows (events/revenue/experiments);
+/// they never invent market or revenue facts.
+model PortfolioItem {
+  id                    String   @id @default(cuid())
+  opportunityId         String   @unique
+  opportunity           Opportunity @relation(fields: [opportunityId], references: [id])
+
+  // Denormalized deterministic aggregates (recomputed, never user-set).
+  traffic               Int      @default(0)
+  conversions           Int      @default(0)
+  revenueUsd            Float    @default(0)
+  costsUsd              Float    @default(0)
+  profitUsd             Float    @default(0)
+  experimentCount       Int      @default(0)
+  activeExperimentCount Int      @default(0)
+
+  // Deterministic health output (rules in src/lib/growth/health.ts).
+  health                String   @default("NEEDS_DATA")  // HEALTHY, WATCH, NEEDS_DATA, UNDERPERFORMING, STOPPED, BLOCKED
+  trend                 String   @default("FLAT")        // UP, FLAT, DOWN, UNKNOWN
+  confidence            String   @default("LOW")         // LOW, MEDIUM, HIGH
+  score                 Int      @default(0)             // 0..100 deterministic portfolio score
+  explanation           String   @default("")            // human-readable rule trace
+
+  halalStatusSnapshot   String   @default("HALAL")
+  opportunityStatusSnapshot String @default("IDEA")
+  evidenceStrengthSnapshot  String  @default("LOW")
+  validationStatusSnapshot  String  @default("NOT_VALIDATED")
+  productStatusSnapshot     String  @default("")
+
+  lastActivityAt        DateTime?
+  evaluatedAt           DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  experiments           GrowthExperiment[]
+  allocations           ResourceAllocation[]
+
+  @@index([health])
+  @@index([evaluatedAt])
+}
+
+/// One bounded growth experiment per (opportunity, idempotency key).
+/// Execution always goes through the Job Runner; halal/authorization gates
+/// are enforced before any spend. Budgets are hard-capped in code.
+model GrowthExperiment {
+  id             String   @id @default(cuid())
+  opportunityId  String
+  opportunity    Opportunity @relation(fields: [opportunityId], references: [id])
+  portfolioItemId String?
+  portfolioItem  PortfolioItem? @relation(fields: [portfolioItemId], references: [id])
+
+  experimentType String   // LANDING_PAGE, CTA, PRICING, CONTENT, TRAFFIC_SOURCE, POSITIONING, ONBOARDING
+  hypothesis     String
+  metric         String   // CONVERSION_RATE, CTR, REVENUE_PER_VISITOR, SIGNUPS, REVENUE
+  baselineValue  Float    @default(0)
+  targetValue    Float
+
+  budgetUsd      Float
+  spentUsd       Float    @default(0)
+  maxDurationDays Int
+  startedAt      DateTime @default(now())
+  endsAt         DateTime
+  stoppedAt      DateTime?
+  stopReason     String?
+
+  status         String   @default("DRAFT") // DRAFT, ACTIVE, COMPLETED, STOPPED, BLOCKED, HUMAN_REVIEW
+
+  // Measured outcome (from recorded events/revenue only — never fabricated).
+  variantVisitors Int     @default(0)
+  variantConversions Int  @default(0)
+  variantValueUsd   Float @default(0)
+  controlValueUsd   Float @default(0)
+  resultSummary  String   @default("")
+  evidenceType   String   @default("VERIFIED_DATA")
+
+  // Lifecycle safety: bounded execution attempts + stop conditions.
+  executionAttempts Int   @default(0)
+  failureCount   Int      @default(0)
+  stopLossThreshold Float
+  requiresApproval Boolean @default(false)
+  correlationId  String
+  idempotencyKey String   @unique
+
+  decisions      GrowthDecision[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([opportunityId, status])
+  @@index([status, endsAt])
+  @@index([correlationId])
+}
+
+/// Append-only growth decision ledger. One row per deterministic evaluation.
+/// Human decisions are recorded with evidenceType HUMAN_DECISION and are
+/// authoritative over engine recommendations.
+model GrowthDecision {
+  id             String   @id @default(cuid())
+  opportunityId  String
+  opportunity    Opportunity @relation(fields: [opportunityId], references: [id])
+  experimentId   String?
+  experiment     GrowthExperiment? @relation(fields: [experimentId], references: [id])
+
+  decision       String   // CONTINUE, ITERATE, PAUSE, STOP, SCALE_WITHIN_BUDGET, NEEDS_HUMAN_REVIEW
+  reason         String
+  evidenceType   String   @default("VERIFIED_DATA")
+  evidence       String   @default("")
+  decidedBy      String   @default("growth-engine") // growth-engine | business-manager | human
+  metricsJson    String   @default("{}")
+  correlationId  String
+  createdAt      DateTime @default(now())
+
+  @@index([opportunityId, createdAt])
+  @@index([experimentId])
+  @@index([decision])
+}
+
+/// Business memory: persisted learning from completed/stopped experiments.
+/// Future decisions consume verified entries; AI-inferred entries are stored
+/// but never treated as verified truth.
+model LearningEntry {
+  id             String   @id @default(cuid())
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+  experimentId   String?
+
+  hypothesis     String
+  result         String   // VALIDATED, INVALIDATED, INCONCLUSIVE
+  metric         String   @default("")
+  baselineValue  Float    @default(0)
+  measuredValue  Float    @default(0)
+  decision       String
+  context        String   @default("")
+  evidenceType   String   @default("VERIFIED_DATA")
+  applicability  String   @default("")
+  confidence     Float    @default(0)
+
+  createdAt      DateTime @default(now())
+
+  @@index([result, createdAt])
+  @@index([opportunityId])
 }
 
 model Revenue {
@@ -700,4 +855,28 @@ model FailureRecord {
   @@index([classification, createdAt])
   @@index([correlationId])
   @@index([recoveryState])
+}
+
+/// Phase 9 — bounded per-opportunity resource budget. One row per
+/// opportunity (upserted). All caps are hard limits enforced in code before
+/// any experiment is created; the loop can never raise them autonomously.
+model ResourceAllocation {
+  id                 String   @id @default(cuid())
+  opportunityId      String   @unique
+  opportunity        Opportunity @relation(fields: [opportunityId], references: [id])
+  portfolioItemId    String?
+  portfolioItem      PortfolioItem? @relation(fields: [portfolioItemId], references: [id])
+
+  monthlyBudgetUsd   Float    @default(0)
+  spentThisMonthUsd  Float    @default(0)
+  perExperimentCapUsd Float
+  maxActiveExperiments Int  @default(2)
+  paused             Boolean  @default(false)
+  pauseReason        String?
+  note               String   @default("")
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([paused])
 }
