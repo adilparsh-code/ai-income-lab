@@ -13,7 +13,7 @@
     "pretest": "node scripts/generate-test-schema.mjs",
     "pretypecheck": "node scripts/generate-test-schema.mjs",
     "prebuild": "node scripts/generate-test-schema.mjs",
-    "test": "tsx --test src/lib/ai/__tests__/*.test.ts src/lib/ruflo/__tests__/*.test.ts src/lib/research/__tests__/*.test.ts src/lib/product-factory/__tests__/*.test.ts src/lib/jobs/__tests__/*.test.ts src/lib/agents/__tests__/*.test.ts src/lib/business/__tests__/*.test.ts src/lib/publishing/__tests__/*.test.ts src/lib/income-engine/__tests__/*.test.ts src/lib/integrations/__tests__/*.test.ts src/lib/security/__tests__/*.test.ts src/lib/ops/__tests__/*.test.ts"
+    "test": "tsx --test src/lib/ai/__tests__/*.test.ts src/lib/ruflo/__tests__/*.test.ts src/lib/research/__tests__/*.test.ts src/lib/product-factory/__tests__/*.test.ts src/lib/jobs/__tests__/*.test.ts src/lib/agents/__tests__/*.test.ts src/lib/business/__tests__/*.test.ts src/lib/publishing/__tests__/*.test.ts src/lib/income-engine/__tests__/*.test.ts src/lib/integrations/__tests__/*.test.ts src/lib/security/__tests__/*.test.ts src/lib/ops/__tests__/*.test.ts src/lib/growth/__tests__/*.test.ts"
   },
   "dependencies": {
     "@prisma/adapter-libsql": "^7.10.0",

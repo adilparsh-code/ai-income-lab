@@ -208,7 +208,14 @@ describe('9.11 experiment lifecycle + stop-loss', () => {
   it('budget exhaustion, expiry, and stop-loss stop the experiment', () => {
     assert.equal(decideLifecycle({ ...base, spentUsd: 20 }, NOW).action, 'STOP_BUDGET');
     assert.equal(decideLifecycle({ ...base, endsAt: new Date(NOW.getTime() - 1) }, NOW).action, 'STOP_EXPIRED');
-    const stopLoss = decideLifecycle({ ...base, spentUsd: 25, measuredValueUsd: 0, stopLossThreshold: 20 }, NOW);
+    // Stop-loss must be exercised without also exhausting the budget: the
+    // documented rule order checks budget exhaustion (rule 5) before
+    // stop-loss (rule 7), so an over-budget state legitimately returns
+    // STOP_BUDGET first. Raise the budget to isolate the stop-loss rule.
+    const stopLoss = decideLifecycle(
+      { ...base, spentUsd: 25, budgetUsd: 100, measuredValueUsd: 0, stopLossThreshold: 20 },
+      NOW,
+    );
     assert.equal(stopLoss.action, 'STOP_STOP_LOSS');
   });
 

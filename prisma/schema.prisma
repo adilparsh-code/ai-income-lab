@@ -880,3 +880,66 @@ model ResourceAllocation {
 
   @@index([paused])
 }
+/// HIGH-1 — Opportunity handoff received from an external agent sender.
+///
+/// One row per accepted delivery envelope. The row IS the idempotency
+/// record: `idempotencyKey` is unique, so a replayed delivery collapses to a
+/// duplicate response and never creates a second job or a second opportunity.
+///
+/// Safety properties enforced by the receiver (src/lib/integrations/handoff):
+/// - The envelope carries DATA only. It is never interpreted as instructions
+///   and never executed directly; accepted work is handed to the Job Runner.
+/// - `eligibility` carries the sender's declared eligibility, which the
+///   receiver re-derives from the existing halal gate. A sender claiming
+///   ALLOWED can never override a locally-computed NOT_ALLOWED/REVIEW_REQUIRED.
+/// - `halalStatus` is always the LOCALLY computed value, never the asserted one.
+model OpportunityHandoff {
+  id               String   @id @default(cuid())
+
+  /// Contract version of the delivery envelope. Only versions listed in
+  /// src/lib/integrations/handoff are accepted; unknown versions are rejected.
+  contractVersion  String
+  /// Sender-assigned contract instance id (audit correlation, not unique).
+  contractId       String
+  /// Caller-supplied idempotency key. UNIQUE — the duplicate-delivery guard.
+  idempotencyKey   String   @unique
+  /// Correlation id threaded through the Job Runner and every audit record.
+  correlationId    String
+
+  /// Narrow event type the sender is delivering (e.g. OPPORTUNITY_PROPOSED).
+  eventType        String
+  /// Fingerprint of the authenticated sender identity (never the credential).
+  senderIdentity   String
+
+  /// Short, human-readable title supplied by the sender. Untrusted text.
+  title            String
+  /// Opaque JSON payload as delivered. Stored as a string, never executed and
+  /// never concatenated into SQL, prompts, or shell commands.
+  payloadJson      String
+
+  /// Sender-asserted eligibility. Recorded for audit only — never trusted.
+  assertedEligibility String
+  /// Eligibility re-derived by the server from the existing halal gate.
+  eligibility      String
+  /// Locally computed halal verdict (HALAL | REVIEW_REQUIRED | NOT_ALLOWED).
+  halalStatus      String
+  /// Job type the receiver dispatched through the Job Runner.
+  jobType          String
+  /// Outcome of the handoff: ACCEPTED | DUPLICATE | REJECTED | BLOCKED.
+  status           String
+  /// Correlation id of the dispatched JobRun, when one was created.
+  jobRunId         String?
+  /// Opportunity created by the dispatched job, when applicable.
+  opportunityId    String?
+  /// Short, safe reason string. Never contains secrets or full payloads.
+  reason           String   @default("")
+
+  receivedAt       DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([status, receivedAt])
+  @@index([correlationId])
+  @@index([eventType, receivedAt])
+  @@index([opportunityId])
+}
