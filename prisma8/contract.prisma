@@ -686,7 +686,7 @@ model OperationalMemory {
   createdAt          DateTime @default(now())
 
   @@index([category, createdAt])
-  @@index([relatedEntityType, relatedEntityId])
+  @@index([relatedEntityType, relatedEntityId], map: "OperationalMemory_relatedEntityType_relatedEntityId_i")
   @@index([opportunityId])
   @@map("OperationalMemory")
 }
