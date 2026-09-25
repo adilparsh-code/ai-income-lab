@@ -1,0 +1,720 @@
+// use prisma-8
+
+model Opportunity {
+  id                    String   @id @default(cuid())
+  title                 String
+  category              String
+  businessModel         String
+  targetAudience        String
+  problemSolved         String
+  monetizationMethod    String
+  estimatedStartupCost  Float    @default(0)
+  
+  // Scores (0-100)
+  demandScore           Int      @default(0)
+  competitionScore      Int      @default(0)
+  commercialIntentScore Int      @default(0)
+  automationScore       Int      @default(0)
+  differentiationScore  Int      @default(0)
+  monetizationScore     Int      @default(0)
+  halalConfidenceScore  Int      @default(100)
+  overallScore          Int      @default(0)
+  
+  halalStatus           String   @default("HALAL")    // HALAL, REVIEW_REQUIRED, NOT_ALLOWED
+  confidenceLevel       String   @default("MEDIUM")   // VERY_HIGH, HIGH, MEDIUM, LOW, VERY_LOW, SAMPLE_DATA
+  status                String   @default("IDEA")     // IDEA, RESEARCHING, VALIDATING, VALIDATED, BUILDING, PUBLISHED, EARNING, SCALING, PAUSED, REJECTED
+  
+  evidenceNotes         String   @default("")
+  risks                 String   @default("")
+  nextAction            String   @default("")
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  lastReviewedAt        DateTime?
+  
+  products              Product[]
+  experiments           Experiment[]
+  revenues              Revenue[]
+  contents              Content[]
+  pipelineRuns          PipelineRun[]
+  evidenceItems         EvidenceItemModel[]
+  jobRuns               JobRun[]
+  workflowRuns          WorkflowRun[]
+  missions              AgentMission[]
+  loopTransitions       LoopTransition[]
+  simulationRuns        SimulationRun[]
+  operationalMemories   OperationalMemory[]
+  failureRecords        FailureRecord[]
+  @@map("Opportunity")
+}
+
+model Product {
+  id              String   @id @default(cuid())
+  name            String
+  type            String
+  targetAudience  String   @default("")
+  status          String   @default("IDEA")
+  price           Float    @default(0)
+  cost            Float    @default(0)
+  revenue         Float    @default(0)
+  platform        String   @default("")
+  productUrl      String   @default("")
+  affiliateUrl    String   @default("")
+  notes           String   @default("")
+  
+  opportunityId   String?
+  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  publishedAt     DateTime?
+  
+  revenues        Revenue[]
+  contents        Content[]
+
+  // Phase 5.3 — Product Factory additions (all optional; additive only).
+  solution        String   @default("")
+  userFlows       String   @default("[]")   // JSON array of {name, steps[]}
+  techRequirements String  @default("[]")   // JSON array of strings
+  acceptanceCriteria String @default("[]")  // JSON array of strings
+  lifecycleHistory String  @default("[]")   // JSON array of transition records
+
+  builds          ProductBuild[]
+  deployments     ProductDeployment[]
+  assets          ProductAsset[]
+  events          ProductEvent[]
+  @@map("Product")
+}
+
+// Phase 5.3 — Product build runs. One row per build attempt against the
+// build contract. Stores status, artifact reference, test summary, and a
+// BOUNDED log summary (never raw logs, never secrets). A build can never set
+// a product DEPLOYED/PUBLISHED by itself — only the deployment/publishing
+// provider confirmations can.
+model ProductBuild {
+  id            String   @id @default(cuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id])
+
+  status        String   // NOT_BUILT, SUCCEEDED, FAILED, UNAVAILABLE
+  version       String?
+  artifactRef   String?
+
+  // Bounded test/log summaries (JSON; safe fields only).
+  tests         String   @default("{}")
+  logSummary    String   @default("")
+  qualityGates  String   @default("[]")
+
+  sandboxed     Boolean  @default(true)
+  correlationId String?
+  createdAt     DateTime @default(now())
+
+  @@index([productId, createdAt])
+  @@map("ProductBuild")
+}
+
+// Phase 5.3 — Product deployment runs. A product is DEPLOYED only when a real
+// provider confirmation (deploymentId + url) exists on a row here; the
+// unavailable adapter writes DEPLOYMENT_NOT_CONNECTED rows with no ids.
+model ProductDeployment {
+  id            String   @id @default(cuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id])
+
+  status        String   // DEPLOYMENT_NOT_CONNECTED, DEPLOYED, FAILED, ROLLED_BACK, ...
+  providerId    String?
+  deploymentId  String?
+  url           String?
+  version       String?
+  errors        String   @default("[]")
+
+  // Publication of the action requires an explicit human approval token.
+  // The token itself is NEVER stored — only its presence and a hash hint.
+  approved      Boolean  @default(false)
+  approvalTokenHash String @default("")
+
+  correlationId String?
+  createdAt     DateTime @default(now())
+
+  @@index([productId, createdAt])
+  @@map("ProductDeployment")
+}
+
+// Phase 5.3 — Product assets with provenance and rights tracking. An asset
+// can only be marked publishable when rights are CLEAR/OWNED; unclear rights
+// force HUMAN_REVIEW and blocked assets stay unpublishable.
+model ProductAsset {
+  id                String   @id @default(cuid())
+  productId         String
+  product           Product  @relation(fields: [productId], references: [id])
+
+  assetType         String   // PRODUCT_IMAGE, SCREENSHOT, THUMBNAIL, PREVIEW, LISTING_GRAPHIC
+  source            String   // GENERATED, MANUAL_UPLOAD, THIRD_PARTY
+  provenance        String   // AI_GENERATED, USER_ENTERED, VERIFIED_DATA, MOCKED
+  rightsStatus      String   // CLEAR, OWNED, UNCLEAR, HUMAN_REVIEW
+  publicationStatus String   // NOT_PUBLISHABLE, PUBLISHABLE, PUBLISHED, HUMAN_REVIEW
+
+  origin            String   @default("")  // URL or description of origin (no credentials)
+  createdAt         DateTime @default(now())
+
+  @@index([productId, createdAt])
+  @@map("ProductAsset")
+}
+
+model Experiment {
+  id              String   @id @default(cuid())
+  hypothesis      String
+  target          String   @default("")
+  budget          Float    @default(0)
+  startDate       DateTime?
+  endDate         DateTime?
+  expectedResult  String   @default("")
+  actualResult    String   @default("")
+  
+  visitors        Int      @default(0)
+  leads           Int      @default(0)
+  clicks          Int      @default(0)
+  sales           Int      @default(0)
+  revenue         Float    @default(0)
+  profit          Float    @default(0)
+  conversionRate  Float    @default(0)
+  
+  decision        String?  // SCALE, ITERATE, PAUSE, KILL
+  
+  opportunityId   String?
+  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  @@map("Experiment")
+}
+
+model Revenue {
+  id              String   @id @default(cuid())
+  date            DateTime
+  revenueSource   String
+  grossRevenue    Float    @default(0)
+  fees            Float    @default(0)
+  advertisingCost Float    @default(0)
+  otherCosts      Float    @default(0)
+  netRevenue      Float    @default(0)
+  currency        String   @default("USD")
+  referenceNote   String   @default("")
+  
+  productId       String?
+  product         Product? @relation(fields: [productId], references: [id])
+  
+  opportunityId   String?
+  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
+  
+  // Phase 5.5 — idempotent revenue ingestion (additive, optional). Null for
+  // historical rows; when present, a unique violation is a DUPLICATE, so the
+  // same payment can never be recorded twice. Written by the shared
+  // revenueIdempotencyKey() rule — never by the API caller.
+  idempotencyKey  String?  @unique
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  @@map("Revenue")
+}
+
+model Affiliate {
+  id              String   @id @default(cuid())
+  merchant        String
+  product         String
+  category        String   @default("")
+  affiliateProgram String  @default("")
+  commissionType  String   @default("")
+  commissionRate  Float    @default(0)
+  affiliateUrl    String   @default("")
+  productUrl      String   @default("")
+  lastChecked     DateTime?
+  linkStatus      String   @default("ACTIVE")
+  disclosureStatus String  @default("REQUIRED")
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  @@map("Affiliate")
+}
+
+model Content {
+  id              String   @id @default(cuid())
+  title           String
+  type            String
+  body            String   @default("")
+  seoTitle        String   @default("")
+  metaDescription String   @default("")
+  status          String   @default("DRAFT")
+  
+  opportunityId   String?
+  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
+  
+  productId       String?
+  product         Product? @relation(fields: [productId], references: [id])
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  @@map("Content")
+}
+
+// Persistent record of one bounded Opportunity → Product pipeline run
+// (Phase 5: unified workflow). Stores durable, reviewable state: lifecycle
+// stage positions, per-step status, provenance rollups, and next actions.
+// Provenance rules: AI-derived payloads stay AI_INFERENCE (stored with the
+// step outputs they came from); VERIFIED_DATA is only ever the DB record
+// references themselves. This model never invents market/revenue facts.
+// Evidence cache + provenance store for the Real Research Engine.
+// One row per unique (url, query) fetch result so repeated research does not
+// re-hit external sources. Provenance rules:
+// - evidenceType is VERIFIED_DATA ONLY when content was actually fetched and
+//   passed validation; SEARCH_DISCOVERY marks search-result metadata (title/
+//   snippet from a search provider) which was never fetched.
+// - AI interpretation of this evidence is stored separately as AI_INFERENCE
+//   and can NEVER upgrade a row's evidenceType.
+// - No market size, customer counts, prices, or revenue figures are stored
+//   here; extraction only keeps observed page text (see extraction.ts).
+model EvidenceItemModel {
+  id             String   @id @default(cuid())
+
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+
+  // Identity + provenance of the source.
+  url            String
+  domain         String
+  query          String   @default("")
+  sourceType     String   @default("WEB_PAGE")
+
+  // VERIFIED_DATA (fetched + validated) or SEARCH_DISCOVERY (search metadata only).
+  evidenceType   String
+
+  // Extraction output.
+  title          String   @default("")
+  excerpt        String   @default("")
+
+  // Fetch metadata (verifiability).
+  httpStatus     Int?
+  contentType    String?
+  contentLength  Int?
+  fetchedAt      DateTime
+  retrievedVia   String   @default("direct_fetch")
+
+  // Cache control.
+  fetchDurationMs Int?
+  cache          Boolean  @default(true)
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([url, query])
+  @@index([opportunityId])
+  @@index([fetchedAt])
+  @@map("EvidenceItemModel")
+}
+
+model PipelineRun {
+  id             String   @id @default(cuid())
+
+  // The opportunity this run operated on. Optional: a run may start from a
+  // free-form objective before any opportunity record is selected.
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+
+  // Snapshot of the objective at run time (never mutated afterwards).
+  objective      String
+
+  // Denormalized display state for fast dashboards: lifecycle stage + run outcome.
+  currentStage   String
+  status         String   // COMPLETED, PARTIAL, BLOCKED, HUMAN_REVIEW, FAILED
+
+  // Full machine-readable run payload (steps, outputs, provenance, actions).
+  result         String
+
+  // Aggregated AI usage for the whole run (sums across steps; estimates only).
+  aiInputTokens  Int?
+  aiOutputTokens Int?
+  estimatedCostUsd Float?
+
+  startedAt      DateTime @default(now())
+  completedAt    DateTime?
+  durationMs     Int?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  @@map("PipelineRun")
+}
+
+// ============================================================================
+// SECURITY (Security Hardening Phase)
+// ============================================================================
+
+/// Append-only security audit trail. Records security-relevant events
+/// (auth failures, rate-limit rejections, oversized requests, webhook
+/// verification outcomes). NEVER stores secrets, tokens, credentials, or
+/// raw request bodies — `detail` is a short, human-safe classification.
+model SecurityEvent {
+  id        String   @id @default(cuid())
+  /// Event class, e.g. AUTH_FAILURE, RATE_LIMITED, REQUEST_TOO_LARGE, WEBHOOK_REJECTED.
+  kind      String
+  /// Coarse outcome category (ok | refused | error) — never a secret.
+  outcome   String
+  /// Which surface produced the event, e.g. "api:agents/execute", "webhook:polar".
+  surface   String
+  /// Short, safe classification string. Truncated to 300 chars; no secrets.
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([kind, createdAt])
+  @@index([surface, createdAt])
+  @@map("SecurityEvent")
+}
+
+/// Durable rate-limit counters. Process-memory maps are per-instance and
+/// vanish on restart, so they must never be the only production protection.
+/// This table gives every deployment instance a shared, DB-backed counter.
+model RateLimitWindow {
+  id        String   @id @default(cuid())
+  /// Bucket identifier, e.g. "agents_execute|ip:1.2.3.4".
+  bucketKey String
+  /// Epoch-second-aligned window label, e.g. "1700000000-60".
+  windowKey String
+  count     Int      @default(0)
+  expiresAt DateTime
+
+  @@unique([bucketKey, windowKey])
+  @@index([expiresAt])
+  @@map("RateLimitWindow")
+}
+
+// Phase 4.5.2 — Ruflo-ready job orchestration.
+// One row per queued/executed job (single agent or bounded pipeline). The job
+// layer ENFORCES the existing safety architecture: a NOT_ALLOWED opportunity
+// transitions to BLOCKED before any agent/AI invocation; REVIEW_REQUIRED goes
+// to HUMAN_REVIEW with no autonomous execution. Idempotency: idempotencyKey
+// (jobType:correlationId) is unique, so re-queuing the same logical work
+// returns the existing row instead of double-executing.
+// Phase 8 (Rule 11) — OAuth/authorization ledger. One row per (provider,
+// scope); tokens are stored server-side as opaque ciphertext material and are
+// never returned by any accessor. The state machine (NOT_CONNECTED →
+// AUTHORIZING → CONNECTED → EXPIRED/REVOKED/ERROR) is deterministic; expired
+// grants are never silently reused.
+model IntegrationAuthorization {
+  id                     String   @id @default(cuid())
+  providerId             String
+  scope                  String?
+  state                  String   @default("NOT_CONNECTED")
+  accessTokenCiphertext  String?
+  refreshTokenCiphertext String?
+  expiresAt              DateTime?
+  grantedScopes          String   @default("[]")
+  metadata               String   @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([providerId, scope])
+  @@map("IntegrationAuthorization")
+}
+
+model JobRun {
+  id             String   @id @default(cuid())
+
+  jobType        String   // RESEARCH, VALIDATION, PRODUCT, ANALYTICS, BUSINESS_MANAGER, OPPORTUNITY_PIPELINE
+  status         String   // QUEUED, RUNNING, SUCCEEDED, FAILED, BLOCKED, HUMAN_REVIEW, DEGRADED
+
+  // Idempotency/dedup identifier. Unique per (jobType, correlationId).
+  correlationId  String
+  idempotencyKey String   @unique
+
+  // Optional opportunity scope; halal gating applies when present.
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+
+  // Resolved executor: an agent type (single-agent jobs) or the pipeline.
+  agentType      String?
+
+  // Job payload (JSON). Contains user inputs only — never secrets.
+  input          String   @default("{}")
+
+  // Output reference: AgentLog id / PipelineRun id, plus a compact provenance
+  // summary. Full payloads stay in AgentLog/PipelineRun — no duplication.
+  resultRef      String?
+  output         String?
+  error          String?
+
+  retryCount     Int      @default(0)
+  executionMode  String?  // LIVE or MOCKED at execution time
+
+  createdAt      DateTime @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  updatedAt      DateTime @updatedAt
+
+  @@index([status])
+  @@index([jobType, createdAt])
+  @@index([correlationId])
+  @@map("JobRun")
+}
+
+// Phase 5.2 — Ruflo workflow runs. One row per state-aware workflow execution
+// (OPPORTUNITY_DISCOVERY, OPPORTUNITY_TO_PRODUCT, BUSINESS_ANALYSIS,
+// FULL_INCOME_PIPELINE). Stores the planner's decisions (which steps were
+// necessary, skipped, or blocked and why) plus per-step outcomes — an
+// auditable record of "why the system did less work". Safety: workflows
+// execute through the existing JobRun/AgentLog stack; this model only records
+// workflow-level state and never bypasses halal or human-review gates.
+model WorkflowRun {
+  id            String   @id @default(cuid())
+
+  workflowType  String   // OPPORTUNITY_DISCOVERY, OPPORTUNITY_TO_PRODUCT, BUSINESS_ANALYSIS, FULL_INCOME_PIPELINE
+  status        String   // COMPLETED, PARTIAL, BLOCKED, HUMAN_REVIEW, FAILED
+
+  correlationId String
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+
+  // Planner decisions and per-step outcomes (JSON; safe fields only).
+  plan          String   @default("{}")
+  steps         String   @default("[]")
+
+  startedAt     DateTime
+  completedAt   DateTime
+  durationMs    Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([workflowType, createdAt])
+  @@index([correlationId])
+  @@index([status])
+  @@map("WorkflowRun")
+}
+
+// Phase 5.4 — Provider-agnostic product event ingestion (VISITOR, PAGE_VIEW,
+// PRODUCT_VIEW, CTA_CLICK, CHECKOUT_STARTED, PURCHASE, REFUND). One row per
+// recorded event with provenance and an idempotency key: re-ingesting the same
+// logical event is a no-op, never a duplicate. No personal data beyond an
+// anonymous session identifier; no fabricated events (rows are written only
+// from validated ingestion calls). The Growth Engine consumes these rows.
+model ProductEvent {
+  id              String   @id @default(cuid())
+
+  productId       String
+  product         Product  @relation(fields: [productId], references: [id])
+
+  eventType       String   // VISITOR, PAGE_VIEW, PRODUCT_VIEW, CTA_CLICK, CHECKOUT_STARTED, PURCHASE, REFUND
+  occurredAt      DateTime
+
+  // Optional business scope.
+  campaignId      String?
+  opportunityId   String?
+  experimentId    String?
+
+  // Anonymous session/visitor identifier (no PII).
+  sessionId       String?
+
+  // For PURCHASE/REFUND: verified monetary value from the recording source.
+  amountUsd       Float?
+
+  // Phase 8 (Rules 6–7) — distribution attribution (additive, optional, non-PII).
+  utmSource       String?
+  utmMedium       String?
+  utmCampaign     String?
+  utmContent      String?
+  utmTerm         String?
+  referrer        String?
+  landingPage     String?
+
+  // Provenance of the event itself.
+  source          String   // e.g. 'manual', 'provider:<id>' — who recorded it
+  evidenceType    String   @default("VERIFIED_DATA")  // VERIFIED_DATA or USER_ENTERED only
+
+  // Idempotency: re-ingesting the same logical event is a no-op.
+  idempotencyKey  String   @unique
+
+  @@index([productId, utmCampaign])
+
+  createdAt       DateTime @default(now())
+
+  @@index([productId, occurredAt])
+  @@index([productId, eventType])
+  @@map("ProductEvent")
+}
+
+model AgentLog {
+  id              String   @id @default(cuid())
+  agentType       String
+  action          String
+  input           String   @default("")
+  output          String   @default("")
+  reasoning       String   @default("")
+  evidenceType    String   @default("AI_INFERENCE")  // AI_INFERENCE, VERIFIED_DATA, USER_ENTERED
+  aiProvider      String?
+  aiModel         String?
+  inputTokens     Int?
+  outputTokens    Int?
+  estimatedCostUsd Float?
+  fallbackUsed    Boolean  @default(false)
+
+  // Phase 4.5.1 (AI Usage & Cost Center): additive usage-attribution fields.
+  // purpose is the AiPurpose label from the generation layer (e.g.
+  // 'research.findings'); latencyMs is the wall-clock execution time of the
+  // agent step; success records the AgentResult outcome. All three are
+  // optional so historical rows (written before this change) aggregate
+  // unchanged — unknown values are reported as 'unknown', never guessed.
+  purpose         String?
+  latencyMs       Int?
+  success         Boolean?
+
+  // Phase 5.4 — Product-level AI cost attribution (all optional; additive
+  // only). Historical rows aggregate unchanged. Attribution is written ONCE
+  // per AI execution by the generation choke point; per-product aggregates
+  // sum these rows so the same execution can never be double-counted.
+  productId       String?
+  opportunityId   String?
+  experimentId    String?
+  jobId           String?
+  correlationId   String?
+
+  createdAt       DateTime @default(now())
+
+  @@index([agentType, createdAt])
+  @@index([createdAt])
+  @@index([productId])
+  @@index([opportunityId])
+  @@map("AgentLog")
+}
+
+// ============================================================================
+// PHASE 8 — Production Hardening + Autonomous Operations Layer
+// Additive only. Never stores simulated revenue as real Revenue rows.
+// ============================================================================
+
+/// Durable agent mission. Execution always goes through the Job Runner;
+/// this model never bypasses halal, human-review, or publishing gates.
+model AgentMission {
+  id                   String   @id @default(cuid())
+  objective            String
+  opportunityId        String?
+  opportunity          Opportunity? @relation(fields: [opportunityId], references: [id])
+  agentType            String
+  constraints          String   @default("[]")
+  budgetUsd            Float    @default(0)
+  allowedCapabilities  String   @default("[]")
+  expectedOutput       String   @default("")
+  successCriteria      String   @default("")
+  failureCriteria      String   @default("")
+  deadlineAt           DateTime?
+  timeoutMs            Int      @default(120000)
+  approvalRequired     Boolean  @default(false)
+  status               String   @default("QUEUED")
+  failureReason        String?
+  correlationId        String
+  retryCount           Int      @default(0)
+  resumePoint          String?
+  lastError            String?
+  failureClass         String?
+  jobId                String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  startedAt            DateTime?
+  completedAt          DateTime?
+
+  @@unique([correlationId])
+  @@index([status])
+  @@index([opportunityId, createdAt])
+  @@index([agentType, createdAt])
+  @@map("AgentMission")
+}
+
+/// Auditable autonomous-loop transition. One row per attempted stage move.
+/// from/to/reason/evidence/correlationId/timestamp/status are always present.
+model LoopTransition {
+  id              String   @id @default(cuid())
+  opportunityId   String
+  opportunity     Opportunity @relation(fields: [opportunityId], references: [id])
+  fromStage       String
+  toStage         String
+  reason          String
+  evidence        String   @default("")
+  evidenceType    String   @default("VERIFIED_DATA")
+  correlationId   String
+  status          String
+  mode            String   @default("LIVE")
+  createdAt       DateTime @default(now())
+
+  @@index([opportunityId, createdAt])
+  @@index([correlationId])
+  @@map("LoopTransition")
+}
+
+/// Paper-income / simulation run. Label is always SIMULATED.
+/// These rows MUST never be copied into the Revenue table.
+model SimulationRun {
+  id               String   @id @default(cuid())
+  seed             String
+  opportunityId    String?
+  opportunity      Opportunity? @relation(fields: [opportunityId], references: [id])
+  mode             String   @default("SIMULATION")
+  traffic          Int      @default(0)
+  conversionRate   Float    @default(0)
+  revenueUsd       Float    @default(0)
+  costsUsd         Float    @default(0)
+  profitUsd        Float    @default(0)
+  label            String   @default("SIMULATED")
+  stages           String   @default("[]")
+  decision         String?
+  realTransaction  Boolean  @default(false)
+  correlationId    String
+  createdAt        DateTime @default(now())
+
+  @@index([opportunityId, createdAt])
+  @@index([correlationId])
+  @@map("SimulationRun")
+}
+
+/// Structured operational memory (not chat history). Entries without
+/// sufficient provenance must never be treated as verified truth.
+model OperationalMemory {
+  id                 String   @id @default(cuid())
+  category           String
+  source             String
+  evidenceType       String
+  relatedEntityType  String?
+  relatedEntityId    String?
+  opportunityId      String?
+  opportunity        Opportunity? @relation(fields: [opportunityId], references: [id])
+  observation        String
+  outcome            String   @default("")
+  applicability      String   @default("")
+  confidence         Float    @default(0)
+  createdAt          DateTime @default(now())
+
+  @@index([category, createdAt])
+  @@index([relatedEntityType, relatedEntityId])
+  @@index([opportunityId])
+  @@map("OperationalMemory")
+}
+
+/// Classified failure + recovery state. Bounded retries; dead-letter when exhausted.
+model FailureRecord {
+  id                 String   @id @default(cuid())
+  classification     String
+  retryCount         Int      @default(0)
+  maxRetries         Int      @default(3)
+  lastError          String
+  recoveryState      String   @default("OPEN")
+  deadLettered       Boolean  @default(false)
+  resumePoint        String?
+  correlationId      String
+  relatedEntityType  String?
+  relatedEntityId    String?
+  opportunityId      String?
+  opportunity        Opportunity? @relation(fields: [opportunityId], references: [id])
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([classification, createdAt])
+  @@index([correlationId])
+  @@index([recoveryState])
+  @@map("FailureRecord")
+}
