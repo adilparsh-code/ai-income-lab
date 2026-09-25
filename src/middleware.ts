@@ -163,9 +163,6 @@ function safeHostOf(origin: string): string | null {
 }
 
 export const config = {
-  // Keep middleware portable to the Edge runtime by ensuring only
-  // Edge-compatible code is imported here. Server-only Node built-ins live
-  // behind route/server boundaries and are not part of this middleware.
   // Static assets and Next internals skip the middleware entirely.
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };
