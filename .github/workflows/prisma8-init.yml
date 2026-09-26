@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm install
+      - run: npm ci --ignore-scripts
       - run: npm run prisma8:emit
       - run: npx prisma migration plan --name init
       - name: Commit generated Prisma 8 migration
