@@ -30,8 +30,27 @@ placeholders only.
 
 | Variable | Used by | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | App runtime (`src/lib/db.ts`, `@prisma/adapter-pg`) | Application connection. In production: Supabase **transaction** pooler, port `6543`. |
+| `DATABASE_URL` | App runtime (`src/lib/db.ts`, `@prisma/adapter-pg`) | Application connection. In production: Supabase **transaction** pooler, port `6543` (`?pgbouncer=true`). |
 | `DIRECT_URL` | `prisma7` CLI (`migrate status`, `migrate deploy`) | Direct/session connection, port `5432`. PgBouncer on `6543` rejects the CLI engine's prepared statements. Falls back to `DATABASE_URL`. |
+
+Host shapes (both are in `.env.example`):
+
+```dotenv
+# Direct connection — IPv6 only: the host publishes an AAAA record and no A
+# record, so it needs an IPv6-capable network. Works for local dev on an
+# IPv6-capable machine; not usable from an IPv4-only host.
+DATABASE_URL="postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require"
+DIRECT_URL="postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require"
+
+# Shared pooler — IPv4. Required for the deployment platform and any IPv4-only
+# network; note the `postgres.<project-ref>` username on pooler connections.
+DATABASE_URL="postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require"
+DIRECT_URL="postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require"
+```
+
+Percent-encode URL-special characters in the password (`@ : / ? # & %`…): a raw
+`@` or `:` splits the userinfo field and the URL stops parsing. Append
+`sslmode=require` to refuse an unencrypted connection.
 
 Without them:
 
@@ -84,20 +103,30 @@ fresh clone or CI. It never writes to a database.
 
 ## 5. Operator runbook — verify the migrations against the real database
 
-Everything repository-side is ready. The steps below need the authorized
-PostgreSQL/Supabase credentials; they are the **only** remaining work.
+Everything repository-side is ready. `.env.local` already carries the wired
+connection strings for Supabase project `lzzvsprmczgdgirtpmca`. The steps below
+need the authorized database password — that single substitution is the **only**
+remaining work.
 
-1. Create `.env.local` in the repository root (it is git-ignored) containing the
-   two real values from the project's authorized database provider:
+1. In `.env.local` (git-ignored), replace `[YOUR-PASSWORD]` in `DATABASE_URL` and
+   `DIRECT_URL` with the real database password, percent-encoding any URL-special
+   characters. The file carries two shapes: the active one is the direct
+   connection (IPv6-only), the shared pooler is below it, commented.
 
    ```dotenv
-   DATABASE_URL="postgresql://…:…@…pooler.supabase.com:6543/postgres"
-   DIRECT_URL="postgresql://…:…@…pooler.supabase.com:5432/postgres"
+   # Active for local dev on an IPv6-capable network (this host is IPv6-only).
+   DATABASE_URL="postgresql://postgres:<password>@db.lzzvsprmczgdgirtpmca.supabase.co:5432/postgres?sslmode=require"
+   DIRECT_URL="postgresql://postgres:<password>@db.lzzvsprmczgdgirtpmca.supabase.co:5432/postgres?sslmode=require"
+
+   # Production, the deployment platform and any IPv4-only network: transaction
+   # pooler for the app runtime, session pooler for the Prisma CLI.
+   DATABASE_URL="postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require"
+   DIRECT_URL="postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require"
    ```
 
-   Use the transaction pooler for `DATABASE_URL` (app runtime) and the
-   session/direct connection for `DIRECT_URL` (CLI). Copy the shapes from
-   `.env.example`; never commit the file.
+   Never commit the file. Until the password is filled in, `npm run db:health`
+   names the `[YOUR-PASSWORD]` placeholder and exits non-zero — an intentional
+   fail-closed stop, not a connection failure.
 
 2. Compare the recorded history with the migration folder — read-only:
 
@@ -182,7 +211,10 @@ Verified against `prisma/schema.prisma` and `prisma/migrations/`:
 - Credential material is never logged: `scripts/db-health.mjs`,
   `scripts/verify-db-layer.mts` and `scripts/apply-baseline.mjs` read
   `.env.local`, parse the URL, and print only non-secret facts (database name,
-  role, counts). Errors name the variable only.
+  role, counts). Errors name the variable only — `db-health.mjs` additionally
+  detects an unfilled `[YOUR-PASSWORD]`/`<password>` placeholder and exits
+  non-zero before attempting a connection, so a template value is never mistaken
+  for a credential failure.
 - `.gitignore` blocks `.env`, `.env.local`, `.env.*.local`, `*.pem`, `*.key`
   and everything else matching `.env*`; only `.env.example` (placeholders) is
   committable.

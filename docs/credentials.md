@@ -27,7 +27,22 @@ endpoints refuse writes rather than pretending to work.
 Database verification steps and the migration inventory live in
 [`docs/database-operations.md`](./database-operations.md). Both variables must
 be supplied from the project's authorized provider (Supabase/PostgreSQL) and are
-never committed; `.env.example` carries placeholders only.
+never committed; `.env.example` carries placeholders only. Percent-encode
+URL-special characters in the password (`@ : / ? # & %`…) or the connection
+string will not parse.
+
+## Supabase client (optional — currently unused by this codebase)
+
+| Variable | Purpose | Behavior when missing |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | Project URL for a future browser/SSR Supabase client (`https://<project-ref>.supabase.co`). | Nothing reads it today; no effect. |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase publishable key (`sb_publishable_…`) for that client. | Nothing reads it today; no effect. |
+
+Client-safe by design (both are delivered to browsers), but they are still
+environment values, not database credentials. A database password, an
+`sb_secret_…` key, or a legacy `service_role` key must never carry a
+`NEXT_PUBLIC_` prefix — everything with that prefix is embedded in the client
+bundle. Server-side data access stays on `DATABASE_URL` above.
 
 ## AI provider (optional — mock mode when unset)
 

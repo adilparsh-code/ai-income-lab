@@ -15,6 +15,7 @@
     "prisma:migrate:deploy": "prisma7 migrate deploy",
     "db:health": "node scripts/db-health.mjs",
     "db:verify-layer": "tsx scripts/verify-db-layer.mts",
+    "db:doctor": "node scripts/db-connection-doctor.mjs",
     "postinstall": "prisma7 generate && node scripts/generate-test-schema.mjs",
     "pretest": "node scripts/generate-test-schema.mjs && node scripts/prepare-test-database.mjs",
     "pretypecheck": "node scripts/generate-test-schema.mjs",
