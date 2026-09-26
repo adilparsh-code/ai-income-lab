@@ -27,12 +27,12 @@ const navItems = [
   { label: 'Pipeline', href: '/pipeline', icon: Workflow },
   { label: 'Income Engine', href: '/income-engine', icon: CircleDollarSign },
   { label: 'Operations', href: '/operations', icon: Activity },
+  { label: 'Agent Control', href: '/agents', icon: Bot },
   { label: 'Product Factory', href: '/product-factory', icon: Factory },
   { label: 'Opportunities', href: '/opportunities', icon: Lightbulb },
   { label: 'Products', href: '/products', icon: Package },
   { label: 'Experiments', href: '/experiments', icon: FlaskConical },
   { label: 'Revenue', href: '/revenue', icon: DollarSign },
-  { label: 'AI Agents', href: '/agents', icon: Bot },
   { label: 'AI Usage & Cost', href: '/ai-usage', icon: Gauge },
   { label: 'Settings', href: '/settings', icon: Settings },
 ];
@@ -100,7 +100,7 @@ export function Sidebar() {
                     <item.icon className={cn('h-4 w-4', isActive ? 'text-indigo-400' : 'text-slate-400')} />
                     {item.label}
                     {/* Feature availability badges */}
-                    {['Products', 'Experiments', 'Revenue'].includes(item.label) && (
+                    {false && (
                       <span className="ml-auto rounded bg-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400">Soon</span>
                     )}
                   </Link>

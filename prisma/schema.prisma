@@ -943,3 +943,176 @@ model OpportunityHandoff {
   @@index([eventType, receivedAt])
   @@index([opportunityId])
 }
+
+// =============================================================================
+// AGENCY UPGRADE — single-admin autonomous agency layer (additive only).
+//
+// These models ADD observability and governance on top of the existing stack;
+// they never replace JobRun/AgentLog/WorkflowRun (the authoritative execution
+// record) and never duplicate existing models. Every table is written only
+// through src/lib/agency/* which composes the existing Job Runner, halal gate
+// and security guards — the tables themselves hold no execution authority.
+// =============================================================================
+
+/// Single-admin session record. There is NO public signup: the only credential
+/// source is the server-side env config (ADMIN_EMAIL / ADMIN_PASSWORD_HASH),/// verified with constant-time comparison; the plaintext password is never
+/// stored. One row per authenticated browser session; expiry is enforced.
+model AdminSession {
+  id             String   @id @default(cuid())
+  /// Opaque random token presented as an httpOnly cookie value. Only the
+  /// keyed fingerprint (HMAC) is stored — a stolen DB dump cannot mint cookies.
+  tokenFingerprint String
+  /// Always the single configured admin identity; kept for audit clarity.
+  email          String
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+  lastSeenAt     DateTime @default(now())
+  /// Short, safe context string (fingerprinted IP). Never a raw credential.
+  createdBy      String   @default("")
+
+  @@unique([tokenFingerprint])
+  @@index([expiresAt])
+}
+
+/// Typed Agent Contract, one row per roster agent. Contracts are seeded from
+/// the static definitions in src/lib/agency/contracts.ts; runtime code treats
+/// the in-code definition as authoritative and this row as durable evidence.
+model AgentDefinition {
+  id                 String   @id @default(cuid())
+  agentId            String   @unique   // 'business-manager', 'research', …
+  role               String
+  mission            String
+  allowedTools       String   @default("[]")   // JSON array of tool ids
+  allowedStages      String   @default("[]")   // JSON array of stage names
+  forbiddenActions   String   @default("[]")   // JSON array
+  budgetLimitUsd     Float    @default(0)
+  timeoutMs          Int      @default(120000)
+  maxRetries         Int      @default(2)
+  requiresApproval   Boolean  @default(false)
+  stopConditions     String   @default("[]")   // JSON array of strings
+  evidenceRequirement String  @default("AI_INFERENCE")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+/// One supervised run per dispatched job. Extends — never replaces — JobRun:
+/// the jobId column references the authoritative JobRun row.
+model AgentRun {
+  id             String   @id @default(cuid())
+  agentId        String
+  jobId          String?            // JobRun.id (authoritative execution record)
+  jobType        String
+  stage          String             // DISCOVER..LOOP stage label
+  status         String             // QUEUED RUNNING SUCCEEDED FAILED BLOCKED HUMAN_REVIEW DEGRADED QUARANTINED
+  correlationId  String
+  lifecycleSteps String  @default("[]")  // JSON: [{step, outcome, detail}]
+  safetyVerdict  String?            // HALAL / REVIEW_REQUIRED / NOT_ALLOWED
+  verification   String?            // PASSED / FAILED / NOT_APPLICABLE
+  failureReason  String?
+  evidenceRefs   String  @default("[]")  // JSON array of {type, id}
+  retryCount     Int     @default(0)
+  startedAt      DateTime @default(now())
+  completedAt    DateTime?
+
+  @@index([agentId, startedAt])
+  @@index([correlationId])
+  @@index([jobId])
+  @@index([status])
+}
+
+/// Allow-listed directional agent message (corr/job IDs, structured payload).
+model AgentMessage {
+  id             String   @id @default(cuid())
+  correlationId  String
+  jobId          String?
+  sourceAgent    String
+  targetAgent    String
+  kind           String   // TASK_REQUEST | RESULT | FINDING | ESCALATION | DECISION
+  payloadJson    String   @default("{}")  // bounded JSON, data only
+  evidenceRefs   String   @default("[]")
+  createdAt      DateTime @default(now())
+
+  @@index([correlationId])
+  @@index([targetAgent, createdAt])
+  @@index([sourceAgent, createdAt])
+}
+
+/// Deterministic health snapshot per agent (latest wins via upsert).
+model AgentHealth {
+  id             String   @id @default(cuid())
+  agentId        String   @unique
+  state          String   // HEALTHY DEGRADED BLOCKED FAILED UNKNOWN
+  reasons        String   @default("[]")  // JSON array of short strings
+  successCount   Int      @default(0)
+  failureCount   Int      @default(0)
+  lastRunAt      DateTime?
+  lastSuccessAt  DateTime?
+  lastFailureAt  DateTime?
+  evaluatedAt    DateTime @default(now())
+
+  @@index([state])
+}
+
+/// Per-agent tool permission allow-list (seeded; additive governance layer).
+model AgentPermission {
+  id          String   @id @default(cuid())
+  agentId     String
+  tool        String
+  effect      String   @default("ALLOW") // ALLOW (only effect seeded; DENY is implicit)
+  scope       String   @default("")
+  createdAt   DateTime @default(now())
+
+  @@unique([agentId, tool])
+}
+
+/// Human review queue item. One row per action needing an admin decision.
+model HumanReview {
+  id             String   @id @default(cuid())
+  category       String   // SAFETY_REVIEW | PUBLICATION | SPENDING | PAYMENT_CONFIG | SECURITY_CHANGE | DESTRUCTIVE_DB | CREDENTIALS | IRREVERSIBLE
+  title          String
+  detail         String   @default("")
+  status         String   @default("PENDING") // PENDING APPROVED REJECTED PAUSED RETIRED
+  requestedBy    String             // agent id ('system' for engine requests)
+  opportunityId  String?
+  evidenceRefs   String  @default("[]")
+  decisionNote   String?
+  decidedBy      String?
+  decidedAt      DateTime?
+  correlationId  String?
+  createdAt      DateTime @default(now())
+
+  @@index([status, createdAt])
+  @@index([category])
+}
+
+/// Supervisor evaluation per run (loop protection + budget + safety verdicts).
+model SupervisorEvaluation {
+  id             String   @id @default(cuid())
+  agentRunId     String?
+  correlationId  String
+  planValid      Boolean
+  outputValid    Boolean
+  loopDetected   Boolean  @default(false)
+  loopReason     String?
+  budgetViolation Boolean @default(false)
+  safetyViolation Boolean @default(false)
+  verdict        String   // PROCEED | QUARANTINE | PAUSE | ESCALATE
+  reasons        String   @default("[]")
+  harnessStatus  String   @default("NOT_CONNECTED")
+  evaluatedAt    DateTime @default(now())
+
+  @@index([correlationId])
+  @@index([verdict, evaluatedAt])
+}
+
+/// Agency-level control switches (single row; upserted). Emergency PAUSE ALL
+/// flips paused=true and is audited; state is preserved, never reset.
+model AgencyControl {
+  id           String   @id @default(cuid())
+  key          String   @unique   // 'autonomy'
+  paused       Boolean  @default(false)
+  pauseReason  String?
+  pausedBy     String?
+  pausedAt     DateTime?
+  updatedAt    DateTime @updatedAt
+}
