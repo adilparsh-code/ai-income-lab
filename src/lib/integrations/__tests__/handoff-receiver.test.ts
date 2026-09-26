@@ -32,7 +32,10 @@ Object.assign(process.env, {
 
 before(async () => {
   const { execSync } = await import('node:child_process');
-  execSync('npx prisma db push --schema prisma/schema.test.prisma', {
+  // Pin the v7 CLI: after the Prisma 8 toolchain merge the default `prisma`
+  // binary's interactive "agent skills" gate fails db push in non-interactive
+  // test runs. --schema= (equals form) is required by prisma7.
+  execSync('npx prisma7 db push --schema=prisma/schema.test.prisma', {
     stdio: 'pipe',
     cwd: process.cwd(),
     env: process.env,
