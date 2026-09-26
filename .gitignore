@@ -22,7 +22,6 @@
 
 # misc
 .DS_Store
-*.pem
 
 # debug
 npm-debug.log*
@@ -33,6 +32,13 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
+# Secrets: named explicitly so a future loosening of the glob above can never
+# expose them. Only the placeholder template (.env.example) is committable.
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
 
 # vercel
 .vercel

@@ -1,5 +1,19 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Database
+
+The data layer is PostgreSQL (Supabase in production) via Prisma 7
+(`npx prisma7`), with the schema in `prisma/schema.prisma` and the applied
+migration history in `prisma/migrations/`.
+
+- `DATABASE_URL` (app runtime) and `DIRECT_URL` (Prisma CLI migrations) are
+  required for any live database work. Copy `.env.example` to `.env.local` and
+  fill in the real values — never commit them.
+- Offline checks that need no credentials: `npm run prisma:validate`,
+  `npm run prisma:drift-check`, `npm run typecheck`, `npm test`, `npm run build`.
+- Operator steps, migration inventory, safety rules and the verification
+  runbook: [`docs/database-operations.md`](docs/database-operations.md).
+
 ## Getting Started
 
 First, run the development server:

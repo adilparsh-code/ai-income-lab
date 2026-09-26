@@ -26,6 +26,11 @@ jobs:
       - name: Validate Prisma 8 contract
         run: npm run prisma8:emit
 
+      - name: Validate Prisma 7 schema + migration history (offline, no database)
+        run: |
+          npm run prisma:validate
+          npm run prisma:drift-check
+
       - name: Typecheck
         run: npm run typecheck
 

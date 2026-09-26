@@ -22,6 +22,12 @@ endpoints refuse writes rather than pretending to work.
 | Variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL connection string for Prisma (Supabase transaction pooler in production). See `.env.example`. |
+| `DIRECT_URL` | Direct/session PostgreSQL connection used by the Prisma 7 CLI for `prisma7 migrate status` and `prisma7 migrate deploy` (the transaction pooler rejects the CLI engine). Falls back to `DATABASE_URL`, but the CLI must not run through port 6543. |
+
+Database verification steps and the migration inventory live in
+[`docs/database-operations.md`](./database-operations.md). Both variables must
+be supplied from the project's authorized provider (Supabase/PostgreSQL) and are
+never committed; `.env.example` carries placeholders only.
 
 ## AI provider (optional — mock mode when unset)
 
