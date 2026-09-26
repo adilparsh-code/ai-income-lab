@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { installTestDatabase } from '@/test-utils/install-test-database';
 
 const tempDir = mkdtempSync(join(tmpdir(), 'aill-mem-'));
 Object.assign(process.env, {
@@ -16,9 +17,8 @@ Object.assign(process.env, {
   NODE_ENV: 'test',
 });
 
-before(async () => {
-  const { execSync } = await import('node:child_process');
-  execSync('npx prisma7 db push --schema prisma/schema.test.prisma', { stdio: 'pipe', cwd: process.cwd(), env: process.env });
+before(() => {
+  installTestDatabase(join(tempDir, 'test.db'));
 });
 
 after(() => {

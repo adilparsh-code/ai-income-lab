@@ -54,6 +54,7 @@ prisma/dev.db
 # generated SQLite test schema/client (from scripts/generate-test-schema.mjs)
 prisma/schema.test.prisma
 prisma/test-client/
+prisma/test-template.db
 
 # AutoClaw KDream data
 .autoclaw/

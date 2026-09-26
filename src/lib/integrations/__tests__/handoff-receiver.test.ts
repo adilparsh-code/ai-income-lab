@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { JobOutcome, JobType } from '@/lib/jobs/types';
 import type { HandoffDb, HandoffRunJob } from '../handoff-receiver';
+import { installTestDatabase } from '@/test-utils/install-test-database';
 
 const tempDir = mkdtempSync(join(tmpdir(), 'aill-handoff-'));
 Object.assign(process.env, {
@@ -30,16 +31,8 @@ Object.assign(process.env, {
   OPERATOR_CONTROL_TOKEN: 'test-operator-token-value',
 });
 
-before(async () => {
-  const { execSync } = await import('node:child_process');
-  // Pin the v7 CLI: after the Prisma 8 toolchain merge the default `prisma`
-  // binary's interactive "agent skills" gate fails db push in non-interactive
-  // test runs. --schema= (equals form) is required by prisma7.
-  execSync('npx prisma7 db push --schema=prisma/schema.test.prisma', {
-    stdio: 'pipe',
-    cwd: process.cwd(),
-    env: process.env,
-  });
+before(() => {
+  installTestDatabase(join(tempDir, 'test.db'));
 });
 
 after(() => {
