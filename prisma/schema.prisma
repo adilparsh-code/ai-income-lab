@@ -51,6 +51,11 @@ model Opportunity {
   simulationRuns        SimulationRun[]
   operationalMemories   OperationalMemory[]
   failureRecords        FailureRecord[]
+  portfolioItems        PortfolioItem[]
+  growthExperiments     GrowthExperiment[]
+  growthDecisions       GrowthDecision[]
+  learningEntries       LearningEntry[]
+  resourceAllocations   ResourceAllocation[]
 }
 
 model Product {
@@ -187,6 +192,156 @@ model Experiment {
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+}
+
+// ============================================================================
+// PHASE 9 — Autonomous Growth + Optimization Engine
+// Additive only. Deterministic, explainable, bounded. Reuses the existing
+// Experiment/ProductEvent/Revenue/JobRunner boundaries; never stores secrets
+// and never mixes simulated figures with real revenue.
+// ============================================================================
+
+/// Portfolio view of one opportunity. One row per opportunity (upserted).
+/// Aggregates are recomputed from REAL rows (events/revenue/experiments);
+/// they never invent market or revenue facts.
+model PortfolioItem {
+  id                    String   @id @default(cuid())
+  opportunityId         String   @unique
+  opportunity           Opportunity @relation(fields: [opportunityId], references: [id])
+
+  // Denormalized deterministic aggregates (recomputed, never user-set).
+  traffic               Int      @default(0)
+  conversions           Int      @default(0)
+  revenueUsd            Float    @default(0)
+  costsUsd              Float    @default(0)
+  profitUsd             Float    @default(0)
+  experimentCount       Int      @default(0)
+  activeExperimentCount Int      @default(0)
+
+  // Deterministic health output (rules in src/lib/growth/health.ts).
+  health                String   @default("NEEDS_DATA")  // HEALTHY, WATCH, NEEDS_DATA, UNDERPERFORMING, STOPPED, BLOCKED
+  trend                 String   @default("FLAT")        // UP, FLAT, DOWN, UNKNOWN
+  confidence            String   @default("LOW")         // LOW, MEDIUM, HIGH
+  score                 Int      @default(0)             // 0..100 deterministic portfolio score
+  explanation           String   @default("")            // human-readable rule trace
+
+  halalStatusSnapshot   String   @default("HALAL")
+  opportunityStatusSnapshot String @default("IDEA")
+  evidenceStrengthSnapshot  String  @default("LOW")
+  validationStatusSnapshot  String  @default("NOT_VALIDATED")
+  productStatusSnapshot     String  @default("")
+
+  lastActivityAt        DateTime?
+  evaluatedAt           DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  experiments           GrowthExperiment[]
+  allocations           ResourceAllocation[]
+
+  @@index([health])
+  @@index([evaluatedAt])
+}
+
+/// One bounded growth experiment per (opportunity, idempotency key).
+/// Execution always goes through the Job Runner; halal/authorization gates
+/// are enforced before any spend. Budgets are hard-capped in code.
+model GrowthExperiment {
+  id             String   @id @default(cuid())
+  opportunityId  String
+  opportunity    Opportunity @relation(fields: [opportunityId], references: [id])
+  portfolioItemId String?
+  portfolioItem  PortfolioItem? @relation(fields: [portfolioItemId], references: [id])
+
+  experimentType String   // LANDING_PAGE, CTA, PRICING, CONTENT, TRAFFIC_SOURCE, POSITIONING, ONBOARDING
+  hypothesis     String
+  metric         String   // CONVERSION_RATE, CTR, REVENUE_PER_VISITOR, SIGNUPS, REVENUE
+  baselineValue  Float    @default(0)
+  targetValue    Float
+
+  budgetUsd      Float
+  spentUsd       Float    @default(0)
+  maxDurationDays Int
+  startedAt      DateTime @default(now())
+  endsAt         DateTime
+  stoppedAt      DateTime?
+  stopReason     String?
+
+  status         String   @default("DRAFT") // DRAFT, ACTIVE, COMPLETED, STOPPED, BLOCKED, HUMAN_REVIEW
+
+  // Measured outcome (from recorded events/revenue only — never fabricated).
+  variantVisitors Int     @default(0)
+  variantConversions Int  @default(0)
+  variantValueUsd   Float @default(0)
+  controlValueUsd   Float @default(0)
+  resultSummary  String   @default("")
+  evidenceType   String   @default("VERIFIED_DATA")
+
+  // Lifecycle safety: bounded execution attempts + stop conditions.
+  executionAttempts Int   @default(0)
+  failureCount   Int      @default(0)
+  stopLossThreshold Float
+  requiresApproval Boolean @default(false)
+  correlationId  String
+  idempotencyKey String   @unique
+
+  decisions      GrowthDecision[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([opportunityId, status])
+  @@index([status, endsAt])
+  @@index([correlationId])
+}
+
+/// Append-only growth decision ledger. One row per deterministic evaluation.
+/// Human decisions are recorded with evidenceType HUMAN_DECISION and are
+/// authoritative over engine recommendations.
+model GrowthDecision {
+  id             String   @id @default(cuid())
+  opportunityId  String
+  opportunity    Opportunity @relation(fields: [opportunityId], references: [id])
+  experimentId   String?
+  experiment     GrowthExperiment? @relation(fields: [experimentId], references: [id])
+
+  decision       String   // CONTINUE, ITERATE, PAUSE, STOP, SCALE_WITHIN_BUDGET, NEEDS_HUMAN_REVIEW
+  reason         String
+  evidenceType   String   @default("VERIFIED_DATA")
+  evidence       String   @default("")
+  decidedBy      String   @default("growth-engine") // growth-engine | business-manager | human
+  metricsJson    String   @default("{}")
+  correlationId  String
+  createdAt      DateTime @default(now())
+
+  @@index([opportunityId, createdAt])
+  @@index([experimentId])
+  @@index([decision])
+}
+
+/// Business memory: persisted learning from completed/stopped experiments.
+/// Future decisions consume verified entries; AI-inferred entries are stored
+/// but never treated as verified truth.
+model LearningEntry {
+  id             String   @id @default(cuid())
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+  experimentId   String?
+
+  hypothesis     String
+  result         String   // VALIDATED, INVALIDATED, INCONCLUSIVE
+  metric         String   @default("")
+  baselineValue  Float    @default(0)
+  measuredValue  Float    @default(0)
+  decision       String
+  context        String   @default("")
+  evidenceType   String   @default("VERIFIED_DATA")
+  applicability  String   @default("")
+  confidence     Float    @default(0)
+
+  createdAt      DateTime @default(now())
+
+  @@index([result, createdAt])
+  @@index([opportunityId])
 }
 
 model Revenue {
@@ -700,4 +855,264 @@ model FailureRecord {
   @@index([classification, createdAt])
   @@index([correlationId])
   @@index([recoveryState])
+}
+
+/// Phase 9 — bounded per-opportunity resource budget. One row per
+/// opportunity (upserted). All caps are hard limits enforced in code before
+/// any experiment is created; the loop can never raise them autonomously.
+model ResourceAllocation {
+  id                 String   @id @default(cuid())
+  opportunityId      String   @unique
+  opportunity        Opportunity @relation(fields: [opportunityId], references: [id])
+  portfolioItemId    String?
+  portfolioItem      PortfolioItem? @relation(fields: [portfolioItemId], references: [id])
+
+  monthlyBudgetUsd   Float    @default(0)
+  spentThisMonthUsd  Float    @default(0)
+  perExperimentCapUsd Float
+  maxActiveExperiments Int  @default(2)
+  paused             Boolean  @default(false)
+  pauseReason        String?
+  note               String   @default("")
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([paused])
+}
+/// HIGH-1 — Opportunity handoff received from an external agent sender.
+///
+/// One row per accepted delivery envelope. The row IS the idempotency
+/// record: `idempotencyKey` is unique, so a replayed delivery collapses to a
+/// duplicate response and never creates a second job or a second opportunity.
+///
+/// Safety properties enforced by the receiver (src/lib/integrations/handoff):
+/// - The envelope carries DATA only. It is never interpreted as instructions
+///   and never executed directly; accepted work is handed to the Job Runner.
+/// - `eligibility` carries the sender's declared eligibility, which the
+///   receiver re-derives from the existing halal gate. A sender claiming
+///   ALLOWED can never override a locally-computed NOT_ALLOWED/REVIEW_REQUIRED.
+/// - `halalStatus` is always the LOCALLY computed value, never the asserted one.
+model OpportunityHandoff {
+  id               String   @id @default(cuid())
+
+  /// Contract version of the delivery envelope. Only versions listed in
+  /// src/lib/integrations/handoff are accepted; unknown versions are rejected.
+  contractVersion  String
+  /// Sender-assigned contract instance id (audit correlation, not unique).
+  contractId       String
+  /// Caller-supplied idempotency key. UNIQUE — the duplicate-delivery guard.
+  idempotencyKey   String   @unique
+  /// Correlation id threaded through the Job Runner and every audit record.
+  correlationId    String
+
+  /// Narrow event type the sender is delivering (e.g. OPPORTUNITY_PROPOSED).
+  eventType        String
+  /// Fingerprint of the authenticated sender identity (never the credential).
+  senderIdentity   String
+
+  /// Short, human-readable title supplied by the sender. Untrusted text.
+  title            String
+  /// Opaque JSON payload as delivered. Stored as a string, never executed and
+  /// never concatenated into SQL, prompts, or shell commands.
+  payloadJson      String
+
+  /// Sender-asserted eligibility. Recorded for audit only — never trusted.
+  assertedEligibility String
+  /// Eligibility re-derived by the server from the existing halal gate.
+  eligibility      String
+  /// Locally computed halal verdict (HALAL | REVIEW_REQUIRED | NOT_ALLOWED).
+  halalStatus      String
+  /// Job type the receiver dispatched through the Job Runner.
+  jobType          String
+  /// Outcome of the handoff: ACCEPTED | DUPLICATE | REJECTED | BLOCKED.
+  status           String
+  /// Correlation id of the dispatched JobRun, when one was created.
+  jobRunId         String?
+  /// Opportunity created by the dispatched job, when applicable.
+  opportunityId    String?
+  /// Short, safe reason string. Never contains secrets or full payloads.
+  reason           String   @default("")
+
+  receivedAt       DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([status, receivedAt])
+  @@index([correlationId])
+  @@index([eventType, receivedAt])
+  @@index([opportunityId])
+}
+
+// =============================================================================
+// AGENCY UPGRADE — single-admin autonomous agency layer (additive only).
+//
+// These models ADD observability and governance on top of the existing stack;
+// they never replace JobRun/AgentLog/WorkflowRun (the authoritative execution
+// record) and never duplicate existing models. Every table is written only
+// through src/lib/agency/* which composes the existing Job Runner, halal gate
+// and security guards — the tables themselves hold no execution authority.
+// =============================================================================
+
+/// Single-admin session record. There is NO public signup: the only credential
+/// source is the server-side env config (ADMIN_EMAIL / ADMIN_PASSWORD_HASH),/// verified with constant-time comparison; the plaintext password is never
+/// stored. One row per authenticated browser session; expiry is enforced.
+model AdminSession {
+  id             String   @id @default(cuid())
+  /// Opaque random token presented as an httpOnly cookie value. Only the
+  /// keyed fingerprint (HMAC) is stored — a stolen DB dump cannot mint cookies.
+  tokenFingerprint String
+  /// Always the single configured admin identity; kept for audit clarity.
+  email          String
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+  lastSeenAt     DateTime @default(now())
+  /// Short, safe context string (fingerprinted IP). Never a raw credential.
+  createdBy      String   @default("")
+
+  @@unique([tokenFingerprint])
+  @@index([expiresAt])
+}
+
+/// Typed Agent Contract, one row per roster agent. Contracts are seeded from
+/// the static definitions in src/lib/agency/contracts.ts; runtime code treats
+/// the in-code definition as authoritative and this row as durable evidence.
+model AgentDefinition {
+  id                 String   @id @default(cuid())
+  agentId            String   @unique   // 'business-manager', 'research', …
+  role               String
+  mission            String
+  allowedTools       String   @default("[]")   // JSON array of tool ids
+  allowedStages      String   @default("[]")   // JSON array of stage names
+  forbiddenActions   String   @default("[]")   // JSON array
+  budgetLimitUsd     Float    @default(0)
+  timeoutMs          Int      @default(120000)
+  maxRetries         Int      @default(2)
+  requiresApproval   Boolean  @default(false)
+  stopConditions     String   @default("[]")   // JSON array of strings
+  evidenceRequirement String  @default("AI_INFERENCE")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+/// One supervised run per dispatched job. Extends — never replaces — JobRun:
+/// the jobId column references the authoritative JobRun row.
+model AgentRun {
+  id             String   @id @default(cuid())
+  agentId        String
+  jobId          String?            // JobRun.id (authoritative execution record)
+  jobType        String
+  stage          String             // DISCOVER..LOOP stage label
+  status         String             // QUEUED RUNNING SUCCEEDED FAILED BLOCKED HUMAN_REVIEW DEGRADED QUARANTINED
+  correlationId  String
+  lifecycleSteps String  @default("[]")  // JSON: [{step, outcome, detail}]
+  safetyVerdict  String?            // HALAL / REVIEW_REQUIRED / NOT_ALLOWED
+  verification   String?            // PASSED / FAILED / NOT_APPLICABLE
+  failureReason  String?
+  evidenceRefs   String  @default("[]")  // JSON array of {type, id}
+  retryCount     Int     @default(0)
+  startedAt      DateTime @default(now())
+  completedAt    DateTime?
+
+  @@index([agentId, startedAt])
+  @@index([correlationId])
+  @@index([jobId])
+  @@index([status])
+}
+
+/// Allow-listed directional agent message (corr/job IDs, structured payload).
+model AgentMessage {
+  id             String   @id @default(cuid())
+  correlationId  String
+  jobId          String?
+  sourceAgent    String
+  targetAgent    String
+  kind           String   // TASK_REQUEST | RESULT | FINDING | ESCALATION | DECISION
+  payloadJson    String   @default("{}")  // bounded JSON, data only
+  evidenceRefs   String   @default("[]")
+  createdAt      DateTime @default(now())
+
+  @@index([correlationId])
+  @@index([targetAgent, createdAt])
+  @@index([sourceAgent, createdAt])
+}
+
+/// Deterministic health snapshot per agent (latest wins via upsert).
+model AgentHealth {
+  id             String   @id @default(cuid())
+  agentId        String   @unique
+  state          String   // HEALTHY DEGRADED BLOCKED FAILED UNKNOWN
+  reasons        String   @default("[]")  // JSON array of short strings
+  successCount   Int      @default(0)
+  failureCount   Int      @default(0)
+  lastRunAt      DateTime?
+  lastSuccessAt  DateTime?
+  lastFailureAt  DateTime?
+  evaluatedAt    DateTime @default(now())
+
+  @@index([state])
+}
+
+/// Per-agent tool permission allow-list (seeded; additive governance layer).
+model AgentPermission {
+  id          String   @id @default(cuid())
+  agentId     String
+  tool        String
+  effect      String   @default("ALLOW") // ALLOW (only effect seeded; DENY is implicit)
+  scope       String   @default("")
+  createdAt   DateTime @default(now())
+
+  @@unique([agentId, tool])
+}
+
+/// Human review queue item. One row per action needing an admin decision.
+model HumanReview {
+  id             String   @id @default(cuid())
+  category       String   // SAFETY_REVIEW | PUBLICATION | SPENDING | PAYMENT_CONFIG | SECURITY_CHANGE | DESTRUCTIVE_DB | CREDENTIALS | IRREVERSIBLE
+  title          String
+  detail         String   @default("")
+  status         String   @default("PENDING") // PENDING APPROVED REJECTED PAUSED RETIRED
+  requestedBy    String             // agent id ('system' for engine requests)
+  opportunityId  String?
+  evidenceRefs   String  @default("[]")
+  decisionNote   String?
+  decidedBy      String?
+  decidedAt      DateTime?
+  correlationId  String?
+  createdAt      DateTime @default(now())
+
+  @@index([status, createdAt])
+  @@index([category])
+}
+
+/// Supervisor evaluation per run (loop protection + budget + safety verdicts).
+model SupervisorEvaluation {
+  id             String   @id @default(cuid())
+  agentRunId     String?
+  correlationId  String
+  planValid      Boolean
+  outputValid    Boolean
+  loopDetected   Boolean  @default(false)
+  loopReason     String?
+  budgetViolation Boolean @default(false)
+  safetyViolation Boolean @default(false)
+  verdict        String   // PROCEED | QUARANTINE | PAUSE | ESCALATE
+  reasons        String   @default("[]")
+  harnessStatus  String   @default("NOT_CONNECTED")
+  evaluatedAt    DateTime @default(now())
+
+  @@index([correlationId])
+  @@index([verdict, evaluatedAt])
+}
+
+/// Agency-level control switches (single row; upserted). Emergency PAUSE ALL
+/// flips paused=true and is audited; state is preserved, never reset.
+model AgencyControl {
+  id           String   @id @default(cuid())
+  key          String   @unique   // 'autonomy'
+  paused       Boolean  @default(false)
+  pauseReason  String?
+  pausedBy     String?
+  pausedAt     DateTime?
+  updatedAt    DateTime @updatedAt
 }

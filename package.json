@@ -13,13 +13,14 @@
     "pretest": "node scripts/generate-test-schema.mjs",
     "pretypecheck": "node scripts/generate-test-schema.mjs",
     "prebuild": "node scripts/generate-test-schema.mjs",
-    "test": "tsx --test src/lib/ai/__tests__/*.test.ts src/lib/ruflo/__tests__/*.test.ts src/lib/research/__tests__/*.test.ts src/lib/product-factory/__tests__/*.test.ts src/lib/jobs/__tests__/*.test.ts src/lib/agents/__tests__/*.test.ts src/lib/business/__tests__/*.test.ts src/lib/publishing/__tests__/*.test.ts src/lib/income-engine/__tests__/*.test.ts src/lib/integrations/__tests__/*.test.ts src/lib/security/__tests__/*.test.ts src/lib/ops/__tests__/*.test.ts",
+    "test": "tsx --test src/lib/ai/__tests__/*.test.ts src/lib/ruflo/__tests__/*.test.ts src/lib/research/__tests__/*.test.ts src/lib/product-factory/__tests__/*.test.ts src/lib/jobs/__tests__/*.test.ts src/lib/agents/__tests__/*.test.ts src/lib/agency/__tests__/*.test.ts src/lib/business/__tests__/*.test.ts src/lib/publishing/__tests__/*.test.ts src/lib/income-engine/__tests__/*.test.ts src/lib/integrations/__tests__/*.test.ts src/lib/security/__tests__/*.test.ts src/lib/ops/__tests__/*.test.ts src/lib/growth/__tests__/*.test.ts",
     "prisma8:emit": "prisma contract emit"
   },
   "dependencies": {
     "@prisma/adapter-libsql": "^7.10.0",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
+    "@prisma/orm-postgres": "^8.0.0-rc.11",
     "@types/uuid": "^10.0.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.45.0",
@@ -28,10 +29,10 @@
     "react-dom": "19.2.8",
     "recharts": "^3.10.1",
     "tailwind-merge": "^3.6.0",
-    "uuid": "^14.0.2",
-    "@prisma/orm-postgres": "^8.0.0-rc.11"
+    "uuid": "^14.0.2"
   },
   "devDependencies": {
+    "@prisma/prisma7": "7.10.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -41,8 +42,7 @@
     "prisma": "^8.0.0-rc.15",
     "tailwindcss": "^4",
     "tsx": "^4.23.13",
-    "typescript": "^5",
-    "@prisma/prisma7": "7.10.0"
+    "typescript": "^5"
   },
   "engines": {
     "node": ">=22.18.0"
