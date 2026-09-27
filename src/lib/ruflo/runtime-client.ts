@@ -115,6 +115,38 @@ async function requestJson(
   return { status: response.status, body };
 }
 
+/**
+ * MCP tools/call results arrive wrapped in the standard content envelope
+ * ({ content: [{ type: 'text', text: '<json>' }], isError? }). Ruflo V3's
+ * tool handlers return their JSON payload inside that envelope, so unwrap
+ * it here; a bare result (older shape) passes through unchanged.
+ */
+function unwrapMcpToolResult<T>(result: unknown): T {
+  if (
+    result &&
+    typeof result === 'object' &&
+    !Array.isArray(result) &&
+    Array.isArray((result as { content?: unknown }).content)
+  ) {
+    const content = (result as { content: unknown[] }).content;
+    const textItem = content.find(
+      (item) =>
+        item &&
+        typeof item === 'object' &&
+        (item as { type?: unknown }).type === 'text' &&
+        typeof (item as { text?: unknown }).text === 'string',
+    ) as { text: string } | undefined;
+    if (textItem) {
+      try {
+        return JSON.parse(textItem.text) as T;
+      } catch {
+        return textItem.text as unknown as T;
+      }
+    }
+  }
+  return result as T;
+}
+
 export function createRufloMcpClient(config: RufloRuntimeConfig): RufloMcpClient {
   const baseUrl = normalizeBaseUrl(config.baseUrl);
   const timeoutMs = Math.min(Math.max(config.timeoutMs ?? DEFAULT_TIMEOUT_MS, 1_000), MAX_TIMEOUT_MS);
@@ -181,12 +213,12 @@ export function createRufloMcpClient(config: RufloRuntimeConfig): RufloMcpClient
       throw new Error(`Ruflo tool call failed (HTTP ${result.status}).`);
     }
 
-    const envelope = result.body as { result?: T; error?: { message?: string } } | null;
+    const envelope = result.body as { result?: unknown; error?: { message?: string } } | null;
     if (envelope?.error) {
       throw new Error(envelope.error.message || 'Ruflo tool call failed.');
     }
 
-    return envelope?.result as T;
+    return unwrapMcpToolResult<T>(envelope?.result);
   }
 
   async function createTask(request: RufloTaskRequest): Promise<TypedTaskResult> {

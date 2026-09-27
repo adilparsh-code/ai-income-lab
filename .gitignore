@@ -56,6 +56,9 @@ prisma/schema.test.prisma
 prisma/test-client/
 prisma/test-template.db
 
+# CI-only ephemeral checkout of the pinned Ruflo runtime (see .github/workflows/ci.yml)
+/.ci/
+
 # generated Prisma 8 contract artifacts (from `prisma contract emit`, CI regenerates)
 /generated/
 
