@@ -17,11 +17,19 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
-      - name: Install AI Income Lab dependencies
-        run: npm ci
+      - name: Install dependencies
+        run: npm install
+
+      - name: Validate Prisma 8 contract
+        run: npm run prisma8:emit
+
+      - name: Validate Prisma 7 schema + migration history (offline, no database)
+        run: |
+          npm run prisma:validate
+          npm run prisma:drift-check
 
       - name: Typecheck
         run: npm run typecheck
@@ -45,7 +53,9 @@ jobs:
           node-version: 22
 
       - name: Install AI Income Lab dependencies
-        run: npm ci
+        # Match the validate job: the prisma8 lockfile is not guaranteed to be
+        # npm-ci-sync, so install like main's green baseline does.
+        run: npm install
 
       - name: Checkout Ruflo
         uses: actions/checkout@v4

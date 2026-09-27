@@ -15,11 +15,13 @@ import { NextResponse } from 'next/server';
 import { logger } from '@/lib/server-log';
 import { getOperationsSummary } from '@/lib/product-factory/operations';
 import { verifyAiProvider } from '@/lib/ai/capability';
-import { guardOperatorEndpoint, readJsonBody } from '@/lib/security/guard';
+import { guardBrowserOrOperator, guardOperatorEndpoint, readJsonBody } from '@/lib/security/guard';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(request: Request) {
+  const guard = await guardBrowserOrOperator(request, 'api:operations:get', { max: 30, windowSeconds: 60 });
+  if ('response' in guard) return NextResponse.json(guard.response, { status: guard.status });
   try {
     const summary = await getOperationsSummary();
     return NextResponse.json({ ok: true, summary });

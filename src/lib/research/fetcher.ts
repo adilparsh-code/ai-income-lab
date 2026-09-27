@@ -12,9 +12,11 @@
 //   and secrets are never included in errors.
 
 import { isAllowedResearchUrl } from './core';
+import { validatePublicUrl, systemDnsLookup, type DnsLookup } from '@/lib/security/ssrf';
 
 export type FetchErrorCategory =
   | 'blocked_url'
+  | 'blocked_dns'
   | 'timeout'
   | 'network'
   | 'http_error'
@@ -50,6 +52,14 @@ export interface FetchPageOptions {
   maxRetries?: number;
   /** Injectable fetch for offline tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
+  /**
+   * Phase 9 - DNS-level SSRF resolver. When the real network transport is used
+   * (no `fetchImpl` injected) the resolver guard is ON by default and refuses
+   * any hostname that resolves into private/reserved space (DNS rebinding,
+   * hostile A records). Callers that own the transport may inject their own
+   * resolver for deterministic tests.
+   */
+  dnsLookup?: DnsLookup;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -132,6 +142,11 @@ export async function fetchPage(rawUrl: string, options: FetchPageOptions = {}):
   const maxBytes = Math.min(2 * 1024 * 1024, Math.max(1024, options.maxBytes ?? DEFAULT_MAX_BYTES));
   const maxRetries = Math.min(5, Math.max(0, options.maxRetries ?? DEFAULT_MAX_RETRIES));
   const doFetch = options.fetchImpl ?? fetch;
+  // Phase 9: the resolver guard runs whenever this module owns the transport
+  // (production). A caller that injects `fetchImpl` owns the transport and may
+  // inject an explicit resolver; otherwise the guard is skipped for that hop.
+  const dnsGuardEnabled = options.fetchImpl ? options.dnsLookup !== undefined : true;
+  const dnsLookup = options.dnsLookup ?? systemDnsLookup;
 
   if (!isAllowedResearchUrl(rawUrl)) {
     return {
@@ -150,16 +165,25 @@ export async function fetchPage(rawUrl: string, options: FetchPageOptions = {}):
 
   for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
     attempts = attempt;
-    const outcome = await attemptOnce(rawUrl, { timeoutMs, maxBytes, doFetch, started });
+    const outcome = await attemptOnce(rawUrl, {
+      timeoutMs,
+      maxBytes,
+      doFetch,
+      started,
+      dnsGuardEnabled,
+      dnsLookup,
+    });
     if (outcome.ok) return { ...outcome, attempts };
 
     lastCategory = outcome.category;
     errors.push(`Attempt ${attempt}: ${outcome.error}`);
 
     const retryable =
-      outcome.category === 'timeout' ||
+      outcome.category !== 'blocked_url' &&
+      outcome.category !== 'blocked_dns' &&
+      (outcome.category === 'timeout' ||
       outcome.category === 'network' ||
-      (outcome.category === 'http_error' && typeof outcome.httpStatus === 'number' && isRetryableStatus(outcome.httpStatus));
+      (outcome.category === 'http_error' && typeof outcome.httpStatus === 'number' && isRetryableStatus(outcome.httpStatus)));
     if (!retryable || attempt >= maxRetries + 1) break;
     await sleep(Math.min(4000, 300 * 2 ** (attempt - 1)));
   }
@@ -176,7 +200,14 @@ export async function fetchPage(rawUrl: string, options: FetchPageOptions = {}):
 
 async function attemptOnce(
   rawUrl: string,
-  ctx: { timeoutMs: number; maxBytes: number; doFetch: typeof fetch; started: number },
+  ctx: {
+    timeoutMs: number;
+    maxBytes: number;
+    doFetch: typeof fetch;
+    started: number;
+    dnsGuardEnabled: boolean;
+    dnsLookup: DnsLookup;
+  },
 ): Promise<FetchPageResult> {
   let currentUrl = rawUrl;
 
@@ -192,6 +223,23 @@ async function attemptOnce(
         durationMs: Date.now() - ctx.started,
         attempts: 1,
       };
+    }
+
+    // Phase 9 - DNS-level SSRF guard: a syntactically public hostname that
+    // resolves into private/reserved space is still refused, before any
+    // request is issued.
+    if (ctx.dnsGuardEnabled) {
+      const verdict = await validatePublicUrl(currentUrl, { lookup: ctx.dnsLookup });
+      if (!verdict.allowed) {
+        return {
+          ok: false,
+          url: rawUrl,
+          category: 'blocked_dns',
+          error: `Host is not allowed: ${verdict.detail ?? verdict.reason ?? 'resolver refused the target'}`,
+          durationMs: Date.now() - ctx.started,
+          attempts: 1,
+        };
+      }
     }
 
     let response: Response;

@@ -23,6 +23,15 @@ if (!connectionString) {
   console.error('DATABASE_URL is empty in .env.local');
   process.exit(1);
 }
+// An unfilled template value is not a credential. Fail with the one remaining
+// manual step instead of an opaque authentication error. Tested against the
+// placeholder only — the value itself is never printed.
+if (/\[YOUR-PASSWORD\]|<password>/.test(connectionString)) {
+  console.error(
+    'DATABASE_URL in .env.local still contains the [YOUR-PASSWORD] placeholder. Replace it with the real database password (percent-encode URL-special characters) and re-run: npm run db:health',
+  );
+  process.exit(1);
+}
 
 // Parse with WHATWG URL (pg's legacy parser mishandles passwords containing
 // URL-special characters) and pass explicit fields. Values are never printed.

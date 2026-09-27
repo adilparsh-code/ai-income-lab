@@ -1,4 +1,4 @@
-// Phase 8 — Payment webhook verification boundary (Rule 8).
+// Phase 8 - Payment webhook verification boundary (Rule 8).
 //
 // Provider-agnostic verification layer implementing the Standard Webhooks
 // signature scheme (used by Polar for secrets created after 2026-09-08, and by
@@ -15,7 +15,7 @@
 //   - Replay protection: timestamps outside the tolerance window are refused.
 //   - Comparison is constant-time per candidate signature.
 //   - Legacy Polar HMAC scheme (hex, plain timestamp.body) is supported for
-//     older secrets — both are attempted, and either a valid match verifies.
+//     older secrets - both are attempted, and either a valid match verifies.
 //
 // This module knows nothing about products/revenue: it returns a verdict, and
 // the caller decides what (verified) payload to do.
@@ -155,12 +155,23 @@ export function verifyProviderWebhook(input: {
   const standard = verifyStandardWebhook({ secret: secret.trim(), rawBody: input.rawBody, headers: input.standardHeaders, nowSec: input.nowSec });
   if (standard.ok) return standard;
   // Legacy scheme only as fallback when the standard scheme failed on
-  // signature (not on staleness — a stale request stays stale).
+  // signature (not on staleness - a stale request stays stale) AND a legacy
+  // signature header was actually supplied. Without a legacy header the
+  // correct verdict is BAD_SIGNATURE: reporting MISSING_HEADERS would
+  // misdescribe a request that arrived with a signature and failed it.
   if (standard.reason === 'BAD_SIGNATURE') {
+    const legacyHeader = input.legacySignatureHeader?.trim() ?? '';
+    if (legacyHeader.length === 0) {
+      return {
+        ok: false,
+        reason: 'BAD_SIGNATURE',
+        detail: 'No signature candidate matched the HMAC (no legacy signature header was present).',
+      };
+    }
     const legacy = verifyLegacyPolarWebhook({
       secret: secret.trim(),
       rawBody: input.rawBody,
-      signatureHeader: input.legacySignatureHeader,
+      signatureHeader: legacyHeader,
       nowSec: input.nowSec,
       toleranceSeconds: undefined,
     });

@@ -42,7 +42,7 @@ writeFileSync(testSchemaPath, withTestOutput);
 
 const childEnv = { ...process.env };
 delete childEnv.DATABASE_URL;
-execFileSync('npx', ['prisma', 'generate', '--schema', 'prisma/schema.test.prisma'], {
+execFileSync('npx', ['prisma7', 'generate', '--schema', 'prisma/schema.test.prisma'], {
   cwd: root,
   env: childEnv,
   stdio: 'inherit',
