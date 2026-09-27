@@ -9,8 +9,11 @@ Env-driven; no signup path exists anywhere in the UI or API.
 - `src/lib/agency/admin-auth.ts`: `verifyAdminCredentials`, DB-backed sessions (`AdminSession` — only an HMAC fingerprint of the presented token is stored), `ADMIN_SESSION_COOKIE='aill_admin_session'` (httpOnly, sameSite=lax), `LOGIN_RATE_LIMIT` = 10 attempts / 300 s (DB-backed), fail-closed 503 when credentials are not configured.
 - Generate the hash with `node scripts/hash-admin-password.mjs --generate` (or pipe a password on stdin; minimum 12 chars). Output: `ADMIN_PASSWORD_HASH="scrypt:<saltHex>:<hashHex>"`.
 - Required env: `ADMIN_EMAIL`, `ADMIN_PASSWORD_HASH` (preferred) or `ADMIN_PASSWORD` (fallback). Secrets live in the deployment environment — never in committed files.
+- Kill switch: `ADMIN_DISABLED=1` refuses all new logins with a generic 401 and invalidates already-issued sessions server-side (`resolveAdminSession` returns null). Unset the variable to restore access — no redeploy of credentials needed.
+- Session lifetime: `ADMIN_SESSION_TTL_MS` (default 12 h, clamped 30 min … 7 d) bounds every session absolutely; expired rows are never accepted.
 - Session endpoints (`src/app/api/admin/session/route.ts`): `POST` login (rate-limited, audited), `DELETE` logout, `GET` status incl. `credentialStatus`.
-- Page guard (`src/lib/agency/session-guard.ts`): `requireAdminPage(returnTo)` redirects unauthenticated page hits to `/login`; `requireAdminApi()` returns 401 for API routes. `safeReturnTo()` only accepts same-site relative paths.
+- Hardened admin APIs: `GET /api/ops/dashboard` and `GET /api/jobs/[id]` are session-gated with `requireAdminApi(request)` (IDOR hardening: unauthenticated callers cannot read operational aggregates or enumerate job ids). `/api/health`, `POST /api/webhooks/polar`, and the login route itself stay intentionally public.
+- Server-side route-group gate: every console page lives in `src/app/(admin)/` with a server layout (`export const dynamic = 'force-dynamic'`) that calls `currentAdminSession()` and renders `<AdminLoginGate />` (a server component linking to `/login?returnTo=…`) instead of the page when no valid session exists. Unauthenticated visitors never receive console page markup — there is no client-side-only protection.
 
 ## 2. Agent Contracts (typed)
 
@@ -73,5 +76,6 @@ If `ADMIN_EMAIL` / credentials are unset, `adminCredentialStatus()` returns `NOT
 
 - `src/lib/agency/__tests__/agency-pure.test.ts` — contracts validity/uniqueness, forbidden tools, communication allow-list, supervisor plan/output/loops/verdict precedence, health states (UNKNOWN is never faked healthy).
 - `src/lib/agency/__tests__/agency-runtime.test.ts` — hermetic SQLite (temp dir + `DATABASE_URL=file:…` + `prisma db push --schema prisma/schema.test.prisma`): seed idempotency, health round-trips, message bounds, review decide-once, pause→BLOCKED→resume, dispatch refusals, happy path via the `executeAgentJob` seam, honest FAILED run recording.
+- `src/lib/agency/__tests__/admin-login.test.ts` — exercises the REAL login/logout/status handlers and session core against hermetic SQLite: success sets the httpOnly cookie (token never in the body), invalid/unknown/missing credentials all return the identical generic 401 (no account-state oracle), `ADMIN_DISABLED` kill switch refuses login and invalidates live sessions, expiry is enforced by absolute TTL, guard rejects unknown/oversized/absent tokens, `requireAdminApi` allows the configured admin and 401s everyone else, and static checks confirm: no register/signup pages or `/api/auth` directory, no `NEXT_PUBLIC_*` auth secrets, no internal-error leaks, health/webhook/login endpoints stay public, `(admin)` group holds the console pages, middleware has no redirect/rewrite (no loops), server-side layout gate present, cookie policy intact, no console logging of credentials/tokens.
 
 Run: `bun run test` (pretest regenerates the SQLite test schema).

@@ -5,17 +5,24 @@
 
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { requireAdminApi } from '@/lib/agency/session-guard';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
   if (typeof id !== 'string' || id.length === 0 || id.length > 128) {
     return NextResponse.json({ ok: false, error: 'Invalid job id' }, { status: 400 });
   }
+
+  // SECURITY: job metadata is admin data — session-gated (IDOR hardening: an
+  // unauthenticated caller cannot enumerate job ids). The request is passed
+  // explicitly so the cookie is read from the actual invocation scope.
+  const auth = await requireAdminApi(request);
+  if ('response' in auth) return auth.response;
 
   try {
     const row = await db.jobRun.findUnique({ where: { id } });
