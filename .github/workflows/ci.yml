@@ -50,7 +50,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Match the validate job so both jobs run the same tsx/Node runtime.
+          node-version: 24
 
       - name: Install AI Income Lab dependencies
         # Match the validate job: the prisma8 lockfile is not guaranteed to be
