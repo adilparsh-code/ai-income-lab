@@ -19,6 +19,7 @@ import {
   ADMIN_SESSION_COOKIE,
   ADMIN_SESSION_TTL_MS,
   adminCredentialStatus,
+  adminDisabled,
   auditAdminEvent,
   createAdminSession,
   LOGIN_RATE_LIMIT,
@@ -41,8 +42,8 @@ function cookieOptions() {
   };
 }
 
-export async function GET() {
-  const token = await presentedSessionToken();
+export async function GET(request: Request) {
+  const token = await presentedSessionToken(request);
   const status = adminCredentialStatus();
   if (!token) {
     return NextResponse.json({ ok: true, authenticated: false, credentialStatus: status });
@@ -87,6 +88,13 @@ export async function POST(request: Request) {
   const password = typeof bodyGuard.value.password === 'string' ? bodyGuard.value.password : null;
   const returnTo = safeReturnTo(typeof bodyGuard.value.returnTo === 'string' ? bodyGuard.value.returnTo : null, '/');
 
+  if (adminDisabled()) {
+    // The single admin account is DISABLED: generic refusal (no account-state
+    // oracle), existing sessions already fail closed via resolveAdminSession.
+    await auditAdminEvent('ADMIN_LOGIN', 'refused', 'admin-disabled');
+    return NextResponse.json({ ok: false, error: 'Invalid credentials.' }, { status: 401 });
+  }
+
   if (adminCredentialStatus() === 'NOT_CONFIGURED') {
     // Fail closed and tell the operator exactly what is missing (no fake success).
     await auditAdminEvent('ADMIN_LOGIN', 'refused', 'not-configured');
@@ -123,13 +131,12 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  const token = await presentedSessionToken();
+  const token = await presentedSessionToken(request);
   const response = NextResponse.json({ ok: true, loggedOut: true });
   response.cookies.set(ADMIN_SESSION_COOKIE, '', { ...cookieOptions(), maxAge: 0 });
   if (token) {
     const revoked = await revokeAdminSession(token);
     await auditAdminEvent('ADMIN_LOGOUT', revoked ? 'ok' : 'error');
   }
-  void request;
   return response;
 }

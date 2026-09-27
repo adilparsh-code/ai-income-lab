@@ -15,8 +15,19 @@ import {
   type AdminSessionInfo,
 } from './admin-auth';
 
-/** Read the presented session cookie (server-side only). */
-export async function presentedSessionToken(): Promise<string | null> {
+/**
+ * Read the presented session cookie. When a Request is supplied (route
+ * handlers, tests), the cookie header is parsed directly; otherwise the
+ * Next.js request-scope cookie store is used. Server-side only; never logs
+ * or returns the token.
+ */
+export async function presentedSessionToken(request?: Request): Promise<string | null> {
+  if (request) {
+    const header = request.headers.get('cookie');
+    if (!header) return null;
+    const match = header.match(new RegExp(`(?:^|;\\s*)${ADMIN_SESSION_COOKIE}=([^;]+)`));
+    return match ? match[1] : null;
+  }
   try {
     const store = await cookies();
     return store.get(ADMIN_SESSION_COOKIE)?.value ?? null;
@@ -26,8 +37,8 @@ export async function presentedSessionToken(): Promise<string | null> {
 }
 
 /** Resolve the current admin session, or null when absent/expired/invalid. */
-export async function currentAdminSession(): Promise<AdminSessionInfo | null> {
-  const token = await presentedSessionToken();
+export async function currentAdminSession(request?: Request): Promise<AdminSessionInfo | null> {
+  const token = await presentedSessionToken(request);
   if (!token) return null;
   return resolveAdminSession(token);
 }
@@ -50,8 +61,8 @@ export async function requireAdminPage(returnTo: string): Promise<AdminSessionIn
  * Rate limiting stays in the route (guard.ts) — this check is authorization,
  * not throttling.
  */
-export async function requireAdminApi(): Promise<{ session: AdminSessionInfo } | { response: NextResponse }> {
-  const session = await currentAdminSession();
+export async function requireAdminApi(request?: Request): Promise<{ session: AdminSessionInfo } | { response: NextResponse }> {
+  const session = await currentAdminSession(request);
   if (!session) {
     return {
       response: NextResponse.json(
