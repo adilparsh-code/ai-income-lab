@@ -42,7 +42,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install AI Income Lab dependencies
         run: npm ci
@@ -65,25 +65,51 @@ jobs:
           from pathlib import Path
           p = Path('v3/mcp/transport/index.ts')
           s = p.read_text()
-          s = s.replace("export { HttpTransport, HttpTransportConfig } from './http.js';", "export { HttpTransport } from './http.js';\nexport type { HttpTransportConfig } from './http.js';")
+          # The barrel re-exports TypeScript-only config interfaces as runtime
+          # values, which crashes Node ESM loading under tsx (the interfaces do
+          # not exist at runtime). Convert each config re-export to a type-only
+          # export; classes stay runtime exports. Verified against the pinned
+          # commit 9c61c86f06b439af2a95085ae9bb0ca839662e41.
+          replacements = {
+              "export { StdioTransport, StdioTransportConfig } from './stdio.js';":
+                  "export { StdioTransport } from './stdio.js';\nexport type { StdioTransportConfig } from './stdio.js';",
+              "export { HttpTransport, HttpTransportConfig } from './http.js';":
+                  "export { HttpTransport } from './http.js';\nexport type { HttpTransportConfig } from './http.js';",
+              "export { WebSocketTransport, WebSocketTransportConfig } from './websocket.js';":
+                  "export { WebSocketTransport } from './websocket.js';\nexport type { WebSocketTransportConfig } from './websocket.js';",
+          }
+          for old, new in replacements.items():
+              assert old in s, f'expected barrel line missing at pin: {old}'
+              s = s.replace(old, new)
           p.write_text(s)
           PY
 
       - name: Start Ruflo V3 HTTP runtime
         working-directory: .ci/ruflo
         run: |
+          # Real V3 HTTP server: binds exactly 127.0.0.1:3000 (HTTP transport
+          # listen(port, host)); serves GET /health, POST /rpc and /mcp.
           nohup npx tsx v3/mcp/server-entry.ts --transport http --host 127.0.0.1 --port 3000 > /tmp/ruflo.log 2>&1 &
           echo $! > /tmp/ruflo.pid
 
       - name: Wait for Ruflo health
         run: |
-          for i in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:3000/health > /tmp/ruflo-health.json; then
+          # Cold start (tsx compile + full tool registry) can take a while;
+          # fail fast if the process dies instead of waiting out the loop.
+          for i in $(seq 1 60); do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:3000/health -o /tmp/ruflo-health.json; then
               cat /tmp/ruflo-health.json
+              grep -q '"status":"ok"' /tmp/ruflo-health.json || { echo 'Unexpected /health body'; cat /tmp/ruflo.log; exit 1; }
               exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/ruflo.pid)" 2>/dev/null; then
+              echo 'Ruflo runtime process exited early:'
+              cat /tmp/ruflo.log
+              exit 1
             fi
             sleep 2
           done
+          echo 'Timed out waiting for Ruflo /health:'
           cat /tmp/ruflo.log
           exit 1
 

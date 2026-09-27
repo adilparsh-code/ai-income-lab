@@ -49,5 +49,8 @@ prisma/dev.db
 prisma/schema.test.prisma
 prisma/test-client/
 
+# CI-only ephemeral checkout of the pinned Ruflo runtime (see .github/workflows/ci.yml)
+/.ci/
+
 # AutoClaw KDream data
 .autoclaw/
