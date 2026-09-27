@@ -15,6 +15,8 @@ const eslintConfig = defineConfig([
     // Generated artifacts (scripts/generate-test-schema.mjs):
     "prisma/test-client/**",
     "prisma/schema.test.prisma",
+    // Generated Prisma 8 contract artifacts (`prisma contract emit`):
+    "generated/**",
   ]),
 ]);
 

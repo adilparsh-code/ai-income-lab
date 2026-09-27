@@ -21,6 +21,41 @@ import {
   Activity,
 } from 'lucide-react';
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { LogOut } from 'lucide-react';
+
+/**
+ * Revokes the admin session via the existing logout endpoint
+ * (DELETE /api/admin/session), clears the cookie server-side, and returns
+ * to the login page. Always lands on /login even when the request fails.
+ */
+function SignOutButton() {
+  const router = useRouter();
+  const [signingOut, setSigningOut] = useState(false);
+
+  async function signOut() {
+    setSigningOut(true);
+    try {
+      await fetch('/api/admin/session', { method: 'DELETE' });
+    } catch {
+      // Fall through: navigation to /login still ends the console session UX.
+    }
+    router.replace('/login');
+    router.refresh();
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={signOut}
+      disabled={signingOut}
+      className="w-full inline-flex items-center justify-center gap-2 rounded-md border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-50 transition-colors"
+    >
+      <LogOut className="h-3.5 w-3.5" />
+      {signingOut ? 'Signing out…' : 'Sign out'}
+    </button>
+  );
+}
 
 const navItems = [
   { label: 'Dashboard', href: '/', icon: LayoutDashboard },
@@ -99,10 +134,6 @@ export function Sidebar() {
                   >
                     <item.icon className={cn('h-4 w-4', isActive ? 'text-indigo-400' : 'text-slate-400')} />
                     {item.label}
-                    {/* Feature availability badges */}
-                    {false && (
-                      <span className="ml-auto rounded bg-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400">Soon</span>
-                    )}
                   </Link>
                 </li>
               );
@@ -112,9 +143,10 @@ export function Sidebar() {
 
         {/* Footer */}
         <div className="border-t border-slate-800 px-4 py-3">
-          <p className="text-[10px] text-slate-500 text-center">
+          <p className="text-[10px] text-slate-500 text-center mb-2">
             AI Income Lab — Halal Business Discovery
           </p>
+          <SignOutButton />
         </div>
       </aside>
     </>

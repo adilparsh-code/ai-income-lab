@@ -2,6 +2,7 @@
 
 import { NextResponse } from 'next/server';
 import { getPhase8OperationsView } from '@/lib/ops/dashboard';
+import { requireAdminApi } from '@/lib/agency/session-guard';
 import { clientIpFrom, enforceRateLimit, auditSecurityEvent } from '@/lib/security/guard';
 
 export const dynamic = 'force-dynamic';
@@ -13,6 +14,10 @@ export async function GET(request: Request) {
     await auditSecurityEvent({ kind: 'RATE_LIMITED', surface: 'api:ops/dashboard', outcome: 'refused' });
     return NextResponse.json({ ok: false, error: 'Rate limit exceeded. Retry later.' }, { status: 429 });
   }
+  // SECURITY: operational aggregates are admin data — session-gated (the
+  // workspace UI at /operations calls this from the signed-in console).
+  const auth = await requireAdminApi(request);
+  if ('response' in auth) return auth.response;
   try {
     const view = await getPhase8OperationsView();
     return NextResponse.json({ ok: true, view });

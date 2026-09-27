@@ -57,6 +57,18 @@ function verifyScryptHash(password: string, stored: string): boolean {
 
 export type AdminCredentialStatus = 'CONFIGURED' | 'NOT_CONFIGURED';
 
+/**
+ * Kill-switch: when ADMIN_DISABLED is set to a truthy value, the single
+ * administrator account is treated as DISABLED — login is refused and every
+ * existing session fails closed on its next request. Fail-safe direction:
+ * the flag can only ever REMOVE access, never grant it. This is the only
+ * "account status" in the single-admin model (there is no User table).
+ */
+export function adminDisabled(): boolean {
+  const raw = process.env.ADMIN_DISABLED?.trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
 /** Truthful readiness of the admin credential configuration. */
 export function adminCredentialStatus(): AdminCredentialStatus {
   const hash = process.env.ADMIN_PASSWORD_HASH?.trim();
@@ -129,6 +141,7 @@ function sessionFingerprint(token: string): string {
  * accepted (and opportunistically pruned). Unknown tokens return null.
  */
 export async function resolveAdminSession(token: string | null | undefined): Promise<AdminSessionInfo | null> {
+  if (adminDisabled()) return null; // account DISABLED → all sessions fail closed
   if (!token || token.length === 0 || token.length > 256) return null;
   try {
     const row = await db.adminSession.findUnique({

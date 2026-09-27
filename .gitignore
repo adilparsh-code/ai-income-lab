@@ -56,5 +56,8 @@ prisma/schema.test.prisma
 prisma/test-client/
 prisma/test-template.db
 
+# generated Prisma 8 contract artifacts (from `prisma contract emit`, CI regenerates)
+/generated/
+
 # AutoClaw KDream data
 .autoclaw/
