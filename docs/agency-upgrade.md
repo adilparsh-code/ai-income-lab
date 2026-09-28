@@ -47,6 +47,28 @@ Env-driven; no signup path exists anywhere in the UI or API.
 - `createHumanReview()` / `listHumanReviews()` / `decideHumanReview()` — decision categories validated against `HUMAN_REVIEW_CATEGORIES`; only PENDING reviews are decidable, exactly once.
 - `agentRosterStatus()` — 13 entries with real statuses: BLOCKED / FAILED / DEGRADED / OFFLINE (no runs) / READY.
 
+## 5b. Per-agent execution classification (audit result)
+
+Every roster agent was audited against its contract, the Job Runner, and the runtime store. Autonomy was decided from documented intent (contracts, job definitions, workflow runner, tests) — never assumed from roster membership.
+
+| Agent | Classification | Why |
+|---|---|---|
+| research | AUTONOMOUS (JobType `RESEARCH`) | Contract + job validation + AgentRegistry agent + supervised dispatch all wired. |
+| validation | AUTONOMOUS (JobType `VALIDATION`) | Same. |
+| product | AUTONOMOUS (JobType `PRODUCT`) | Same. |
+| analytics | AUTONOMOUS (JobType `ANALYTICS`) | Same. |
+| business-manager | AUTONOMOUS (JobType `BUSINESS_MANAGER`) | Coordination-only job: reads real records, returns a next-best-action; all execution stays human-approved. |
+| safety-halal | INFRASTRUCTURE-ONLY | Deterministic screening runs inside the Job Runner / pipeline / agents (defense in depth). It is a gate, not a worker — no JobType exists by design. |
+| publishing | EXECUTES VIA FACTORY JOB | Its execution path is the existing `PRODUCT_PUBLISH` factory JobType through the same Job Runner (human approval token mandatory). It needs no supervised-dispatch mapping; dispatching it without a product would be a second, weaker path. |
+| revenue | EXECUTES VIA FACTORY JOB | Its execution path is the existing `REVENUE_SYNC` factory JobType (verified revenue rows + AI-cost attribution) through the same Job Runner. |
+| growth | INFRASTRUCTURE-ONLY (planner role today) | Contract is bounded-experiment planning (`TRAFFIC`/`GROWTH` stages, $20 cap, stop-loss). Actual money-spending execution is intentionally human-gated (autonomous-loop doc: TRAFFIC/CONVERT/REVENUE stay AWAITING_HUMAN_INPUT without real ingestion); growth classification logic lives in `business/growth-engine` and the deterministic `PRODUCT_ANALYZE` factory job. No JobType exists for it; creating one would only fabricate spend. |
+| memory | INFRASTRUCTURE-ONLY | Memory writes happen as part of supervised runs (operational memory persistence in dispatch, Phase 8G recall) — a data layer, not a worker. |
+| job-runner | INFRASTRUCTURE-ONLY (authoritative) | The executor itself; dispatching it would be recursion. |
+| supervisor | INFRASTRUCTURE-ONLY | Pure evaluation over real plans/records; it never executes. |
+| ruflo-adapter | INFRASTRUCTURE-ONLY / NOT-CONNECTED | Boundary exists; `RUFLO_RUNTIME_TOKEN` + handle registration are the documented activation path. Honest NOT_CONNECTED without credentials. |
+
+Unmapped agents are refused by supervised dispatch with a 409 and the detail `Agent '<id>' has no autonomous Job Runner mapping; it is runtime/coordination infrastructure.` — this refusal is itself tested and is the honest representation of infrastructure roles.
+
 ## 6. Supervised dispatch (the only agency execution path)
 
 `src/lib/agency/supervised-dispatch.ts` `dispatchSupervised(input, options?)`:
@@ -56,7 +78,12 @@ Env-driven; no signup path exists anywhere in the UI or API.
 3. Build a job-definitions-valid payload per type (PRODUCT uses `productType:'DIGITAL_PRODUCT'`; business-manager uses `decisionScope:'FULL_BUSINESS_REVIEW'`).
 4. Call `runJob()` — the existing, unmodified executor. Halal gates, idempotency (`${jobType}:${correlationId}`), bounded retries all still apply.
 5. Map results honestly: safetyVerdict BLOCKED→NOT_ALLOWED, HUMAN_REVIEW→REVIEW_REQUIRED; verification SUCCEEDED→PASSED, DEGRADED→FAILED, else NOT_APPLICABLE.
-6. Record an AgentRun (lifecycle steps + `evidenceRefs:[{type:'JOB_RUN', id: jobId}]`), derive loop evidence from real run history, return `{ ok, agentRunId, jobId, jobStatus, verdict, verdictReasons, deduplicated, executionMode, correlationId }`.
+6. Persist the run outcome into structured operational memory (the `UPDATE_MEMORY` lifecycle step; `SKIPPED` honestly if the store is unavailable).
+7. Record an AgentRun (lifecycle steps + `evidenceRefs:[{type:'JOB_RUN', id: jobId}]`), derive loop evidence from real run history — including `REPEATED_SAFETY_REJECTION` from recent `NOT_ALLOWED` governance records — and return `{ ok, agentRunId, jobId, jobStatus, verdict, verdictReasons, deduplicated, executionMode, correlationId }`.
+
+## 6b. Harness boundary (honest, optional)
+
+`src/lib/agency/harness.ts` is the clean integration boundary for an external evaluation harness (the supervisor contract's "Harness Adapter" role). Like the Ruflo connector it reports `NOT_CONNECTED` until a real adapter is registered server-side (`registerHarnessAdapter`); it never fakes CONNECTED/LIVE. A connected harness receives only bounded read-only evaluation snapshots built from recorded AgentRun rows (`buildHarnessSnapshot`). It can never execute agents and can never bypass the Job Runner, halal gates, budgets, authorization, or audit. The internal supervisor stays authoritative regardless.
 
 ## 7. Control center & APIs (admin-only)
 
@@ -75,6 +102,7 @@ If `ADMIN_EMAIL` / credentials are unset, `adminCredentialStatus()` returns `NOT
 ## 9. Tests
 
 - `src/lib/agency/__tests__/agency-pure.test.ts` — contracts validity/uniqueness, forbidden tools, communication allow-list, supervisor plan/output/loops/verdict precedence, health states (UNKNOWN is never faked healthy).
+- `src/lib/agency/__tests__/harness.test.ts` — Harness boundary honesty: NOT_CONNECTED by default, malformed registrations refused, CONNECTED only with a real adapter, read-only snapshot over recorded runs (safe fields only).
 - `src/lib/agency/__tests__/agency-runtime.test.ts` — hermetic SQLite (temp dir + `DATABASE_URL=file:…` + `prisma db push --schema prisma/schema.test.prisma`): seed idempotency, health round-trips, message bounds, review decide-once, pause→BLOCKED→resume, dispatch refusals, happy path via the `executeAgentJob` seam, honest FAILED run recording.
 - `src/lib/agency/__tests__/admin-login.test.ts` — exercises the REAL login/logout/status handlers and session core against hermetic SQLite: success sets the httpOnly cookie (token never in the body), invalid/unknown/missing credentials all return the identical generic 401 (no account-state oracle), `ADMIN_DISABLED` kill switch refuses login and invalidates live sessions, expiry is enforced by absolute TTL, guard rejects unknown/oversized/absent tokens, `requireAdminApi` allows the configured admin and 401s everyone else, and static checks confirm: no register/signup pages or `/api/auth` directory, no `NEXT_PUBLIC_*` auth secrets, no internal-error leaks, health/webhook/login endpoints stay public, `(admin)` group holds the console pages, middleware has no redirect/rewrite (no loops), server-side layout gate present, cookie policy intact, no console logging of credentials/tokens.
 

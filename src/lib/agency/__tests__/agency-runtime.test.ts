@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { installTestDatabase } from '@/test-utils/install-test-database';
+import { recallOperationalMemory } from '@/lib/ops/memory';
 
 const tempDir = mkdtempSync(join(tmpdir(), 'aill-agency-'));
 Object.assign(process.env, {
@@ -308,5 +309,90 @@ describe('supervised dispatch (hermetic DB + Job Runner seam)', () => {
     assert.equal(run.status, 'FAILED');
     assert.equal(run.safetyVerdict, 'HALAL');
     assert.equal(run.verification, 'NOT_APPLICABLE');
+  });
+
+  it('persists the run into operational memory (UPDATE_MEMORY step) and records it honestly', async () => {
+    const result = await dispatch.dispatchSupervised(
+      {
+        agentId: 'analytics',
+        stage: 'ANALYZE',
+        objective: 'memory step check',
+        correlationId: 'corr-dispatch-memory',
+      },
+      {
+        executeAgentJob: async () => ({
+          success: true,
+          reasoning: 'deterministic test executor',
+          evidenceType: 'AI_INFERENCE',
+          fallbackUsed: false,
+          executionTime: 4,
+          output: { recommendation: 'mock findings' },
+        }),
+      },
+    );
+    assert.equal(result.ok, true);
+
+    const runs = await runtime.listAgentRuns('analytics');
+    const run = runs.find((r) => r.correlationId === 'corr-dispatch-memory');
+    assert.ok(run, 'AgentRun recorded');
+    const memoryStep = run.lifecycleSteps.find((s) => s.step === 'UPDATE_MEMORY');
+    assert.ok(memoryStep, 'UPDATE_MEMORY lifecycle step recorded');
+    assert.equal(memoryStep.outcome, 'OK');
+
+    const memories = await recallOperationalMemory({
+      category: 'agent',
+      relatedEntityId: 'corr-dispatch-memory',
+    });
+    assert.ok(memories.length >= 1, 'the run outcome landed in operational memory');
+    const memory = memories[0];
+    assert.equal(memory.outcome, 'SUCCEEDED');
+    assert.equal(memory.evidenceType, 'VERIFIED_DATA');
+    assert.equal(memory.treatedAsVerified, true, 'real run outcomes are verified memory');
+  });
+
+  it('quarantines after repeated real safety rejections (REPEATED_SAFETY_REJECTION)', async () => {
+    // Three real BLOCKED/NOT_ALLOWED governance records for this MAPPED agent
+    // (growth itself is infrastructure-only and is refused earlier): the loop
+    // detector must fire from RUN HISTORY, not from a stub.
+    for (const suffix of ['1', '2', '3']) {
+      await runtime.recordAgentRun({
+        agentId: 'research',
+        jobId: null,
+        jobType: 'RESEARCH',
+        stage: 'RESEARCH',
+        status: 'BLOCKED',
+        correlationId: `corr-safety-rej-${suffix}`,
+        safetyVerdict: 'NOT_ALLOWED',
+        verification: 'NOT_APPLICABLE',
+        failureReason: 'halal gate refused',
+      });
+    }
+
+    const result = await dispatch.dispatchSupervised(
+      {
+        agentId: 'research',
+        stage: 'RESEARCH',
+        objective: 'fourth attempt after repeated safety rejections',
+        correlationId: 'corr-safety-rej-4',
+      },
+      {
+        executeAgentJob: async () => ({
+          success: true,
+          reasoning: 'deterministic test executor',
+          evidenceType: 'AI_INFERENCE',
+          fallbackUsed: false,
+          executionTime: 4,
+          output: { recommendation: 'mock research result' },
+        }),
+      },
+    );
+    assert.equal(result.ok, true);
+    const ok = result as Extract<typeof result, { ok: true }>;
+    assert.equal(ok.jobStatus, 'SUCCEEDED');
+    assert.equal(ok.verdict, 'QUARANTINE', 'history must drive the loop verdict');
+    assert.ok(
+      ok.verdictReasons.some((r) => r.startsWith('REPEATED_SAFETY_REJECTION')),
+      'the detector reason must be surfaced in verdictReasons',
+    );
   });
 });

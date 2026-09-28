@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { runJob, type RunJobOptions } from '@/lib/jobs/job-runner';
 import { isJobType, type JobPayload, type JobType } from '@/lib/jobs/types';
 import { logger } from '@/lib/server-log';
+import { persistOperationalMemory } from '@/lib/ops/memory';
 import { getAgencyControl, listAgentRuns, recordAgentRun, type LifecycleStepOutcome } from './runtime';
 import { evaluateLoops, evaluatePlan, evaluateOutput, supervisorVerdict } from './supervisor';
 import { getAgentContract } from './contracts';
@@ -156,6 +157,31 @@ export async function dispatchSupervised(
 
   let agentRunId = 'n/a';
   try {
+    // UPDATE_MEMORY: persist the run outcome into structured operational
+    // memory (evidenceType VERIFIED_DATA — it describes a real JobRun row).
+    // Failure here must never affect the execution outcome; the step is
+    // recorded honestly either way.
+    try {
+      await persistOperationalMemory({
+        category: 'agent',
+        source: 'agency:supervised-dispatch',
+        evidenceType: 'VERIFIED_DATA',
+        relatedEntityType: 'AGENT_RUN',
+        relatedEntityId: correlationId,
+        opportunityId: input.opportunityId ?? null,
+        observation: `${input.agentId} dispatched ${jobType} at stage ${stage} → ${outcome.status}`,
+        outcome: outcome.status,
+        applicability: 'loop protection and future dispatch planning for this agent',
+      });
+      lifecycle.push({ step: 'UPDATE_MEMORY', outcome: 'OK' });
+    } catch (memoryError) {
+      lifecycle.push({
+        step: 'UPDATE_MEMORY',
+        outcome: 'SKIPPED',
+        detail: `memory store unavailable: ${String(memoryError).slice(0, 120)}`,
+      });
+    }
+
     const record = await recordAgentRun({
       agentId: input.agentId,
       jobId: outcome.jobId && outcome.jobId !== 'n/a' ? outcome.jobId : null,
@@ -188,6 +214,7 @@ export async function dispatchSupervised(
   });
 
   let recentIdenticalFailures = 0;
+  let repeatedSafetyRejections = 0;
   const exhaustedRetries = outcome.retryCount >= contract.maxRetries;
   try {
     const history = await listAgentRuns(input.agentId, 10);
@@ -195,6 +222,10 @@ export async function dispatchSupervised(
       if (run.status === 'FAILED' && run.jobType === jobType) recentIdenticalFailures += 1;
       else break;
     }
+    // Real loop evidence: count recent NOT_ALLOWED safety rejections for this
+    // agent (bounded to the same 10-run window). The health layer surfaces
+    // BLOCKED from the same signal; the supervisor additionally quarantines.
+    repeatedSafetyRejections = history.filter((r) => r.safetyVerdict === 'NOT_ALLOWED').length;
   } catch {
     // History unavailable: leave loop evidence at the honest defaults (none).
   }
@@ -205,7 +236,7 @@ export async function dispatchSupervised(
     circularDelegation: false, // delegation graph is static (contracts.ts); cycles are impossible by construction
     recentTokenUsage: 0, // token accounting is owned by the AI economy ledger
     recentCostUsd: 0,
-    repeatedSafetyRejections: 0, // safety rejections surface via health BLOCKED state
+    repeatedSafetyRejections, // derived from real AgentRun history above
     staleWorkflowMinutes: null,
   });
 
