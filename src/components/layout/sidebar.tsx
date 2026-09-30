@@ -19,6 +19,7 @@ import {
   Gauge,
   CircleDollarSign,
   Activity,
+  Satellite,
 } from 'lucide-react';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -62,6 +63,7 @@ const navItems = [
   { label: 'Pipeline', href: '/pipeline', icon: Workflow },
   { label: 'Income Engine', href: '/income-engine', icon: CircleDollarSign },
   { label: 'Operations', href: '/operations', icon: Activity },
+  { label: 'Observatory', href: '/observatory', icon: Satellite },
   { label: 'Agent Control', href: '/agents', icon: Bot },
   { label: 'Product Factory', href: '/product-factory', icon: Factory },
   { label: 'Opportunities', href: '/opportunities', icon: Lightbulb },
