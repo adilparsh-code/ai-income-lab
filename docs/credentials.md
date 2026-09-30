@@ -49,8 +49,8 @@ bundle. Server-side data access stays on `DATABASE_URL` above.
 | Variable | Purpose | Behavior when missing |
 | --- | --- | --- |
 | `AI_PROVIDER` | `gemini` enables live AI; `mock` (default) uses the deterministic provider. | Mock provider; every AI output labelled MOCKED. |
-| `GEMINI_API_KEY` | Gemini credential. | AI stays in mock mode; nothing fabricated. |
-| `GEMINI_MODEL` | Model id (default `gemini-2.0-flash`). | Default model. |
+| `AI_PROVIDER_API_KEY` | Gemini credential (server-only; read in `src/lib/ai/generate.ts`). | AI stays in mock mode; nothing fabricated. |
+| `AI_MODEL_*` | Optional per-purpose model overrides: `AI_MODEL_RESEARCH`, `AI_MODEL_VALIDATION`, `AI_MODEL_PRODUCT`, `AI_MODEL_ANALYTICS_NARRATIVE`, `AI_MODEL_BM_NARRATIVE` (model names only, no secrets). | Default Gemini model. |
 | `AI_DAILY_BUDGET_USD` | Daily spend guard for the AI Usage center. | Budget shows as unlimited. |
 
 ## Research providers (optional — RESEARCH_UNAVAILABLE when unset)
