@@ -944,6 +944,63 @@ model OpportunityHandoff {
   @@index([opportunityId])
 }
 
+// ============================================================================
+// AGENT INTEGRATION CONTRACT v1 (Phase 1 — external AI Agent boundary)
+// ============================================================================
+
+/// Append-only audit record for ONE externally-submitted agent action.
+///
+/// The row IS the idempotency record: `requestId` is UNIQUE, so a replayed
+/// request collides here and returns the stored response instead of executing
+/// again — no second job, revenue row, experiment, product, or config change.
+///
+/// Execution authority stays with the EXISTING Job Runner: this row is durable
+/// evidence, never an executor, and it never bypasses halal, budget, or
+/// human-review gates.
+///
+/// Security properties:
+/// - The credential is NEVER stored — only a keyed HMAC fingerprint.
+/// - `agentId` is the server-verified identity bound to the credential, never
+///   a client-asserted value.
+/// - `authorizationResult` and `safetyVerdict` are always LOCALLY derived.
+/// - `resultJson` holds a bounded, secret-free response snapshot so replays
+///   return the same answer without re-executing.
+model AgentActionRecord {
+  id            String   @id @default(cuid())
+  /// Server-verified agent identity (must match the credential's bound id).
+  agentId       String
+  /// Self-declared agent runtime version (audit/informational, bounded).
+  agentVersion  String
+  /// Capability id from the v1 catalog (e.g. WRITE_RESEARCH_EVIDENCE).
+  action        String
+  /// Caller-supplied idempotency key. UNIQUE — the duplicate-request guard.
+  requestId     String   @unique
+  /// Correlation id threaded into the Job Runner and every audit record.
+  correlationId String
+  /// ALLOWED | DENIED_CAPABILITY — server-derived, never client-asserted.
+  authorizationResult String
+  /// HALAL | REVIEW_REQUIRED | NOT_ALLOWED | NOT_APPLICABLE — locally recomputed.
+  safetyVerdict String
+  /// ACCEPTED | DUPLICATE | REJECTED | BLOCKED | HUMAN_APPROVAL_REQUIRED | FAILED
+  status        String
+  /// JobRun.id when the action dispatched through the Job Runner.
+  jobId         String?
+  /// HumanReview.id when the action required human approval.
+  reviewId      String?
+  /// Bounded JSON response snapshot (safe fields only; never secrets).
+  resultJson    String   @default("{}")
+  /// Short, human-safe reason. Never contains secrets or raw payloads.
+  reason        String   @default("")
+  /// Keyed HMAC fingerprint of the presented credential (never the credential).
+  agentFingerprint String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([agentId, createdAt])
+  @@index([correlationId])
+  @@index([status, createdAt])
+}
+
 // =============================================================================
 // AGENCY UPGRADE — single-admin autonomous agency layer (additive only).
 //

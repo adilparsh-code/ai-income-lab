@@ -94,6 +94,24 @@ Publication claims `PUBLISHED` only after a verified provider round-trip
 | `RUFLO_RUNTIME_ID` | Non-secret audit label of the Ruflo runtime. | Defaults to `ruflo-runtime`. |
 | `RUFLO_DISPATCH_TIMEOUT_MS` | Dispatch budget (1000–600000 ms). | Defaults to 120000. |
 
+## External agent credentials (Agent Integration Contract v1, optional — API refuses when unset)
+
+Dedicated server-to-server credentials for external AI agent runtimes. See
+[`docs/agent-contract-v1.md`](./agent-contract-v1.md) for the full contract.
+One binding per agent; `<NAME>` is an `A–Z 0–9 _` label:
+
+| Variable | Purpose | Behavior when missing |
+| --- | --- | --- |
+| `AGENT_<NAME>_TOKEN` | Bearer secret for one agent binding (e.g. `AGENT_RESEARCH_LAB_TOKEN`). | Binding ignored. With no bindings at all, `/api/agent/v1/*` refuse (503 NOT_CONFIGURED). |
+| `AGENT_<NAME>_ID` | Non-secret identity bound to that token. Required for the binding to count. | Binding ignored (fail-closed, never guessed). |
+| `AGENT_<NAME>_CAPABILITIES` | Capability grant: comma-separated ids or `*`. | Empty grant → every action refused (403). |
+| `AGENT_RATE_LIMIT_PER_MINUTE` | Durable per-credential action cap (1–300) on `/api/agent/v1/actions`. | 30. |
+
+Agents never receive database, Prisma, or operator credentials — only the
+bearer token above, and only the capabilities in its grant. The token is never
+logged or stored; audit rows keep a keyed HMAC fingerprint. Rotation = set a
+new token value (effective on the next request).
+
 ## Market configuration (Rule 9 — non-secret)
 
 | Variable | Purpose |
