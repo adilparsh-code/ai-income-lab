@@ -26,6 +26,7 @@ import {
   jobTypeForEvent,
   resolveEligibility,
   validateHandoffEnvelope,
+  MAX_FIELD_LENGTH,
   type HandoffEnvelope,
 } from './handoff-envelope';
 
@@ -307,11 +308,19 @@ export async function receiveHandoff(raw: unknown, options: ReceiveOptions): Pro
   }
 
   // ---- DISPATCH (Job Runner remains authoritative) ----------------------
+  // The payload must satisfy the Job Runner's per-type contract
+  // (validateJobPayload): a RESEARCH job REQUIRES `researchObjective`. The
+  // envelope's `description` carries the proposal text, so it is mapped there —
+  // previously only {title, description, ...} was sent, every dispatch failed
+  // payload validation up front, and NO JobRun row was created while the
+  // handoff was still reported ACCEPTED. The objective is clipped to the
+  // envelope bound (MAX_FIELD_LENGTH = 2000) so the mapping stays bounded.
   let outcome: JobOutcome;
   try {
     outcome = await runJob(
       jobType as JobType,
       {
+        researchObjective: envelope.description.slice(0, MAX_FIELD_LENGTH),
         title: envelope.title,
         description: envelope.description,
         category: envelope.category,

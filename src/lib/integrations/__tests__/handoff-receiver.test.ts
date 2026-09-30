@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { JobOutcome, JobType } from '@/lib/jobs/types';
+import { validateJobPayload } from '@/lib/jobs/job-definitions';
 import type { HandoffDb, HandoffRunJob } from '../handoff-receiver';
 import { installTestDatabase } from '@/test-utils/install-test-database';
 
@@ -122,6 +123,13 @@ function makeFakeDb() {
 function recorder() {
   const calls: { jobType: string; payload: Record<string, unknown>; correlationId: string }[] = [];
   const runJob: HandoffRunJob = async (jobType: JobType, payload: Record<string, unknown>, correlationId: string) => {
+    // The fake enforces the REAL Job Runner payload contract so a dispatch
+    // whose payload would fail validateJobPayload (and therefore silently
+    // produce no JobRun row) fails here instead of passing as a mock.
+    const validation = validateJobPayload(jobType, payload);
+    if (!validation.valid) {
+      throw new Error(`fake runJob: payload failed the real Job Runner contract: ${validation.errors.join('; ')}`);
+    }
     calls.push({ jobType, payload, correlationId });
     return {
       jobId: 'job-run-123',
@@ -159,7 +167,13 @@ describe('HIGH-1 receiver', () => {
     assert.equal(rec.calls.length, 1);
     assert.equal(rec.calls[0].jobType, 'RESEARCH');
     assert.equal(rec.calls[0].correlationId, 'corr-1');
-    // The handoff row was really persisted.
+    // The dispatched payload satisfies the real per-type contract: RESEARCH
+    // requires `researchObjective`, mapped from the envelope description.
+    assert.equal(
+      typeof rec.calls[0].payload.researchObjective === 'string' && rec.calls[0].payload.researchObjective.length > 0,
+      true,
+      'dispatched RESEARCH payload must carry a non-empty researchObjective',
+    );
     assert.ok(fake.rows.has('idem-1'));
   });
 
