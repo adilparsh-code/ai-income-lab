@@ -99,6 +99,13 @@ Unmapped agents are refused by supervised dispatch with a 409 and the detail `Ag
 
 If `ADMIN_EMAIL` / credentials are unset, `adminCredentialStatus()` returns `NOT_CONFIGURED`: `/login` shows an honest banner, `POST /api/admin/session` returns 503, and every admin page/API stays locked. Nothing opens up "by default".
 
+## 8.5 Growth agent operating notes (Phase 9)
+
+- **Execution path (exactly one):** `POST /api/agency/growth` (manual, admin-only) → `runSupervisedGrowthCycle()`. A future scheduler would call the same function from the same path — no second execution path exists or may be added.
+- **Business Manager growth reviews** post `decisionScope: 'GROWTH_REVIEW'` through the existing Job Runner (`runJob('BUSINESS_MANAGER')`). The scope is accepted by both `BM_SCOPES` (payload validation) and the agent's `VALID_SCOPES`; keep these vocabularies aligned when either changes (see `src/lib/jobs/job-definitions.ts`, `src/lib/agents/business-manager-agent.ts`).
+- **Budget is fail-closed:** without an admin-created `ResourceAllocation` row every experiment is created at $0 and no spend can occur. Spend accrual (`spentThisMonthUsd`) is intentionally NOT auto-incremented anywhere: there is no real ad-spend ingestion source yet, and inventing one would fabricate financial data. Admin inspection surfaces: `GET /api/agency/growth?opportunityId=…` (deterministic brief) and the Growth panel in the Agent Control Center (`/agents`).
+- **Missions deliberately exclude GROWTH** from `ALLOWED_MISSION_CAPABILITIES`: supervised dispatch refuses the growth agent (no single JobType fits a growth cycle), so advertising a GROWTH mission capability would promise execution that cannot dispatch. The supervised cycle above is the growth entry point.
+
 ## 9. Tests
 
 - `src/lib/agency/__tests__/agency-pure.test.ts` — contracts validity/uniqueness, forbidden tools, communication allow-list, supervisor plan/output/loops/verdict precedence, health states (UNKNOWN is never faked healthy).

@@ -329,4 +329,52 @@ describe('supervised growth cycle — bounded autonomy over real evidence', () =
       assert.equal(experiment.budgetUsd, 0, 'fail-closed: no allocation ⇒ $0 budget');
     }
   });
+
+  // G6 — the Business Manager growth review must EXECUTE through the Job
+  // Runner, not fail payload validation. Before the vocabulary alignment this
+  // posted decisionScope 'GROWTH_REVIEW', which neither BM_SCOPES nor the
+  // agent's VALID_SCOPES contained, so runJob('BUSINESS_MANAGER') always
+  // returned an honest FAILED outcome before reaching the agent.
+  it('BM growth review executes through the Job Runner (GROWTH_REVIEW scope accepted)', async () => {
+    await resumeAgency();
+    const opportunityId = await seedOpportunity();
+    const productId = await seedSellingProduct(opportunityId);
+    await seedTraffic(opportunityId, productId, 60, 6);
+
+    const { runBusinessManagerGrowthReview } = await import('@/lib/growth/business-manager');
+    const result = await runBusinessManagerGrowthReview(opportunityId);
+    assert.equal(result.ok, true, `BM growth review must succeed; got: ${result.summary}`);
+    assert.ok(result.jobId, 'a real JobRun row must exist');
+    assert.equal(result.jobStatus, 'SUCCEEDED');
+
+    const jobRun = await db.jobRun.findUnique({ where: { id: result.jobId! } });
+    assert.ok(jobRun);
+    assert.equal(jobRun.jobType, 'BUSINESS_MANAGER');
+    assert.equal(jobRun.status, 'SUCCEEDED');
+    assert.equal(jobRun.correlationId.startsWith('growth-bm:'), true, 'correlation id ties the job to the growth engine');
+  });
+
+  it('BM growth review is idempotent on the same correlationId (Job Runner reuse)', async () => {
+    await resumeAgency();
+    const opportunityId = await seedOpportunity();
+    const productId = await seedSellingProduct(opportunityId);
+    await seedTraffic(opportunityId, productId, 60, 6);
+
+    const { runBusinessManagerGrowthReview } = await import('@/lib/growth/business-manager');
+    const first = await runBusinessManagerGrowthReview(opportunityId);
+    assert.equal(first.ok, true);
+    assert.ok(first.jobId);
+
+    // Replaying the same logical job must not create a second JobRun row.
+    const { runJob } = await import('@/lib/jobs/job-runner');
+    const firstRow = await db.jobRun.findUnique({ where: { id: first.jobId! } });
+    assert.ok(firstRow);
+    const replay = await runJob(
+      'BUSINESS_MANAGER',
+      { opportunityId, objective: 'Growth review replay.', decisionScope: 'GROWTH_REVIEW' },
+      firstRow.correlationId,
+    );
+    assert.equal(replay.jobId, first.jobId, 'idempotency: same correlation ⇒ same JobRun row');
+    assert.equal(replay.status, 'SUCCEEDED');
+  });
 });

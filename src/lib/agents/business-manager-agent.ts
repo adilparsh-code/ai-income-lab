@@ -13,6 +13,7 @@ import { v4 as uuidv4 } from 'uuid';
 const VALID_SCOPES: BusinessManagerScope[] = [
   'OPPORTUNITY_SELECTION', 'VALIDATION_DECISION', 'PRODUCT_DECISION',
   'EXPERIMENT_DECISION', 'REVENUE_IMPROVEMENT', 'FULL_BUSINESS_REVIEW',
+  'GROWTH_REVIEW', // Phase 9 growth brief scope (additive)
 ];
 
 const VALID_ACTIONS: ActionType[] = [

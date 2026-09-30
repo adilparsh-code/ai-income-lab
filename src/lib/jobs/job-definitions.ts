@@ -47,9 +47,13 @@ const MONETIZATION_MODELS = [
   'SERVICE', 'LICENSE', 'AFFILIATE', 'AD_SUPPORTED',
 ] as const;
 
+// Phase 9 growth: the growth engine's Business Manager reviews use the
+// GROWTH_REVIEW decision scope (see src/lib/growth/business-manager.ts). It is
+// additive here so those payloads pass validation; legacy scopes are kept so
+// existing callers never break.
 const BM_SCOPES = [
   'OPPORTUNITY_SELECTION', 'VALIDATION_REVIEW', 'PRODUCT_DECISION',
-  'SCALE_DECISION', 'FULL_BUSINESS_REVIEW',
+  'SCALE_DECISION', 'FULL_BUSINESS_REVIEW', 'GROWTH_REVIEW',
 ] as const;
 
 const STAGES = ['RESEARCH', 'VALIDATION', 'PRODUCT', 'EXPERIMENT', 'TRACKING'] as const;

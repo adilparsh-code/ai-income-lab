@@ -433,3 +433,43 @@ describe('9.10 learning memory validation', () => {
     assert.ok(validateLearningInput({ hypothesis: 'h', result: 'INCONCLUSIVE', decision: 'd' }).length === 0);
   });
 });
+
+// G6 — BM decisionScope vocabularies must align: the growth engine's
+// Business Manager reviews post decisionScope 'GROWTH_REVIEW' through the Job
+// Runner (runBusinessManagerGrowthReview → runJob 'BUSINESS_MANAGER'). Before
+// the fix the payload validation lists rejected it, so the job failed before
+// ever reaching the agent. The agent's own VALID_SCOPES must accept it too.
+describe('9.13 Business Manager growth-review scope vocabulary (G6)', () => {
+  it('payload validation accepts decisionScope GROWTH_REVIEW', async () => {
+    const { validateJobPayload } = await import('@/lib/jobs/job-definitions');
+    const result = validateJobPayload('BUSINESS_MANAGER', {
+      opportunityId: 'opp-1',
+      objective: 'Growth review: health NEEDS_DATA, engine decision CONTINUE, 0 verified learnings on file.',
+      decisionScope: 'GROWTH_REVIEW',
+    });
+    assert.equal(result.valid, true, `expected GROWTH_REVIEW to validate, got: ${result.errors.join('; ')}`);
+  });
+
+  it('legacy BM scopes keep validating (additive change, no breakage)', async () => {
+    const { validateJobPayload } = await import('@/lib/jobs/job-definitions');
+    for (const scope of ['OPPORTUNITY_SELECTION', 'VALIDATION_REVIEW', 'PRODUCT_DECISION', 'SCALE_DECISION', 'FULL_BUSINESS_REVIEW']) {
+      const result = validateJobPayload('BUSINESS_MANAGER', { objective: 'review', decisionScope: scope });
+      assert.equal(result.valid, true, `legacy scope ${scope} must still validate`);
+    }
+    const invalid = validateJobPayload('BUSINESS_MANAGER', { objective: 'review', decisionScope: 'MADE_UP_SCOPE' });
+    assert.equal(invalid.valid, false, 'unknown scopes are still rejected');
+  });
+
+  it('the growth engine caller posts a scope that passes validation end-to-end', async () => {
+    // Import both real modules and assert the caller's literal is inside the
+    // validator's accepted set — this catches future vocabulary drift (the
+    // caller posting a scope the validator no longer lists).
+    const { validateJobPayload } = await import('@/lib/jobs/job-definitions');
+    const callerScope = 'GROWTH_REVIEW'; // the literal runBusinessManagerGrowthReview posts
+    const result = validateJobPayload('BUSINESS_MANAGER', {
+      objective: 'Growth review brief.',
+      decisionScope: callerScope,
+    });
+    assert.equal(result.valid, true);
+  });
+});

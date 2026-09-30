@@ -455,7 +455,10 @@ export type BusinessManagerScope =
   | 'PRODUCT_DECISION'
   | 'EXPERIMENT_DECISION'
   | 'REVENUE_IMPROVEMENT'
-  | 'FULL_BUSINESS_REVIEW';
+  | 'FULL_BUSINESS_REVIEW'
+  // Phase 9 growth: read-only growth review scope used by the growth engine's
+  // Business Manager brief (src/lib/growth/business-manager.ts). Additive.
+  | 'GROWTH_REVIEW';
 
 export type ActionType =
   | 'RESEARCH'

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { PageHeader } from '@/components/shared/page-header';
-import { Bot, CheckCircle2, XCircle, PauseCircle, ShieldAlert, RefreshCw, Activity, ArrowRight } from 'lucide-react';
+import { Bot, CheckCircle2, XCircle, PauseCircle, ShieldAlert, RefreshCw, Activity, ArrowRight, TrendingUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 /** Roster agents with existing detail pages (/agents/<id>). */
@@ -59,6 +59,30 @@ type ControlState = {
   pausedAt: string | null;
 };
 
+// Phase 9 growth — deterministic brief shape returned by GET /api/agency/growth.
+type GrowthBrief = {
+  opportunityId: string;
+  health: string;
+  trend: string;
+  score: number;
+  engineDecision: string;
+  engineReason: string;
+  verifiedLearnings: number;
+  recentDecisions: { id: string; decision: string; reason: string; createdAt: string }[];
+};
+
+type GrowthCycleResult = {
+  ok: boolean;
+  outcome?: string;
+  verdict?: string;
+  verdictReasons?: string[];
+  health?: string;
+  engineDecision?: string | null;
+  jobId?: string | null;
+  reason?: string;
+  error?: string;
+};
+
 const STATUS_TONE: Record<string, string> = {
   OFFLINE: 'bg-slate-100 text-slate-600',
   READY: 'bg-emerald-100 text-emerald-800',
@@ -85,6 +109,10 @@ export function AgentControlCenter() {
   const [control, setControl] = useState<ControlState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [growthOpportunityId, setGrowthOpportunityId] = useState('');
+  const [growthBrief, setGrowthBrief] = useState<GrowthBrief | null>(null);
+  const [growthMessage, setGrowthMessage] = useState<string | null>(null);
+  const [growthBusy, setGrowthBusy] = useState(false);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -162,6 +190,53 @@ export function AgentControlCenter() {
       setError('Control update failed.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function triggerGrowthCycle() {
+    if (growthOpportunityId.trim().length === 0) return;
+    setGrowthBusy(true);
+    setGrowthMessage(null);
+    try {
+      const res = await fetch('/api/agency/growth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ opportunityId: growthOpportunityId.trim() }),
+      });
+      const json = (await res.json()) as GrowthCycleResult;
+      if (json.ok) {
+        setGrowthMessage(
+          `Cycle: ${json.outcome} · supervisor ${json.verdict}${json.verdictReasons?.length ? ` (${json.verdictReasons.slice(0, 2).join('; ')})` : ''}${json.jobId ? ` · job ${json.jobId.slice(0, 8)}…` : ''}`,
+        );
+        await loadGrowthBrief();
+      } else {
+        setGrowthMessage(json.reason ?? json.error ?? `Refused (${res.status}).`);
+      }
+    } catch {
+      setGrowthMessage('The growth endpoint could not be reached.');
+    } finally {
+      setGrowthBusy(false);
+    }
+  }
+
+  async function loadGrowthBrief() {
+    if (growthOpportunityId.trim().length === 0) return;
+    setGrowthBusy(true);
+    setGrowthMessage(null);
+    try {
+      const res = await fetch(`/api/agency/growth?opportunityId=${encodeURIComponent(growthOpportunityId.trim())}`);
+      const json = (await res.json()) as { ok: boolean; brief?: GrowthBrief; error?: string };
+      if (json.ok && json.brief) {
+        setGrowthBrief(json.brief);
+      } else {
+        setGrowthBrief(null);
+        setGrowthMessage(json.error ?? 'Growth brief unavailable.');
+      }
+    } catch {
+      setGrowthBrief(null);
+      setGrowthMessage('The growth endpoint could not be reached.');
+    } finally {
+      setGrowthBusy(false);
     }
   }
 
@@ -249,6 +324,72 @@ export function AgentControlCenter() {
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Growth panel (Phase 9, admin-only via the growth API) — inspect the
+          deterministic brief and trigger ONE supervised cycle per opportunity. */}
+      <div className="rounded-xl border bg-card shadow-sm">
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <div className="flex items-center gap-2">
+            <TrendingUp className="h-4 w-4 text-emerald-600" />
+            <h2 className="text-sm font-semibold">Growth agent (bounded autonomous)</h2>
+          </div>
+        </div>
+        <div className="px-4 py-4 space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <input
+              value={growthOpportunityId}
+              onChange={(e) => setGrowthOpportunityId(e.target.value)}
+              placeholder="Opportunity ID"
+              maxLength={128}
+              className="h-9 flex-1 min-w-48 rounded-md border bg-background px-3 text-sm"
+            />
+            <button
+              onClick={loadGrowthBrief}
+              disabled={growthBusy || growthOpportunityId.trim().length === 0}
+              className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+            >
+              <RefreshCw className={cn('h-3.5 w-3.5', growthBusy && 'animate-spin')} /> Load brief
+            </button>
+            <button
+              onClick={triggerGrowthCycle}
+              disabled={growthBusy || growthOpportunityId.trim().length === 0}
+              className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+            >
+              <Activity className="h-3.5 w-3.5" /> Run growth cycle
+            </button>
+          </div>
+          {growthMessage && <p className="text-xs text-muted-foreground">{growthMessage}</p>}
+          {growthBrief && (
+            <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border p-2.5">
+                <p className="text-muted-foreground">Health</p>
+                <p className="font-semibold">{growthBrief.health}</p>
+              </div>
+              <div className="rounded-lg border p-2.5">
+                <p className="text-muted-foreground">Engine decision</p>
+                <p className="font-semibold">{growthBrief.engineDecision}</p>
+              </div>
+              <div className="rounded-lg border p-2.5">
+                <p className="text-muted-foreground">Trend / score</p>
+                <p className="font-semibold">{growthBrief.trend} · {growthBrief.score}</p>
+              </div>
+              <div className="rounded-lg border p-2.5">
+                <p className="text-muted-foreground">Verified learnings</p>
+                <p className="font-semibold">{growthBrief.verifiedLearnings}</p>
+              </div>
+              <div className="rounded-lg border p-2.5 sm:col-span-2 lg:col-span-4">
+                <p className="text-muted-foreground">Reason (recorded data only)</p>
+                <p className="leading-snug">{growthBrief.engineReason}</p>
+              </div>
+            </div>
+          )}
+          {!growthBrief && !growthMessage && (
+            <p className="text-xs text-muted-foreground">
+              Inspect the deterministic growth brief for an opportunity and trigger ONE supervised cycle — same path as any scheduler would use (pause gate → halal → no-data safety → Job Runner → supervisor).
+            </p>
+          )}
         </div>
       </div>
 
