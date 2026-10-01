@@ -74,6 +74,11 @@ export interface CreateEngagementInput {
   currency?: unknown;
   /** Explicit admin-configured low-risk exception (OFF by default). */
   lowRiskException?: unknown;
+  /**
+   * PHASE 11.6 — explicit admin acknowledgement for an offer whose halalStatus
+   * is REVIEW_REQUIRED. Required; never inferred. The approval is audited.
+   */
+  allowReviewRequiredOffer?: unknown;
   actor: string;
   surface: string;
 }
@@ -102,13 +107,62 @@ export async function createEngagement(input: CreateEngagementInput): Promise<En
   }
 
   // Verify links exist so no dangling engagement can be created.
-  if (typeof input.prospectId === 'string' && input.prospectId.length > 0) {
-    const prospect = await db.prospect.findUnique({ where: { id: input.prospectId }, select: { id: true } });
-    if (!prospect) return { ok: false, status: 404, error: 'Prospect not found.' };
-  }
+  //
+  // PHASE 11.6 — the linked OFFER's halal verdict is READ AND ENFORCED here.
+  // Previously this selected only `{ id: true }`, so a BLOCKED or UNVERIFIED
+  // offer could be turned into a ServiceEngagement and reach SERVICE_BUILD.
+  // The rule now: an engagement may only be created against an offer whose
+  // halalStatus is HALAL, or REVIEW_REQUIRED with an explicit admin override
+  // that is recorded. NOT_ALLOWED and UNVERIFIED are refused outright.
+  let linkedOfferHalalStatus: string | null = null;
   if (typeof input.offerId === 'string' && input.offerId.length > 0) {
-    const offer = await db.offer.findUnique({ where: { id: input.offerId }, select: { id: true } });
+    const offer = await db.offer.findUnique({
+      where: { id: input.offerId },
+      select: { id: true, halalStatus: true, status: true },
+    });
     if (!offer) return { ok: false, status: 404, error: 'Offer not found.' };
+    linkedOfferHalalStatus = offer.halalStatus;
+
+    if (offer.halalStatus === 'BLOCKED' || offer.halalStatus === 'NOT_ALLOWED') {
+      await auditSecurityEvent({
+        kind: 'COMMERCIAL_ENGAGEMENT_CREATED',
+        surface: input.surface,
+        outcome: 'refused',
+        detail: `offer=${offer.id.slice(0, 12)} halalStatus=${offer.halalStatus} — engagement refused`,
+      });
+      return {
+        ok: false, status: 400,
+        error: `The linked offer is blocked by halal screening (${offer.halalStatus}). No engagement can be created.`,
+      };
+    }
+    if (offer.halalStatus === 'UNVERIFIED') {
+      await auditSecurityEvent({
+        kind: 'COMMERCIAL_ENGAGEMENT_CREATED',
+        surface: input.surface,
+        outcome: 'refused',
+        detail: `offer=${offer.id.slice(0, 12)} halalStatus=UNVERIFIED — engagement refused`,
+      });
+      return {
+        ok: false, status: 400,
+        error:
+          'The linked offer has no halal verdict (UNVERIFIED). An unscreened offer is not halal; screen it '
+          + 'before creating an engagement.',
+      };
+    }
+    if (offer.halalStatus === 'REVIEW_REQUIRED' && input.allowReviewRequiredOffer !== true) {
+      await auditSecurityEvent({
+        kind: 'COMMERCIAL_ENGAGEMENT_CREATED',
+        surface: input.surface,
+        outcome: 'refused',
+        detail: `offer=${offer.id.slice(0, 12)} halalStatus=REVIEW_REQUIRED without explicit admin override`,
+      });
+      return {
+        ok: false, status: 400,
+        error:
+          'The linked offer requires halal review (REVIEW_REQUIRED). An administrator must explicitly '
+          + 'approve this engagement (allowReviewRequiredOffer) and that approval is recorded.',
+      };
+    }
   }
 
   const lowRisk = normalizeLowRiskException(input.lowRiskException);
@@ -143,11 +197,23 @@ export async function createEngagement(input: CreateEngagementInput): Promise<En
     }
   }
 
+  if (linkedOfferHalalStatus === 'REVIEW_REQUIRED') {
+    // The override itself is an auditable fact, not a silent allowance.
+    await auditSecurityEvent({
+      kind: 'COMMERCIAL_LOW_RISK_EXCEPTION_APPLIED',
+      surface: input.surface,
+      outcome: 'ok',
+      detail: `engagement=${created.id.slice(0, 12)} REVIEW_REQUIRED halal override by ${input.actor}`,
+    });
+  }
+
   await auditSecurityEvent({
     kind: 'COMMERCIAL_ENGAGEMENT_CREATED',
     surface: input.surface,
     outcome: 'ok',
-    detail: `engagement=${created.id.slice(0, 12)} type=${engagementType} state=NO_COMMITMENT`,
+    detail:
+      `engagement=${created.id.slice(0, 12)} type=${engagementType} state=NO_COMMITMENT `
+      + `offerHalal=${linkedOfferHalalStatus ?? 'none'}`,
   });
   return { ok: true, engagementId: created.id, state: 'NO_COMMITMENT' };
 }
@@ -303,6 +369,8 @@ export async function createMilestone(options: {
 export async function transitionMilestonePayment(options: {
   milestoneId: unknown;
   to: unknown;
+  /** REQUIRED: the engagement from the route path. Enforced, not trusted. */
+  engagementId?: unknown;
   paymentVerificationSource?: unknown;
   providerRef?: unknown;
   actor: string;
@@ -315,6 +383,22 @@ export async function transitionMilestonePayment(options: {
     select: { id: true, paymentState: true, engagementId: true, amountUsd: true },
   });
   if (!milestone) return { ok: false, status: 404, error: 'Milestone not found.' };
+
+  // Same IDOR class as the deliverable/issue sub-routes.
+  if (typeof options.engagementId === 'string' && options.engagementId.length > 0) {
+    if (milestone.engagementId !== options.engagementId) {
+      await auditSecurityEvent({
+        kind: 'COMMERCIAL_MILESTONE_PAYMENT_REFUSED',
+        surface: options.surface,
+        outcome: 'refused',
+        detail: `IDOR refused: milestone belongs to another engagement (path=${options.engagementId.slice(0, 12)})`,
+      });
+      return {
+        ok: false, status: 400,
+        error: `Milestone does not belong to engagement ${options.engagementId}. Cross-engagement access is refused.`,
+      };
+    }
+  }
   if (!isMilestonePaymentState(options.to)) {
     return { ok: false, status: 400, error: `to must be one of: ${MILESTONE_PAYMENT_STATES.join(', ')}.` };
   }
@@ -409,10 +493,36 @@ export async function createDeliverable(options: {
   return { ok: true, deliverableId: created.id, state: 'DRAFT' };
 }
 
+/**
+ * PHASE 11.6 — object-level authorization helper (closes the F16 IDOR).
+ *
+ * These sub-operations are addressed by the engagement in the PATH but were
+ * acting on an id supplied in the BODY, so `POST /engagements/{A}` could mutate
+ * engagement B's deliverable. The route now passes the path `engagementId` into
+ * each handler and the handler REFUSES on mismatch, rather than trusting the
+ * caller to have checked.
+ */
+async function assertBelongsToEngagement(
+  child: { engagementId: string } | null,
+  engagementId: string,
+  label: string,
+): Promise<EngagementResult | null> {
+  if (!child) return null;
+  if (child.engagementId !== engagementId) {
+    return {
+      ok: false, status: 400,
+      error: `${label} does not belong to engagement ${engagementId}. Cross-engagement access is refused.`,
+    };
+  }
+  return null;
+}
+
 export async function transitionDeliverable(options: {
   deliverableId: unknown;
   to: unknown;
   actor: 'ADMIN' | 'SYSTEM' | 'CLIENT_EVIDENCE' | 'QA';
+  /** REQUIRED: the engagement from the route path. Enforced, not trusted. */
+  engagementId?: unknown;
   /** Client-requested change text; classified, never executed directly. */
   revisionRequest?: unknown;
   acceptanceEvidence?: unknown;
@@ -427,6 +537,20 @@ export async function transitionDeliverable(options: {
     include: { engagement: { select: { state: true } } },
   });
   if (!deliverable) return { ok: false, status: 404, error: 'Deliverable not found.' };
+
+  // Ownership check against the path engagement.
+  if (typeof options.engagementId === 'string' && options.engagementId.length > 0) {
+    const denied = await assertBelongsToEngagement(deliverable, options.engagementId, 'Deliverable');
+    if (denied) {
+      await auditSecurityEvent({
+        kind: 'COMMERCIAL_DELIVERABLE_TRANSITION_REFUSED',
+        surface: options.surface,
+        outcome: 'refused',
+        detail: `IDOR refused: deliverable belongs to another engagement (path=${options.engagementId.slice(0, 12)})`,
+      });
+      return denied;
+    }
+  }
   if (!isDeliverableState(options.to)) {
     return { ok: false, status: 400, error: `to must be one of: ${DELIVERABLE_STATES.join(', ')}.` };
   }
@@ -489,6 +613,8 @@ export async function transitionDeliverable(options: {
 export async function classifyDeliverableRevision(options: {
   deliverableId: unknown;
   requestedSummary: unknown;
+  /** REQUIRED: the engagement from the route path. Enforced, not trusted. */
+  engagementId?: unknown;
   surface: string;
 }): Promise<EngagementResult> {
   const deliverableId = typeof options.deliverableId === 'string' ? options.deliverableId : null;
@@ -498,9 +624,14 @@ export async function classifyDeliverableRevision(options: {
   }
   const deliverable = await db.deliverable.findUnique({
     where: { id: deliverableId },
-    select: { id: true, revisionCount: true, revisionLimit: true },
+    select: { id: true, revisionCount: true, revisionLimit: true, engagementId: true },
   });
   if (!deliverable) return { ok: false, status: 404, error: 'Deliverable not found.' };
+
+  if (typeof options.engagementId === 'string' && options.engagementId.length > 0) {
+    const denied = await assertBelongsToEngagement(deliverable, options.engagementId, 'Deliverable');
+    if (denied) return denied;
+  }
 
   const classification = classifyRevisionRequest({
     requestedSummary: options.requestedSummary,
@@ -567,6 +698,8 @@ export async function createServiceIssue(options: {
 export async function resolveServiceIssue(options: {
   issueId: unknown;
   to: unknown;
+  /** REQUIRED: the engagement from the route path. Enforced, not trusted. */
+  engagementId?: unknown;
   resolutionNote?: unknown;
   actor: string;
   surface: string;
@@ -575,9 +708,22 @@ export async function resolveServiceIssue(options: {
   if (!issueId) return { ok: false, status: 400, error: 'issueId is required.' };
   const issue = await db.serviceIssue.findUnique({
     where: { id: issueId },
-    select: { id: true, status: true, issueType: true },
+    select: { id: true, status: true, issueType: true, engagementId: true },
   });
   if (!issue) return { ok: false, status: 404, error: 'Service issue not found.' };
+
+  if (typeof options.engagementId === 'string' && options.engagementId.length > 0) {
+    const denied = await assertBelongsToEngagement(issue, options.engagementId, 'Service issue');
+    if (denied) {
+      await auditSecurityEvent({
+        kind: 'COMMERCIAL_SERVICE_ISSUE_RESOLVED',
+        surface: options.surface,
+        outcome: 'refused',
+        detail: `IDOR refused: issue belongs to another engagement (path=${options.engagementId.slice(0, 12)})`,
+      });
+      return denied;
+    }
+  }
   if (!isServiceIssueStatus(options.to)) {
     return { ok: false, status: 400, error: 'to must be a valid issue status.' };
   }
@@ -688,6 +834,16 @@ export async function recordServiceRevenue(options: {
         currency: engagement.currency,
         opportunityId: engagement.opportunityId,
         idempotencyKey,
+        // PHASE 11.7: this row is earned revenue backed by a verification
+        // source, so it is ACTUAL with the full amount recognized. The
+        // engagement/milestone attribution is what makes per-engagement P&L
+        // computable at all.
+        revenueBasis: 'ACTUAL',
+        recognizedUsd: options.amountUsd,
+        refundTotalUsd: 0,
+        evidenceBasis: String(options.paymentVerificationSource),
+        serviceEngagementId: engagementId,
+        milestoneId,
         referenceNote: `Verified via ${options.paymentVerificationSource}. Engagement ${engagementId}.`.slice(0, 300),
       },
     });

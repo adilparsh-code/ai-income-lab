@@ -81,6 +81,10 @@ export interface JobEngagementRow {
   engagementType: string;
   exposureCapUsd: number;
   lowRiskExceptionApplied: boolean;
+  // PHASE 11.6: the runner reads the linked offer's halal verdict and the
+  // engagement's cancellation state, so execution is blocked at the JOB level
+  // and not only at engagement creation.
+  offerId?: string | null;
 }
 
 export interface JobDeliverableRow {
@@ -90,6 +94,9 @@ export interface JobDeliverableRow {
   revisionCount: number;
   revisionLimit: number;
   isPreview: boolean;
+  // PHASE 11.6: ownership, so a job cannot act on another engagement's
+  // deliverable (the job-level twin of the F16 IDOR fix).
+  engagementId?: string | null;
 }
 
 export interface JobRunRow {
@@ -125,6 +132,9 @@ export interface JobDb {
   };
   deliverable?: {
     findUnique(args: { where: { id: string } }): Promise<JobDeliverableRow | null>;
+  };
+  offer?: {
+    findUnique(args: { where: { id: string } }): Promise<{ id: string; halalStatus: string } | null>;
   };
   jobRun: {
     findUnique(args: { where: { idempotencyKey: string } }): Promise<JobRunRow | null>;
@@ -453,6 +463,80 @@ async function executeServiceJobViaRunner(
     );
   }
 
+  // PHASE 11.6 — TERMINATION/CANCELLATION GATE.
+  // isWorkAuthorized() does not cover CANCELLED / TERMINATED (neither is an
+  // authorized state), but this is enforced explicitly so that a future change
+  // to the authorized-state list can never accidentally re-open execution on a
+  // cancelled engagement.
+  if (engagement.state === 'CANCELLED' || engagement.state === 'TERMINATED') {
+    return finishRow(
+      db, row, 'BLOCKED', null,
+      `Blocked: engagement is ${engagement.state}. Execution after cancellation or termination is refused; `
+      + 'nothing was executed.',
+      null, row.retryCount,
+    );
+  }
+
+  // PHASE 11.6 — PAYMENT REVERSAL GATE.
+  // A refunded or reversed engagement must not keep executing, even if its
+  // state was not yet walked back through the state machine.
+  if (engagement.paymentState === 'REFUNDED') {
+    return finishRow(
+      db, row, 'BLOCKED', null,
+      'Blocked: the engagement payment state is REFUNDED. Execution after a payment reversal is refused; '
+      + 'nothing was executed.',
+      null, row.retryCount,
+    );
+  }
+
+  // PHASE 11.6 — HALAL GATE AT EXECUTION TIME.
+  // Phase 11.3 screened halal only at offer creation, and the runner's step-4
+  // gate keys on payload.opportunityId, which service payloads do not carry.
+  // So a BLOCKED or UNVERIFIED offer could reach SERVICE_BUILD. The verdict is
+  // therefore re-checked HERE, from the engagement's own linked offer, and the
+  // check FAILS CLOSED if the offer cannot be read.
+  if (engagement.offerId) {
+    if (!db.offer) {
+      return finishRow(
+        db, row, 'BLOCKED', null,
+        'Service job refused: the linked offer halal verdict could not be read (fail-closed).',
+        null, row.retryCount,
+      );
+    }
+    const offer = await db.offer.findUnique({ where: { id: engagement.offerId } }).catch(() => null);
+    if (!offer) {
+      return finishRow(
+        db, row, 'BLOCKED', null,
+        'Service job refused: the linked offer could not be read (fail-closed halal gate).',
+        null, row.retryCount,
+      );
+    }
+    if (offer.halalStatus === 'BLOCKED' || offer.halalStatus === 'NOT_ALLOWED') {
+      logger.info('Service job blocked by halal gate', { jobType, engagementId, halalStatus: offer.halalStatus });
+      return finishRow(
+        db, row, 'BLOCKED', null,
+        `Blocked: the linked offer halalStatus is ${offer.halalStatus}. No work was executed.`,
+        null, row.retryCount,
+      );
+    }
+    if (offer.halalStatus === 'UNVERIFIED') {
+      return finishRow(
+        db, row, 'BLOCKED', null,
+        'Blocked: the linked offer has no halal verdict (UNVERIFIED). An unscreened offer is not halal and '
+        + 'cannot be executed.',
+        null, row.retryCount,
+      );
+    }
+    if (offer.halalStatus === 'REVIEW_REQUIRED') {
+      return finishRow(
+        db, row, 'HUMAN_REVIEW', null,
+        'Paused: the linked offer halalStatus is REVIEW_REQUIRED. A qualified human must review before any '
+        + 'execution proceeds.',
+        null, row.retryCount,
+      );
+    }
+  }
+
   if (jobType === 'SERVICE_BUILD') {
     return finishRow(db, row, 'SUCCEEDED', {
       serviceJob: jobType,
@@ -474,6 +558,18 @@ async function executeServiceJobViaRunner(
   const deliverable = await db.deliverable.findUnique({ where: { id: deliverableId } }).catch(() => null);
   if (!deliverable) {
     return finishRow(db, row, 'FAILED', null, `Deliverable "${deliverableId}" was not found.`, null, row.retryCount);
+  }
+
+  // PHASE 11.6 — ownership check (the job-level twin of the F16 IDOR fix).
+  // A job naming a deliverable that belongs to a DIFFERENT engagement is
+  // refused rather than silently acting on someone else's work.
+  if (deliverable.engagementId && deliverable.engagementId !== engagementId) {
+    return finishRow(
+      db, row, 'BLOCKED', null,
+      `Refused: deliverable belongs to a different engagement than the one named in this job. `
+      + 'Cross-engagement execution is refused.',
+      null, row.retryCount,
+    );
   }
 
   if (jobType === 'SERVICE_QA') {

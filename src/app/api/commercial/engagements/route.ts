@@ -60,6 +60,9 @@ export async function POST(request: Request) {
     title: raw.title,
     scopeSummary: raw.scopeSummary,
     offerId: raw.offerId,
+    // PHASE 11.6: an admin acknowledgement for a REVIEW_REQUIRED offer is
+    // required to be explicit, and it is audited when used.
+    allowReviewRequiredOffer: raw.allowReviewRequiredOffer,
     proposalId: raw.proposalId,
     proposalVersionId: raw.proposalVersionId,
     opportunityId: raw.opportunityId,

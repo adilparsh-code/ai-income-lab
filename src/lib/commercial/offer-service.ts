@@ -144,23 +144,41 @@ export async function createOffer(input: CreateOfferInput): Promise<CreateOfferR
   }
 
   // Halal screening — the EXISTING filter, never a second competing system.
-  // Absent an explicit verified verdict the server screens the offer itself.
+  //
+  // PHASE 11.6 HARDENING: the server ALWAYS screens the offer text first. A
+  // caller-supplied halalStatus can no longer skip screening; it can only be
+  // equal to, or MORE CONSERVATIVE than, what the screen decided. This closes
+  // the previous path where an admin-supplied 'HALAL' bypassed
+  // screenForHalalCompliance entirely.
+  const screenVerdict = screenForHalalCompliance(
+    input.title.trim(),
+    `${description.value ?? ''} ${scopeSummary.value ?? ''}`.trim(),
+    type,
+    type === 'DIGITAL_PRODUCT' ? 'Direct Sales' : 'Client Service',
+    'ONE_TIME_PURCHASE',
+  );
+  const screenedStatus: OfferHalalStatus = offerHalalStatusFromScreen(screenVerdict.status);
+
   let halalStatus: OfferHalalStatus;
   if (input.halalStatus !== undefined && input.halalStatus !== null) {
     if (!isOfferHalalStatus(input.halalStatus)) {
       return { ok: false, status: 400, error: `halalStatus must be one of: ${OFFER_HALAL_STATUSES.join(', ')}.` };
     }
-    halalStatus = input.halalStatus;
+    const requested = input.halalStatus;
+    // Rank order mirrors the worst-wins rule: a caller may only move the
+    // verdict MORE conservative, never less.
+    const rank: Record<OfferHalalStatus, number> = { HALAL: 0, UNVERIFIED: 1, REVIEW_REQUIRED: 2, BLOCKED: 3 };
+    halalStatus = rank[requested] > rank[screenedStatus] ? requested : screenedStatus;
+    if (rank[requested] < rank[screenedStatus]) {
+      await auditSecurityEvent({
+        kind: 'COMMERCIAL_OFFER_STATUS',
+        surface: input.surface,
+        outcome: 'ok',
+        detail: `caller requested ${requested}; screen decided ${screenedStatus} — screen is authoritative`,
+      });
+    }
   } else {
-    halalStatus = offerHalalStatusFromScreen(
-      screenForHalalCompliance(
-        input.title.trim(),
-        `${description.value ?? ''} ${scopeSummary.value ?? ''}`.trim(),
-        type,
-        type === 'DIGITAL_PRODUCT' ? 'Direct Sales' : 'Client Service',
-        'ONE_TIME_PURCHASE',
-      ).status,
-    );
+    halalStatus = screenedStatus;
   }
 
   let riskState: OfferRiskState = 'UNVERIFIED';
