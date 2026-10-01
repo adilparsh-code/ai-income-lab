@@ -371,9 +371,32 @@ model Revenue {
   // same payment can never be recorded twice. Written by the shared
   // revenueIdempotencyKey() rule — never by the API caller.
   idempotencyKey  String?  @unique
+
+  // Phase 11.7 — evidence + service attribution. ALL ADDITIVE; every existing
+  // writer is unaffected and historical rows keep their (null) values.
+  //
+  // revenueBasis separates what actually happened from what was modelled.
+  // ACTUAL is only reachable through an evidence-backed write (a signature-
+  // verified provider event, or an approved admin manual verification).
+  // ESTIMATED / PROJECTED / SIMULATED rows exist for planning and learning but
+  // are NEVER summed into recognized revenue.
+  revenueBasis    String   @default("ACTUAL") // ACTUAL | ESTIMATED | PROJECTED | SIMULATED
+  recognizedUsd   Float    @default(0)        // ACTUAL rows only; reduced by refunds
+  refundTotalUsd  Float    @default(0)
+  serviceEngagementId String?
+  serviceEngagement   ServiceEngagement? @relation(fields: [serviceEngagementId], references: [id])
+  milestoneId     String?
+  milestone       Milestone? @relation(fields: [milestoneId], references: [id])
+  paymentEventId  String?
+  paymentEvent    PaymentEvent? @relation(fields: [paymentEventId], references: [id])
+  evidenceBasis   String   @default("PROVIDER_WEBHOOK")
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+  
+  @@index([revenueBasis])
+  @@index([serviceEngagementId])
+  @@index([milestoneId])
 }
 
 model Affiliate {
@@ -1650,6 +1673,16 @@ model ServiceEngagement {
   milestones     Milestone[]
   deliverables   Deliverable[]
   issues         ServiceIssue[]
+  revenue        Revenue[]
+  costs          EngagementCost[]
+  paymentEvents  PaymentEvent[]
+  outreachSends  OutreachSend[]
+  manualPaymentVerifications ManualPaymentVerification[]
+
+  // Phase 11.7 — declared, bounded effort/cost envelope for this engagement.
+  // These are ESTIMATES, never actuals, and are labelled as such everywhere.
+  estimatedCostUsd Float @default(0)
+  actualCostUsd    Float @default(0)
 
   @@index([state])
   @@index([engagementType, state])
@@ -1678,9 +1711,10 @@ model Milestone {
 
   acceptanceEvidence String?   // structured evidence; NEVER synthesized
   acceptedAt    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  revenue       Revenue[]
 
   @@unique([engagementId, key])
   @@index([paymentState])
@@ -1747,4 +1781,183 @@ model ServiceIssue {
 
   @@index([engagementId])
   @@index([issueType, status])
+}
+
+// ============================================================================
+// PHASE 11.4 — PAYMENT EVIDENCE LEDGER
+// ============================================================================
+// Payment truth is evidence-backed or it is nothing. This table is the single
+// append-only record of every payment-bearing event the system was asked to
+// trust, together with the VERDICT on it. Nothing here is mutable except the
+// transition from RECORDED to REVERSED, and that transition is itself audited.
+//
+// Replay protection: `providerEventId` is UNIQUE per provider. A replayed
+// webhook therefore collapses to a single row and can never move an engagement
+// state twice or record revenue twice.
+//
+// Untrusted input classes are recorded as REJECTED rows rather than discarded,
+// so "someone tried to claim payment from a screenshot" is auditable.
+// ============================================================================
+model PaymentEvent {
+  id                String   @id @default(cuid())
+  provider          String   @default("POLAR")
+  // Provider-scoped event id. UNIQUE: this is the replay guard.
+  providerEventId   String
+  eventType         String
+  // ACCEPTED | REJECTED | DUPLICATE | REVERSED | IGNORED
+  outcome           String   @default("RECORDED")
+  rejectionReason   String   @default("")
+
+  // Signature verification result, decided by webhook-verification.ts (Phase 8).
+  // A false value here means the payload was NEVER trusted for anything.
+  signatureVerified Boolean  @default(false)
+  verificationMethod String  @default("NONE")
+  // PROVIDER_WEBHOOK | PROVIDER_API | MANUAL_ADMIN_APPROVED | NONE
+
+  amountUsd         Float    @default(0)
+  currency          String   @default("USD")
+
+  // Intended target. A verified event with no engagement is still recorded,
+  // but it can never authorize service work.
+  engagementId      String?
+  engagement        ServiceEngagement? @relation(fields: [engagementId], references: [id])
+  milestoneId       String?
+  offerId           String?
+
+  // Bounded, non-secret provenance only (never a card number, never a body).
+  evidenceRefs      String   @default("[]")
+  receivedAt        DateTime @default(now())
+  processedAt       DateTime?
+  reversalOfId      String?
+  reversalReason    String   @default("")
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  revenue           Revenue[]
+
+  @@unique([provider, providerEventId])
+  @@index([engagementId, outcome])
+  @@index([outcome, createdAt])
+}
+
+// ============================================================================
+// PHASE 11.4 — CONTROLLED MANUAL PAYMENT VERIFICATION (admin review path)
+// ============================================================================
+// MANUAL_ADMIN_APPROVED is a legitimate source, but only as a *controlled*
+// review: it must name a reviewer, record what evidence was examined, state a
+// reason, and carry a timestamp. Without all four, the source is refused.
+//
+// This is deliberately NOT the PaymentEvent table: manual review is a distinct
+// authority with a distinct audit shape, and conflating the two would let a
+// webhook path borrow manual-review bookkeeping.
+// ============================================================================
+model ManualPaymentVerification {
+  id                String   @id @default(cuid())
+  engagementId      String
+  engagement        ServiceEngagement @relation(fields: [engagementId], references: [id])
+  milestoneId       String?
+
+  // The human who performed the review. Required — an unattributed approval
+  // is not an approval.
+  reviewer          String
+  reviewedAt        DateTime @default(now())
+  // Why the reviewer concluded payment was made. Required, bounded, non-empty.
+  reason            String
+  // What was actually examined: bounded references only (bank ref, receipt id,
+  // provider dashboard capture id). NEVER card data, never credentials.
+  evidenceRefs      String   @default("[]")
+
+  amountUsd         Float
+  currency          String   @default("USD")
+
+  // APPROVED | REFUSED
+  outcome           String   @default("APPROVED")
+  // Deterministic dedupe key so re-running the same review is idempotent.
+  idempotencyKey    String   @unique
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([engagementId])
+  @@index([outcome, createdAt])
+}
+
+// ============================================================================
+// PHASE 11.7 — ENGAGEMENT COST LEDGER (actual vs estimated, kept distinct)
+// ============================================================================
+// Revenue already existed; cost at the ENGAGEMENT level did not. Without it,
+// per-engagement P&L is impossible and "margin" is just price under a
+// different name.
+//
+// basis is the whole point of this table:
+//   ACTUAL     — an evidenced cost (a provider invoice row, a recorded fee).
+//   ESTIMATED  — a planning figure. Never summed into realized profit.
+//
+// realizedCostUsd on EngagementEngagement aggregates ONLY ACTUAL rows.
+// ============================================================================
+model EngagementCost {
+  id            String   @id @default(cuid())
+  engagementId  String
+  engagement    ServiceEngagement @relation(fields: [engagementId], references: [id])
+
+  // AI_EXECUTION | TOOLING | INFRASTRUCTURE | PLATFORM_FEE | REFUND | OTHER
+  category      String
+  description   String   @default("")
+  amountUsd     Float
+  currency      String   @default("USD")
+  // ACTUAL | ESTIMATED — an estimate is never presented as a real cost.
+  basis         String   @default("ACTUAL")
+  evidenceRefs  String   @default("[]")
+
+  // Deterministic dedupe so the same evidenced cost cannot be counted twice.
+  idempotencyKey String  @unique
+
+  occurredAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([engagementId, basis])
+}
+
+// ============================================================================
+// PHASE 11.5 — OUTBOUND COMMUNICATION LEDGER
+// ============================================================================
+// Provenance and duplicate-send prevention for governed outbound contact.
+//
+// `idempotencyKey` is UNIQUE: the same logical outreach can never be sent
+// twice, so a retried request is an idempotent no-op rather than a second
+// message to a real business.
+//
+// `contentDigest` records WHAT was screened, so an auditor can prove the copy
+// that passed screening is the copy that was sent. `simulated` is carried
+// explicitly: a test-adapter send must never be countable as a real send.
+// ============================================================================
+model OutreachSend {
+  id              String   @id @default(cuid())
+  prospectId      String?
+  engagementId    String?
+  engagement      ServiceEngagement? @relation(fields: [engagementId], references: [id])
+
+  channel         String   // EMAIL | CLIENT_PORTAL | MESSAGING
+  recipientDigest String   // hashed contact; the raw address is not duplicated here
+  subjectDigest   String
+  contentDigest   String
+
+  // QUEUED | SENT | DELIVERED | BOUNCED | COMPLAINED | SUPPRESSED | FAILED
+  status          String   @default("QUEUED")
+  providerId      String
+  providerMessageId String?
+  simulated       Boolean  @default(false)
+
+  // Bounded screening result: which gate refused, or that it passed.
+  screeningResult String   @default("")
+  approvedBy      String?
+  idempotencyKey  String   @unique
+  detail          String   @default("")
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([prospectId, createdAt])
+  @@index([status, createdAt])
 }
