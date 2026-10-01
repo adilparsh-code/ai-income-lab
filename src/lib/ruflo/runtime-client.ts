@@ -12,6 +12,7 @@
 // optional: if RUFLO_MCP_URL is absent, the application remains disconnected.
 
 import { randomUUID } from 'node:crypto';
+import { isAllowedResearchUrl } from '@/lib/research/core';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_TIMEOUT_MS = 30_000;
@@ -74,6 +75,16 @@ function normalizeBaseUrl(value: string): string {
   const url = new URL(value);
   if (!['http:', 'https:'].includes(url.protocol)) {
     throw new Error('Ruflo runtime URL must use HTTP or HTTPS.');
+  }
+  // PHASE 11.8 SSRF hardening: this base URL comes from RUFLO_RUNTIME_URL
+  // configuration, but a mis-set or attacker-influenced value would otherwise
+  // let the server reach loopback, link-local or RFC1918 addresses (including
+  // the 169.254.169.254 cloud metadata endpoint). Reuse the EXISTING research
+  // URL guard rather than writing a second, weaker SSRF list.
+  if (!isAllowedResearchUrl(url.toString())) {
+    throw new Error(
+      'Ruflo runtime URL must be a public http(s) URL. Loopback, private and link-local hosts are refused.',
+    );
   }
   return url.toString().replace(/\/$/, '');
 }
