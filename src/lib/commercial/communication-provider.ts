@@ -21,6 +21,7 @@
 // ============================================================================
 
 import { auditSecurityEvent } from '@/lib/security/guard';
+import { screenOutreachCopy } from './outreach-safety';
 
 export const COMMUNICATION_PROVIDER_STATES = [
   'NOT_CONNECTED',
@@ -172,11 +173,17 @@ export class SimulatedCommunicationProvider implements CommunicationProvider {
   }
 
   health(): { state: CommunicationProviderState; detail: string } {
+    // PHASE 11.6 HARDENING: this adapter must NOT report HEALTHY. A simulated
+    // adapter that claims to be healthy is a false green in any provider
+    // health panel, and it previously did exactly that. It now reports
+    // NOT_CONNECTED with an explicit SIMULATED label, which is truthful:
+    // nothing is connected, and nothing leaves this process.
     return {
-      state: 'HEALTHY',
+      state: 'NOT_CONNECTED',
       detail:
-        'SIMULATED: deterministic local test adapter. No message leaves this process. This is NOT a real '
-        + 'integration and must never be reported as a connected provider.',
+        'SIMULATED / TEST_ONLY: deterministic local test adapter. No message leaves this process. This is '
+        + 'NOT a real integration and is deliberately reported as NOT_CONNECTED so it can never be mistaken '
+        + 'for a connected provider.',
     };
   }
 
@@ -283,6 +290,27 @@ export async function sendCommunication(
   request: CommunicationSendRequest,
   surface: string,
 ): Promise<CommunicationSendResult> {
+  // PHASE 11.6 HARDENING: the content gate now runs INSIDE this low-level
+  // function, not only in the higher-level outreach service. Previously
+  // sendCommunication never called screenOutreachCopy, so any caller that used
+  // it directly could put impersonating or deceptive copy in front of a real
+  // provider. Screening here means no caller can skip it.
+  const copy = `${request.subject}\n${request.body}`;
+  const screened = screenOutreachCopy(copy);
+  if (!screened.ok) {
+    await auditSecurityEvent({
+      kind: 'COMMERCIAL_COMMUNICATION_SEND',
+      surface,
+      outcome: 'refused',
+      detail: `content gate refused: ${screened.violations.map((v) => v.id).join(',').slice(0, 80)}`,
+    });
+    return {
+      ok: false,
+      reason: `Outgoing copy refused by the content gate: ${screened.reason}`,
+      status: 'FAILED',
+    };
+  }
+
   const provider = resolveCommunicationProvider(request.channel);
   const result = await provider.send(request);
   await auditSecurityEvent({
