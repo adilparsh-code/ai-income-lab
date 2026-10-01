@@ -10,6 +10,7 @@ import { getPnlObservatory } from './pnl';
 import { getCustomerInteractions, getHalalMap, getPublishingRows } from './safety-map';
 import { getGitHubWatcher, getIntegrationHealth } from './integration-health';
 import { getExecutiveNow, getNextActions } from './executive-view';
+import { getControlReflection, type ControlReflectionView } from './control-reflection';
 import type {
   CustomerInteractionView,
   ExecutiveNow,
@@ -38,10 +39,12 @@ export interface ObservatoryView {
   github: GitHubWatcherView;
   executive: ExecutiveNow;
   nextActions: NextActionsView;
+  /** Phase 10A — read-only control-state reflection (the Control Center remains the only controller). */
+  control: ControlReflectionView;
 }
 
 export async function getObservatoryView(): Promise<ObservatoryView> {
-  const [agents, timeline, learning, pnl, halal, publishing, customerInteractions, integrations, github, executive, nextActions] =
+  const [agents, timeline, learning, pnl, halal, publishing, customerInteractions, integrations, github, executive, nextActions, control] =
     await Promise.all([
       getAgentObservations(),
       getObservatoryTimeline({ limit: 80 }),
@@ -54,6 +57,7 @@ export async function getObservatoryView(): Promise<ObservatoryView> {
       getGitHubWatcher(),
       getExecutiveNow(),
       getNextActions(),
+      getControlReflection(),
     ]);
 
   return {
@@ -69,8 +73,9 @@ export async function getObservatoryView(): Promise<ObservatoryView> {
     github,
     executive,
     nextActions,
+    control,
   };
 }
 
-export { epistemicStateFor, getAgentObservations, getObservatoryTimeline, getLearningObservations, getPnlObservatory, getHalalMap, getPublishingRows, getCustomerInteractions, getIntegrationHealth, getGitHubWatcher, getExecutiveNow, getNextActions };
+export { epistemicStateFor, getAgentObservations, getObservatoryTimeline, getLearningObservations, getPnlObservatory, getHalalMap, getPublishingRows, getCustomerInteractions, getIntegrationHealth, getGitHubWatcher, getExecutiveNow, getNextActions, getControlReflection };
 export * from './types';
