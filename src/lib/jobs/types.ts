@@ -36,12 +36,26 @@ export const FACTORY_JOB_TYPES = [
   'PRODUCT_ANALYZE',
 ] as const;
 
+/**
+ * Phase 11.3 — bounded service job types. These run through the SAME runner,
+ * idempotency, halal gates and retry policy as every other job; there is no
+ * second job system. The service category is DATA in the payload, never a job
+ * type, so no SERVICE_WEBSITE / SERVICE_BOT explosion is possible.
+ */
+export const SERVICE_JOB_TYPES = ['SERVICE_BUILD', 'SERVICE_QA', 'SERVICE_DELIVERY'] as const;
+
 export type AgentJobType = (typeof AGENT_JOB_TYPES)[number];
 export type WorkflowJobType = (typeof WORKFLOW_JOB_TYPES)[number];
 export type FactoryJobType = (typeof FACTORY_JOB_TYPES)[number];
-export type JobType = AgentJobType | WorkflowJobType | FactoryJobType;
+export type ServiceJobType = (typeof SERVICE_JOB_TYPES)[number];
+export type JobType = AgentJobType | WorkflowJobType | FactoryJobType | ServiceJobType;
 
-export const ALL_JOB_TYPES: JobType[] = [...AGENT_JOB_TYPES, ...WORKFLOW_JOB_TYPES, ...FACTORY_JOB_TYPES];
+export const ALL_JOB_TYPES: JobType[] = [
+  ...AGENT_JOB_TYPES,
+  ...WORKFLOW_JOB_TYPES,
+  ...FACTORY_JOB_TYPES,
+  ...SERVICE_JOB_TYPES,
+];
 
 export function isJobType(value: unknown): value is JobType {
   return typeof value === 'string' && (ALL_JOB_TYPES as string[]).includes(value);
@@ -49,6 +63,10 @@ export function isJobType(value: unknown): value is JobType {
 
 export function isFactoryJobType(value: unknown): value is FactoryJobType {
   return typeof value === 'string' && (FACTORY_JOB_TYPES as readonly string[]).includes(value);
+}
+
+export function isServiceJobType(value: unknown): value is ServiceJobType {
+  return typeof value === 'string' && (SERVICE_JOB_TYPES as readonly string[]).includes(value);
 }
 
 /** The existing AgentRegistry agent backing a single-agent job type. */

@@ -176,6 +176,20 @@ export function validateJobPayload(jobType: JobType, payload: JobPayload): JobVa
     case 'REVENUE_SYNC':
       requireString(payload.productId, 'productId', errors, 128);
       break;
+
+    // Phase 11.3 — bounded service jobs. The service category/kind is DATA in
+    // the payload (validated by the commercial layer), never a job type, so no
+    // per-category job explosion is possible.
+    case 'SERVICE_BUILD':
+    case 'SERVICE_QA':
+    case 'SERVICE_DELIVERY':
+      requireString(payload.engagementId, 'engagementId', errors, 128);
+      optionalString(payload.serviceCategory, 'serviceCategory', errors, 60);
+      optionalString(payload.microServiceKind, 'microServiceKind', errors, 60);
+      if (jobType !== 'SERVICE_BUILD') {
+        optionalString(payload.deliverableId, 'deliverableId', errors, 128);
+      }
+      break;
   }
 
   return { valid: errors.length === 0, errors };
