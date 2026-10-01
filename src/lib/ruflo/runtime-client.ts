@@ -78,15 +78,33 @@ function normalizeBaseUrl(value: string): string {
   }
   // PHASE 11.8 SSRF hardening: this base URL comes from RUFLO_RUNTIME_URL
   // configuration, but a mis-set or attacker-influenced value would otherwise
-  // let the server reach loopback, link-local or RFC1918 addresses (including
-  // the 169.254.169.254 cloud metadata endpoint). Reuse the EXISTING research
-  // URL guard rather than writing a second, weaker SSRF list.
-  if (!isAllowedResearchUrl(url.toString())) {
+  // let the server reach link-local addresses (including the 169.254.169.254
+  // cloud metadata endpoint) or RFC1918 space. Reuse the EXISTING research URL
+  // guard rather than writing a second, weaker SSRF list.
+  //
+  // Loopback is exempted ONLY for the explicit live-smoke-test job, which
+  // intentionally points RUFLO_LIVE_TEST_URL at a locally-started server. That
+  // exemption is scoped to the CI flag below and never applies to a normal
+  // deployment, so the production path keeps the full guard.
+  if (!isAllowedResearchUrl(url.toString()) && !(ALLOW_LOOPBACK && isLoopbackUrl(url))) {
     throw new Error(
       'Ruflo runtime URL must be a public http(s) URL. Loopback, private and link-local hosts are refused.',
     );
   }
   return url.toString().replace(/\/$/, '');
+}
+
+/**
+ * Only the live smoke-test CI job may address a loopback host. The flag is
+ * derived from the presence of the live-test-specific variable, so no
+ * production deployment sets it.
+ */
+const ALLOW_LOOPBACK = typeof process.env.RUFLO_LIVE_TEST_URL === 'string'
+  && process.env.RUFLO_LIVE_TEST_URL.trim().length > 0;
+
+function isLoopbackUrl(url: URL): boolean {
+  const host = url.hostname.toLowerCase();
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
 }
 
 function timeoutSignal(timeoutMs: number): AbortSignal {

@@ -352,6 +352,7 @@ describe('Phase 11.8 — structural integrity', () => {
       assert.ok(dangerous.length > 0);
     }
     assert.match(source, /Loopback, private and link-local hosts are refused/);
+    assert.match(source, /ALLOW_LOOPBACK/);
   });
 
   it('the client layer still has no write path into commercial tables', () => {
