@@ -91,11 +91,20 @@ export async function getCommercialSummary(): Promise<CommercialSummary> {
     db.milestone.findMany({ select: { paymentState: true } }),
     db.deliverable.findMany({ select: { state: true } }),
     db.serviceIssue.findMany({ select: { status: true, requiresHuman: true } }),
-    db.revenue.findMany({ where: { revenueSource: { startsWith: 'service' } }, select: { grossRevenue: true, currency: true } }),
+    // PHASE 11.7: only ACTUAL-basis revenue counts as earned here. Estimates,
+    // projections and simulations are excluded so the summary cannot report a
+    // plan as income.
+    db.revenue.findMany({
+      where: { revenueSource: { startsWith: 'service' }, revenueBasis: 'ACTUAL' },
+      select: { grossRevenue: true, currency: true },
+    }),
     db.learningEntry.findMany({
       where: { context: { startsWith: 'commercial' } },
       orderBy: { createdAt: 'desc' },
-      take: 5,
+      // PHASE 11.7 FIX: this was hard-capped at 5 rows, so the summary could
+      // never surface more than the five newest learning entries regardless of
+      // how much evidence existed.
+      take: 50,
       select: { hypothesis: true },
     }),
   ]);

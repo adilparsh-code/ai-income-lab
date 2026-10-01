@@ -16,7 +16,6 @@
 // ============================================================================
 
 import { db } from '@/lib/db';
-import { classifyHalal } from './opportunity-routing';
 
 export type CommercialSignalKind =
   | 'OPPORTUNITY_CONVERTED'
@@ -61,13 +60,20 @@ export interface CommercialLearningSnapshot {
  * deterministic thresholds — no AI, no estimation.
  */
 export async function deriveCommercialSignals(): Promise<CommercialLearningSnapshot> {
-  const [proposals, changeRequests, engagements, deliverables, issues, revenue] = await Promise.all([
+  const [proposals, changeRequests, engagements, deliverables, revenue, costs, blockedOffers, unverifiedOffers] = await Promise.all([
     db.proposal.findMany({ select: { state: true } }),
     db.scopeChangeRequest.findMany({ select: { status: true, classification: true, requiresPayment: true } }),
-    db.serviceEngagement.findMany({ select: { state: true, engagementType: true, totalPrice: true } }),
+    db.serviceEngagement.findMany({ select: { id: true, state: true, engagementType: true, totalPrice: true } }),
     db.deliverable.findMany({ select: { state: true, revisionCount: true, revisionLimit: true } }),
-    db.serviceIssue.findMany({ select: { issueType: true, status: true } }),
-    db.revenue.findMany({ where: { revenueSource: { startsWith: 'service' } }, select: { grossRevenue: true, currency: true } }),
+    db.revenue.findMany({
+      where: { revenueSource: { startsWith: 'service' }, revenueBasis: 'ACTUAL' },
+      select: { grossRevenue: true, currency: true, serviceEngagementId: true },
+    }),
+    // PHASE 11.7: revenue AND cost per engagement, so MARGIN_OUTCOME can be a
+    // real margin instead of a rename of price.
+    db.engagementCost.findMany({ select: { engagementId: true, amountUsd: true, basis: true } }),
+    db.offer.findMany({ where: { status: 'BLOCKED' }, select: { id: true } }),
+    db.offer.findMany({ where: { halalStatus: 'UNVERIFIED' }, select: { id: true } }),
   ]);
 
   const signals: CommercialSignal[] = [];
@@ -184,73 +190,182 @@ export async function deriveCommercialSignals(): Promise<CommercialLearningSnaps
   });
 
   // REVENUE GENERATED (only real, verified rows are counted)
-  const revenueCurrencies = new Set(revenue.map((r) => r.currency));
+  // PHASE 11.7 FIX: only ACTUAL-basis service revenue counts as earned.
+  // ESTIMATED / PROJECTED / SIMULATED rows are excluded here so a plan can
+  // never be learned from as though it were income.
+  const actualServiceRevenue = revenue.filter((r) => (r as { revenueBasis?: string }).revenueBasis === 'ACTUAL');
+  const revenueCurrencies = new Set(actualServiceRevenue.map((r) => r.currency));
   const revenueUsd = revenueCurrencies.size === 1 && revenueCurrencies.has('USD')
-    ? Math.round(revenue.reduce((sum, r) => sum + r.grossRevenue, 0) * 100) / 100
+    ? Math.round(actualServiceRevenue.reduce((sum, r) => sum + r.grossRevenue, 0) * 100) / 100
     : null;
-  evidence.revenueRows = revenue.length;
+  evidence.revenueRows = actualServiceRevenue.length;
   signals.push({
     kind: 'REVENUE_GENERATED',
     hypothesis: revenueUsd === null
-      ? 'Service revenue is UNKNOWN (no rows, or mixed currencies). No revenue figure was invented.'
-      : `${revenue.length} verified service revenue row(s) totalling $${revenueUsd} USD.`,
-    result: revenueUsd !== null && revenueUsd > 0 && revenue.length >= MIN_VALIDATED_SAMPLE ? 'VALIDATED' : 'INCONCLUSIVE',
+      ? 'Service revenue is UNKNOWN (no ACTUAL rows, or mixed currencies). No revenue figure was invented.'
+      : `${actualServiceRevenue.length} verified ACTUAL service revenue row(s) totalling $${revenueUsd} USD.`,
+    result: revenueUsd !== null && revenueUsd > 0 && actualServiceRevenue.length >= MIN_VALIDATED_SAMPLE ? 'VALIDATED' : 'INCONCLUSIVE',
     metric: 'service_revenue_usd',
     measuredValue: revenueUsd ?? 0,
-    sampleSize: revenue.length,
+    sampleSize: actualServiceRevenue.length,
     decision: 'Scale only what produced verified revenue; never extrapolate from unverified demand.',
-    applicability: 'Revenue analysis. Cannot create a revenue row.',
+    applicability:
+      'Revenue analysis. Cannot create a revenue row, and estimates/projections/simulations are excluded from '
+      + 'this figure by construction.',
     evidenceType: 'VERIFIED_DATA',
   });
 
-  // MARGIN OUTCOME — price minus estimated cost, from real engagement rows
-  const priced = engagements.filter((e) => Number.isFinite(e.totalPrice) && e.totalPrice > 0);
-  const avgPrice = priced.length > 0
-    ? Math.round((priced.reduce((sum, e) => sum + e.totalPrice, 0) / priced.length) * 100) / 100
+  // MARGIN OUTCOME — a REAL margin: recognized ACTUAL revenue minus ACTUAL cost.
+  //
+  // PHASE 11.7 FIX: this previously measured average PRICE and called it a
+  // margin, which is just revenue under a different name. Margin now requires
+  // both an ACTUAL revenue row and an ACTUAL cost row for the same engagement;
+  // an engagement with no recorded cost has margin UNKNOWN, not zero.
+  const actualCostByEngagement = new Map<string, number>();
+  for (const cost of costs) {
+    if (cost.basis !== 'ACTUAL') continue; // estimates never enter a margin
+    actualCostByEngagement.set(
+      cost.engagementId,
+      (actualCostByEngagement.get(cost.engagementId) ?? 0) + cost.amountUsd,
+    );
+  }
+  const realizedByEngagement = new Map<string, number>();
+  for (const row of revenue) {
+    if (!row.serviceEngagementId) continue;
+    realizedByEngagement.set(
+      row.serviceEngagementId,
+      (realizedByEngagement.get(row.serviceEngagementId) ?? 0) + row.grossRevenue,
+    );
+  }
+  const marginSamples: { engagementId: string; profit: number; revenue: number }[] = [];
+  for (const [engagementId, revenueUsd] of realizedByEngagement) {
+    const costUsd = actualCostByEngagement.get(engagementId);
+    // Both sides must be real. No cost recorded ⇒ margin UNKNOWN, never 0.
+    if (costUsd === undefined || revenueUsd <= 0) continue;
+    marginSamples.push({ engagementId, revenue: revenueUsd, profit: revenueUsd - costUsd });
+  }
+  const avgMargin = marginSamples.length > 0
+    ? Math.round((marginSamples.reduce((s, m) => s + (m.profit / m.revenue), 0) / marginSamples.length) * 10000) / 10000
     : null;
-  evidence.pricedEngagements = priced.length;
+  evidence.marginSamples = marginSamples.length;
+  evidence.engagementsWithActualCost = actualCostByEngagement.size;
   signals.push({
     kind: 'MARGIN_OUTCOME',
-    hypothesis: avgPrice === null
-      ? 'No priced engagements exist; margin outcome is UNKNOWN rather than estimated.'
-      : `Average engagement price across ${priced.length} priced engagement(s) is $${avgPrice} USD.`,
-    result: priced.length >= MIN_VALIDATED_SAMPLE ? 'VALIDATED' : 'INCONCLUSIVE',
-    metric: 'average_engagement_price_usd',
-    measuredValue: avgPrice ?? 0,
-    sampleSize: priced.length,
-    decision: 'Use observed prices as a baseline; do not claim a market rate from this data.',
-    applicability: 'Pricing baselines only — not a market claim.',
+    hypothesis: avgMargin === null
+      ? 'No engagement has BOTH realized ACTUAL revenue and a recorded ACTUAL cost, so margin is UNKNOWN '
+        + 'rather than assumed to be zero.'
+      : `Across ${marginSamples.length} engagement(s) with realized revenue and recorded actual cost, the `
+        + `mean realized margin is ${(avgMargin! * 100).toFixed(1)}%.`,
+    result: marginSamples.length >= MIN_VALIDATED_SAMPLE ? 'VALIDATED' : 'INCONCLUSIVE',
+    metric: 'mean_realized_margin_ratio',
+    measuredValue: avgMargin ?? 0,
+    sampleSize: marginSamples.length,
+    decision:
+      'Margin is only known where an actual cost was recorded. Record costs before using this signal to '
+      + 'set prices.',
+    applicability:
+      'Pricing and packaging decisions. Derived from ACTUAL rows only; estimated costs are excluded, so this '
+      + 'under-reports rather than over-reports when costs are missing.',
     evidenceType: 'VERIFIED_DATA',
   });
 
-  // BLOCKED OPPORTUNITY / HALAL REVIEW OUTCOME
-  const blocked = issues.filter((i) => i.issueType === 'CANCELLATION_APPROVED' || i.issueType === 'TERMINATION_REQUESTED').length;
-  evidence.blockedEngagements = blocked;
+  // OPPORTUNITY CONVERTED / FAILED VALIDATION
+  //
+  // PHASE 11.7 FIX: these two kinds were declared but never emitted, which made
+  // conversion learning structurally impossible. They are now derived from real
+  // engagement rows linked to an opportunity.
+  const opportunitiesWithEngagements = engagements.filter((e) => e.state === 'COMPLETED');
+  const opportunitiesRejected = engagements.filter(
+    (e) => e.state === 'CANCELLED' || e.state === 'TERMINATED' || e.state === 'NO_COMMITMENT',
+  );
+  const decidedOpportunities = opportunitiesWithEngagements.length + opportunitiesRejected.length;
+  evidence.opportunitiesConverted = opportunitiesWithEngagements.length;
+  evidence.opportunitiesNotConverted = opportunitiesRejected.length;
+  signals.push({
+    kind: 'OPPORTUNITY_CONVERTED',
+    hypothesis: decidedOpportunities === 0
+      ? 'No opportunity has reached a decided outcome yet; conversion is UNKNOWN rather than estimated.'
+      : `${opportunitiesWithEngagements.length} of ${decidedOpportunities} decided engagement(s) reached `
+        + 'COMPLETED delivery.',
+    result: opportunitiesWithEngagements.length >= MIN_VALIDATED_SAMPLE ? 'VALIDATED' : 'INCONCLUSIVE',
+    metric: 'opportunity_completion_count',
+    measuredValue: opportunitiesWithEngagements.length,
+    sampleSize: decidedOpportunities,
+    decision:
+      'Investigate why non-completed engagements stopped before completion before pursuing similar opportunities.',
+    applicability: 'Opportunity selection. Never relaxes halal, payment or authorization gates.',
+    evidenceType: 'VERIFIED_DATA',
+  });
+  signals.push({
+    kind: 'OPPORTUNITY_FAILED_VALIDATION',
+    hypothesis: opportunitiesRejected.length > 0
+      ? `${opportunitiesRejected.length} engagement(s) ended without delivery (cancelled, terminated, or never `
+        + 'committed); their recorded causes are the validation evidence.'
+      : 'No engagement has failed validation.',
+    result: opportunitiesRejected.length >= MIN_VALIDATED_SAMPLE ? 'VALIDATED' : 'INCONCLUSIVE',
+    metric: 'opportunity_failed_validation_count',
+    measuredValue: opportunitiesRejected.length,
+    sampleSize: decidedOpportunities,
+    decision:
+      'Read the recorded ServiceIssue causes before re-pursuing an opportunity that previously failed.',
+    applicability: 'Opportunity selection and risk review.',
+    evidenceType: 'VERIFIED_DATA',
+  });
+
+  // BLOCKED OPPORTUNITY
+  //
+  // PHASE 11.7 FIX: this counted ServiceIssue rows for CANCELLATION_APPROVED /
+  // TERMINATION_REQUESTED, which counts ISSUES rather than blocked
+  // OPPORTUNITIES and so could never see a genuinely blocked opportunity. It
+  // now counts real blocked work: BLOCKED offers plus unscreened offers.
+  const blockedOpportunityCount = blockedOffers.length + unverifiedOffers.length;
+  evidence.blockedOffers = blockedOffers.length;
+  evidence.unverifiedOffers = unverifiedOffers.length;
+  evidence.blockedOpportunities = blockedOpportunityCount;
   signals.push({
     kind: 'BLOCKED_OPPORTUNITY',
-    hypothesis: blocked > 0
-      ? `${blocked} engagement(s) were cancelled or terminated; inspect recorded reasons before re-pursuing similar work.`
-      : 'No cancelled or terminated engagements recorded.',
-    result: blocked >= MIN_VALIDATED_SAMPLE ? 'VALIDATED' : 'INCONCLUSIVE',
-    metric: 'blocked_engagements',
-    measuredValue: blocked,
-    sampleSize: issues.length,
-    decision: 'Review the cause before repeating the engagement pattern.',
-    applicability: 'Risk review.',
+    hypothesis: blockedOpportunityCount > 0
+      ? `${blockedOffers.length} offer(s) are BLOCKED and ${unverifiedOffers.length} remain UNVERIFIED. `
+        + 'Unscreened work is not treated as permitted work.'
+      : 'No blocked or unscreened offers recorded.',
+    result: blockedOpportunityCount >= MIN_VALIDATED_SAMPLE ? 'VALIDATED' : 'INCONCLUSIVE',
+    metric: 'blocked_or_unscreened_offer_count',
+    measuredValue: blockedOpportunityCount,
+    sampleSize: blockedOffers.length + unverifiedOffers.length,
+    decision:
+      'Screen every offer before it can back an engagement. An UNVERIFIED offer is refused at engagement '
+      + 'creation, so this count should stay at zero for work that is actually executed.',
+    applicability: 'Safety posture. This signal can never relax the halal gate.',
     evidenceType: 'VERIFIED_DATA',
   });
 
-  // Classify the current opportunity set conservatively for the halal signal.
-  const classification = classifyHalal('HALAL', undefined, []);
+  // HALAL REVIEW OUTCOME
+  //
+  // PHASE 11.7 FIX: this previously hardcoded classifyHalal('HALAL', …) and then
+  // stamped the result VERIFIED_DATA, i.e. it asserted a halal verdict out of
+  // nothing. It now reports the REAL distribution of persisted offer verdicts.
+  const offerHalalCounts = await db.offer.groupBy({ by: ['halalStatus'], _count: { _all: true } });
+  const halalDistribution: Record<string, number> = {};
+  for (const row of offerHalalCounts) halalDistribution[row.halalStatus] = row._count._all;
+  const totalOffers = offerHalalCounts.reduce((s, r) => s + r._count._all, 0);
+  const unscreenedShare = totalOffers > 0
+    ? Math.round(((halalDistribution.UNVERIFIED ?? 0) / totalOffers) * 10000) / 10000
+    : null;
+  evidence.offersByHalal = totalOffers;
   signals.push({
     kind: 'HALAL_REVIEW_OUTCOME',
-    hypothesis: 'Halal classification is conservative by construction: unscreened opportunities are UNVERIFIED, not HALAL.',
-    result: classification.classification === 'UNVERIFIED' ? 'VALIDATED' : 'INCONCLUSIVE',
-    metric: 'default_halal_classification',
-    measuredValue: classification.classification === 'HALAL' ? 1 : 0,
-    sampleSize: 1,
-    decision: 'Keep screening conservative; learning never relaxes the halal gate.',
-    applicability: 'Safety posture. Learning cannot bypass a safety gate.',
+    hypothesis: totalOffers === 0
+      ? 'No offers exist yet, so there is no halal verdict distribution to report.'
+      : `${Object.entries(halalDistribution).map(([k, v]) => `${k}=${v}`).join(', ')}. `
+        + 'UNVERIFIED means unscreened, never permitted.',
+    result: totalOffers >= MIN_VALIDATED_SAMPLE && (halalDistribution.UNVERIFIED ?? 0) === 0 ? 'VALIDATED' : 'INCONCLUSIVE',
+    metric: 'unscreened_offer_share',
+    measuredValue: unscreenedShare ?? 0,
+    sampleSize: totalOffers,
+    decision:
+      'Drive the UNVERIFIED share to zero. Screening happens at offer creation and is enforced again at '
+      + 'engagement creation.',
+    applicability: 'Safety posture. Learning can never bypass or relax a halal gate.',
     evidenceType: 'VERIFIED_DATA',
   });
 
@@ -260,11 +375,41 @@ export async function deriveCommercialSignals(): Promise<CommercialLearningSnaps
 /**
  * Persist the derived signals into the EXISTING LearningEntry table. Learning
  * rows are records only — they grant no execution authority.
+ *
+ * PHASE 11.7 FIX — dedupe. There was no dedupe key, so re-running this function
+ * inserted a fresh identical row every time and inflated every aggregate. The
+ * key is derived from the SIGNAL KIND plus the day plus the underlying evidence
+ * counts, so a genuinely new observation produces a new row while a repeat
+ * observation of the same state does not.
+ *
+ * `opportunityId` is intentionally left null for portfolio-level signals: they
+ * describe the whole set, not one opportunity. The commercial learning consumer
+ * reads them by `context` prefix rather than filtering on opportunityId (which
+ * previously meant portfolio signals were invisible to that consumer).
  */
-export async function persistCommercialLearning(): Promise<{ ok: true; persisted: number } | { ok: false; error: string }> {
+export async function persistCommercialLearning(): Promise<{ ok: true; persisted: number; skippedDuplicates: number } | { ok: false; error: string }> {
   const snapshot = await deriveCommercialSignals();
+  const dayBucket = new Date().toISOString().slice(0, 10);
   let persisted = 0;
+  let skippedDuplicates = 0;
+
   for (const signal of snapshot.signals) {
+    // Deterministic identity for "this observation".
+    const evidenceDigest = Object.entries(snapshot.evidence)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
+      .join('|');
+    const dedupeKey = `commercial:${signal.kind}:${dayBucket}:${evidenceDigest.slice(0, 120)}`;
+
+    const existing = await db.learningEntry.findFirst({
+      where: { context: dedupeKey },
+      select: { id: true },
+    });
+    if (existing) {
+      skippedDuplicates += 1;
+      continue;
+    }
+
     try {
       await db.learningEntry.create({
         data: {
@@ -273,10 +418,13 @@ export async function persistCommercialLearning(): Promise<{ ok: true; persisted
           metric: signal.metric,
           measuredValue: signal.measuredValue,
           decision: signal.decision.slice(0, 500),
-          // 'commercial' prefix is what the commercial summary filters on.
-          context: `commercial:${signal.kind}`,
+          // The dedupe key doubles as the consumer-facing prefix marker, so
+          // commercial signals remain discoverable by context.
+          context: dedupeKey.slice(0, 300),
           evidenceType: 'VERIFIED_DATA',
           applicability: signal.applicability.slice(0, 300),
+          // Confidence is bounded by real sample size and never exceeds what
+          // the evidence supports.
           confidence: signal.sampleSize >= MIN_VALIDATED_SAMPLE ? 0.7 : 0.3,
         },
       });
@@ -285,5 +433,5 @@ export async function persistCommercialLearning(): Promise<{ ok: true; persisted
       // A learning write failure must never affect the underlying commercial state.
     }
   }
-  return { ok: true, persisted };
+  return { ok: true, persisted, skippedDuplicates };
 }
