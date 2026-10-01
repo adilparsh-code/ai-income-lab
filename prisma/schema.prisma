@@ -1173,3 +1173,77 @@ model AgencyControl {
   pausedAt     DateTime?
   updatedAt    DateTime @updatedAt
 }
+
+// ============================================================================
+// PHASE 10A — AGENT CONTROL CENTER (additive governance layer)
+//
+// Runtime configuration as DATA, never source-code mutation. The dashboard
+// writes rows here; the Supervisor/Job Runner stay the only execution
+// authority and consulted control state. Rows in these tables hold NO
+// execution authority by themselves and never bypass halal gates, budget
+// caps, AgentPermission allow-lists, human review or audit.
+// ============================================================================
+
+/// Per-agent runtime control state, one row per roster agent (upserted).
+/// Complements — never replaces — AgencyControl (global pause) and AgentRun
+/// (real run records). desiredState is the admin's intent (RUNNING | PAUSED |
+/// STOPPED | RESTARTING); derivedState is what the system can honestly
+/// support right now (READY | PAUSED | STOPPED | RESTART_PENDING | BLOCKED |
+/// ERROR). stopReason/pendingRestart explain the truth; nothing here claims a
+/// process is live.
+model AgentControlState {
+  id              String   @id @default(cuid())
+  agentId         String   @unique
+  desiredState    String   @default("RUNNING") // RUNNING | PAUSED | STOPPED | RESTARTING
+  derivedState    String   @default("READY")   // READY | PAUSED | STOPPED | RESTART_PENDING | BLOCKED | ERROR
+  activeVersion   Int?                       // AgentConfigVersion.version currently in force (null = static contract only)
+  pendingRestart  Boolean  @default(false)
+  stopReason      String?
+  updatedBy       String?
+  updatedAt       DateTime @updatedAt
+
+  @@index([desiredState])
+}
+
+/// Immutable per-agent runtime configuration versions (append-only). One row
+/// per saved config; rollback creates a NEW version (v4 = copy of v1), never
+/// an update or delete of history. Only SAFE fields are persisted — never
+/// secrets. Bounds mirror the static contract schema (src/lib/agency/contracts.ts)
+/// so a stored version can never exceed what the contracts permit.
+model AgentConfigVersion {
+  id              String   @id @default(cuid())
+  agentId         String
+  version         Int
+  configJson      String              // bounded JSON of safe fields only
+  changedFields   String   @default("[]") // JSON array of field names changed by this save
+  reason          String?
+  changedBy       String              // admin identity (email) from the verified session
+  action          String              // SAVE | ROLLBACK | BOOTSTRAP
+  createdAt       DateTime @default(now())
+
+  @@unique([agentId, version])
+  @@index([agentId, createdAt])
+}
+
+/// Append-only audit of every agent control action. Complements SecurityEvent
+/// (which records refusals and auth outcomes) with the full control record:
+/// action, target, admin, previous/new state, config version, result and
+/// correlationId. Never stores secrets and never mutates earlier rows.
+model AgentControlAction {
+  id              String   @id @default(cuid())
+  agentId         String   // target agent or '*' for stop-all/resume-all
+  action          String   // PAUSE | RESUME | STOP | RESTART | SAVE_CONFIG | SAVE_RESTART | ROLLBACK | STOP_ALL | RESUME_ALL
+  previousState   String?
+  newState        String?
+  configVersion   Int?
+  result          String   // OK | FAILED | REFUSED
+  failureReason   String?
+  changedBy       String
+  correlationId   String
+  detail          String   @default("")  // bounded, secret-free summary
+  createdAt       DateTime @default(now())
+
+  @@index([agentId, createdAt])
+  @@index([correlationId])
+  @@index([action, createdAt])
+}
