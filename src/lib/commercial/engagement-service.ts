@@ -45,9 +45,8 @@ import {
   type ServiceIssueType,
   type ServiceIssueStatus,
 } from './engagement-states';
-import { isMicroServiceKind, findMicroService, type MicroServiceKind } from './micro-services';
+import { isMicroServiceKind, validateMicroServicePackage, isPriceWithinBand, type MicroServiceKind } from './micro-services';
 import { isCurrency } from './offer-states';
-import { randomUUID } from 'node:crypto';
 
 export type EngagementResult =
   | { ok: true; [key: string]: unknown }
@@ -70,6 +69,13 @@ export interface CreateEngagementInput {
   prospectId?: unknown;
   /** Required for MICRO_SERVICE; must be a valid catalogue kind. */
   microServiceKind?: unknown;
+  /**
+   * PHASE 11.9 (G2) — the bounded effort/revision envelope. Optional; when
+   * omitted the catalogue's own typical/default value is used. A value OUTSIDE
+   * the catalogue bound is refused, never clamped.
+   */
+  estimatedEffortHours?: unknown;
+  revisionLimit?: unknown;
   totalPrice: unknown;
   currency?: unknown;
   /** Explicit admin-configured low-risk exception (OFF by default). */
@@ -99,11 +105,49 @@ export async function createEngagement(input: CreateEngagementInput): Promise<En
 
   // Micro-services must reference a valid catalogue kind — bounded work only.
   let microServiceKind: MicroServiceKind | null = null;
+  let microServiceEffortHours: number | null = null;
+  let microServiceRevisionLimit: number | null = null;
   if (engagementType === 'MICRO_SERVICE') {
     if (!isMicroServiceKind(input.microServiceKind)) {
       return { ok: false, status: 400, error: 'A MICRO_SERVICE engagement requires a valid microServiceKind.' };
     }
+    // G2: enforce the bounded safety package in the PRODUCTION path. Phase
+    // 11.3 only checked the kind was a known key, so effort/revision/price
+    // bounds existed but nothing ever called them.
+    const pkg = validateMicroServicePackage({
+      kind: input.microServiceKind,
+      estimatedEffortHours: input.estimatedEffortHours,
+      revisionLimit: input.revisionLimit,
+    });
+    if (!pkg.ok) {
+      await auditSecurityEvent({
+        kind: 'COMMERCIAL_ENGAGEMENT_CREATED',
+        surface: input.surface,
+        outcome: 'refused',
+        detail: `micro-service package out of bounds: ${pkg.reason.slice(0, 160)}`,
+      });
+      return { ok: false, status: 400, error: pkg.reason };
+    }
+    if (!isPriceWithinBand(pkg.definition, input.totalPrice as number)) {
+      await auditSecurityEvent({
+        kind: 'COMMERCIAL_ENGAGEMENT_CREATED',
+        surface: input.surface,
+        outcome: 'refused',
+        detail:
+          `micro-service price ${String(input.totalPrice)} outside band `
+          + `[${pkg.definition.minPriceUsd}, ${pkg.definition.maxPriceUsd}]`,
+      });
+      return {
+        ok: false,
+        status: 400,
+        error:
+          `${pkg.definition.label}: totalPrice must be between ${pkg.definition.minPriceUsd} and `
+          + `${pkg.definition.maxPriceUsd} USD. The value was refused, not clamped.`,
+      };
+    }
     microServiceKind = input.microServiceKind;
+    microServiceEffortHours = pkg.effortHours;
+    microServiceRevisionLimit = pkg.revisionLimit;
   }
 
   // Verify links exist so no dangling engagement can be created.
@@ -184,18 +228,17 @@ export async function createEngagement(input: CreateEngagementInput): Promise<En
       paymentState: 'NOT_DUE',
       exposureCapUsd: lowRisk.enabled ? lowRisk.exposureCapUsd : 0,
       lowRiskExceptionApplied: false,
+      // G8: the bounded kind is persisted as a STRUCTURED column. The previous
+      // free-text "[KIND] ..." prefix in scopeSummary was removed because prose
+      // is not an authoritative record: it is user-editable, unindexed, and the
+      // job runner could not read it (so it trusted the payload instead).
+      microServiceKind,
+      microServiceEffortHours,
+      microServiceRevisionLimit,
     },
   });
 
-  if (microServiceKind) {
-    const definition = findMicroService(microServiceKind);
-    if (definition) {
-      await db.serviceEngagement.update({
-        where: { id: created.id },
-        data: { scopeSummary: `[${microServiceKind}] ${created.scopeSummary}`.slice(0, 2_000) },
-      });
-    }
-  }
+  
 
   if (linkedOfferHalalStatus === 'REVIEW_REQUIRED') {
     // The override itself is an auditable fact, not a silent allowance.
@@ -656,6 +699,14 @@ export async function createServiceIssue(options: {
   issueType: unknown;
   summary?: unknown;
   correlationId?: unknown;
+  /**
+   * PHASE 11.9 — the ACTUAL triggering client message id, when the issue was
+   * raised from a specific message. Persisted as a real FK so the issue can be
+   * traced back to its source. Phase 11.3 accepted only the literal
+   * correlationId 'client-message' and then generated a random UUID that pointed
+   * at nothing; that audit value has been removed.
+   */
+  messageId?: unknown;
   surface: string;
 }): Promise<EngagementResult> {
   const engagementId = typeof options.engagementId === 'string' ? options.engagementId : null;
@@ -666,12 +717,33 @@ export async function createServiceIssue(options: {
   const engagement = await db.serviceEngagement.findUnique({ where: { id: engagementId }, select: { id: true } });
   if (!engagement) return { ok: false, status: 404, error: 'Engagement not found.' };
 
+  // Resolve the triggering message. It must EXIST — a dangling id would restore
+  // exactly the decorative-audit problem this replaces.
+  let messageId: string | null = null;
+  const rawMessageId = options.messageId;
+  if (typeof rawMessageId === 'string' && rawMessageId.length > 0) {
+    const message = await db.message.findUnique({
+      where: { id: rawMessageId },
+      select: { id: true },
+    });
+    if (!message) {
+      return { ok: false, status: 404, error: 'Triggering message not found.' };
+    }
+    messageId = message.id;
+  }
+
   const created = await db.serviceIssue.create({
     data: {
       engagementId,
       issueType: options.issueType,
       summary: typeof options.summary === 'string' ? options.summary.slice(0, 1_000) : '',
-      correlationId: options.correlationId === 'client-message' ? `client-message:${randomUUID()}` : 'admin:manual',
+      // PHASE 11.9: the correlation id now points at REAL evidence. A client-sourced
+      // issue records the triggering message id; an admin-raised issue records
+      // that fact. No generated UUID that references nothing.
+      correlationId: messageId
+        ? `client-message:${messageId}`
+        : (options.correlationId === 'client-message' ? 'client-message:unresolved' : 'admin:manual'),
+      messageId,
       // Every issue requires a human decision; the system only drafts.
       requiresHuman: true,
     },

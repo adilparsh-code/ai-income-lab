@@ -16,6 +16,7 @@ import type { Prisma } from '@prisma/client';
 import { db } from '@/lib/db';
 import { auditSecurityEvent } from '@/lib/security/guard';
 import { screenForHalalCompliance } from '@/lib/halal-filter';
+import { resolveOfferRouting } from './routing-service';
 import {
   OFFER_TYPES,
   OFFER_STATUSES,
@@ -232,6 +233,36 @@ export async function createOffer(input: CreateOfferInput): Promise<CreateOfferR
     outcome: 'ok',
     detail: `offer=${created.id.slice(0, 12)} type=${type} halal=${halalStatus} status=${status}`,
   });
+
+  // PHASE 11.9 (G1) — resolve and PERSIST the routing decision here, on the
+  // already-screened offer. This is what makes the Phase 11.3 routing layer
+  // reachable from production instead of being a pure-function island.
+  //
+  // It is deliberately AFTER the halal screen and AFTER the row exists, and it
+  // performs no dispatch: it records which EXISTING job types this route runs
+  // through. A routing failure never invalidates an offer that was already
+  // legally created, so it is reported but not fatal here.
+  try {
+    const routed = await resolveOfferRouting({ offerId: created.id, surface: input.surface });
+    if (routed.ok) {
+      await auditSecurityEvent({
+        kind: 'COMMERCIAL_OFFER_CREATED',
+        surface: input.surface,
+        outcome: 'ok',
+        detail:
+          `offer=${created.id.slice(0, 12)} route=${routed.decision.route} `
+          + `executable=${String(routed.decision.executable)} blockers=${routed.decision.blockers.join(',') || 'none'}`,
+      });
+    }
+  } catch {
+    await auditSecurityEvent({
+      kind: 'COMMERCIAL_OFFER_CREATED',
+      surface: input.surface,
+      outcome: 'refused',
+      detail: `offer=${created.id.slice(0, 12)} routing resolution failed; route left unresolved (no dispatch performed)`,
+    });
+  }
+
   return { ok: true, offerId: created.id };
 }
 

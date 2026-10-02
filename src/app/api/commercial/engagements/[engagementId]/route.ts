@@ -171,6 +171,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ eng
         issueType: raw.issueType,
         summary: raw.summary,
         correlationId: raw.correlationId,
+        // PHASE 11.9: the real triggering message id, validated server-side.
+        messageId: raw.messageId,
         surface: SURFACE,
       });
       if (!result.ok) return fail(result);

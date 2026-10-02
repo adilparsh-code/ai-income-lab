@@ -1318,6 +1318,8 @@ model Message {
   // indexes, so non-provider messages (providerMessageId = NULL) are unaffected.
   @@unique([conversationId, providerMessageId])
   @@index([conversationId, createdAt])
+  // Phase 11.9 — reverse edge for ServiceIssue traceability.
+  serviceIssues  ServiceIssue[]
 }
 
 // ============================================================================
@@ -1458,6 +1460,24 @@ model Offer {
   paymentState   String   @default("NOT_PAYMENT_VERIFIED")
   paymentVerificationSource String?
   paymentVerificationRef    String?
+
+  // PHASE 11.9 GAP REMEDIATION (G1) — the PERSISTED routing decision.
+  //
+  // Phase 11.3 implemented routeOpportunity()/executionVerdict() as pure
+  // functions that nothing in the production path ever called, so routing was
+  // decoration. These columns make the routing verdict a real, recorded fact
+  // computed at offer creation from the ALREADY-screened offer type and the
+  // opportunity's PERSISTED halal verdict — never from untrusted content.
+  //
+  // route is one of ROUTE_JOB_TYPES' routes; routeJobTypes is a JSON array of
+  // the EXISTING job types the route runs through (no second Job Runner).
+  // routeExecutable is false whenever any blocker is present.
+  route           String?
+  routeJobTypes   String   @default("[]")
+  routeExecutable Boolean  @default(false)
+  routeBlockers   String   @default("[]")
+  routeReason     String   @default("")
+  routeResolvedAt DateTime?
 
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -1684,10 +1704,32 @@ model ServiceEngagement {
   estimatedCostUsd Float @default(0)
   actualCostUsd    Float @default(0)
 
+  // PHASE 11.9 GAP REMEDIATION (G8) — the bounded micro-service kind as a
+  // STRUCTURED, queryable column.
+  //
+  // Phase 11.3 stored this as free text in a `[KIND] ...` prefix inside
+  // scopeSummary. That was a real integrity problem, not cosmetic: the prefix
+  // is user-editable prose, it is not indexed, and execution could not read it
+  // authoritatively — the job runner instead trusted a caller-supplied payload
+  // value. This column is the single authoritative record.
+  //
+  // Validated at write time by isMicroServiceKind() and re-validated at
+  // execution time by findMicroService(); NULL for CLIENT_SERVICE engagements
+  // and for every pre-existing row (additive migration, no backfill invented).
+  microServiceKind String?
+
+  // PHASE 11.9 (G2) — the bounded effort/revision envelope this engagement was
+  // admitted under, snapshotted from the catalogue at creation so the bound is
+  // reproducible even if the catalogue is edited later. NULL for CLIENT_SERVICE
+  // and for pre-existing rows.
+  microServiceEffortHours Float?
+  microServiceRevisionLimit Int?
+
   @@index([state])
   @@index([engagementType, state])
   @@index([prospectId])
   @@index([opportunityId])
+  @@index([microServiceKind])
 }
 
 /// A payment/acceptance step inside an engagement. The payment machine lives
@@ -1776,11 +1818,26 @@ model ServiceIssue {
   resolutionNote String  @default("")
   correlationId String   @default("")
 
+  // PHASE 11.9 — TRIGGERING MESSAGE TRACEABILITY.
+  // Phase 11.3 stored `client-message:<randomUUID()>` in correlationId, which
+  // destroyed the audit trail: the generated UUID pointed at nothing, so a
+  // client-sourced dispute could not be traced back to the message that caused
+  // it. This column is a REAL foreign key to the triggering Message.
+  //
+  // Nullable: an admin-raised issue has no triggering message. Pre-existing
+  // rows stay NULL rather than being backfilled with invented linkage.
+  //
+  // Note: Message.treatAs is constant 'DATA', never AUTHORITY, so a message
+  // can TRIGGER an issue but can never resolve one — the human gate stands.
+  messageId     String?
+  message       Message? @relation(fields: [messageId], references: [id])
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   @@index([engagementId])
   @@index([issueType, status])
+  @@index([messageId])
 }
 
 // ============================================================================
