@@ -68,6 +68,10 @@ export async function POST(request: Request) {
     opportunityId: raw.opportunityId,
     prospectId: raw.prospectId,
     microServiceKind: raw.microServiceKind,
+    // PHASE 11.9 (G2): the bounded effort/revision envelope, so the caller can
+    // declare it explicitly. Out-of-band values are refused server-side.
+    estimatedEffortHours: raw.estimatedEffortHours,
+    revisionLimit: raw.revisionLimit,
     totalPrice: raw.totalPrice,
     currency: raw.currency,
     lowRiskException: raw.lowRiskException,

@@ -94,7 +94,7 @@ async function makeEngagementRequiringPayment(options: { totalPrice?: number } =
     title: `Engagement ${uniq()}`,
     offerId: offer.id,
     microServiceKind: 'CUSTOM_WORKSHEET',
-    totalPrice: options.totalPrice ?? 500,
+    totalPrice: options.totalPrice ?? 100,
     actor: 'admin@test.local',
     surface: SURFACE,
   });
@@ -183,7 +183,7 @@ describe('Phase 11.4 — verified provider payment', () => {
   });
 
   it('refuses an underpayment against a milestone and verifies a full one', async () => {
-    const { id } = await makeEngagementRequiringPayment({ totalPrice: 500 });
+    const { id } = await makeEngagementRequiringPayment({ totalPrice: 100 });
     const milestone = await engagementService.createMilestone({
       engagementId: id, key: 'm1', title: 'First', percent: 50, amountUsd: 250, actor: 'a', surface: SURFACE,
     });

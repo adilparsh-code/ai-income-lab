@@ -85,6 +85,11 @@ export interface JobEngagementRow {
   // engagement's cancellation state, so execution is blocked at the JOB level
   // and not only at engagement creation.
   offerId?: string | null;
+  // PHASE 11.9 (G8): the PERSISTED bounded micro-service kind. Execution reads
+  // this from the engagement row, never from the caller's payload, so a job
+  // cannot declare a different catalogue kind than the one the engagement was
+  // admitted under.
+  microServiceKind?: string | null;
 }
 
 export interface JobDeliverableRow {
@@ -134,7 +139,9 @@ export interface JobDb {
     findUnique(args: { where: { id: string } }): Promise<JobDeliverableRow | null>;
   };
   offer?: {
-    findUnique(args: { where: { id: string } }): Promise<{ id: string; halalStatus: string } | null>;
+    findUnique(args: { where: { id: string } }): Promise<{
+      id: string; halalStatus: string; route?: string | null; routeJobTypes?: string | null;
+    } | null>;
   };
   jobRun: {
     findUnique(args: { where: { idempotencyKey: string } }): Promise<JobRunRow | null>;
@@ -537,13 +544,81 @@ async function executeServiceJobViaRunner(
     }
   }
 
+  // PHASE 11.9 (G8) — MICRO-SERVICE BOUNDS AT EXECUTION TIME.
+  // The kind is read from the PERSISTED engagement column. A payload-declared
+  // kind is not trusted; if the payload names a different kind than the stored
+  // one the job is REFUSED rather than silently run under either version.
+  // Engagement type, not the payload, decides whether a bounded kind is needed.
+  const isMicroServiceEngagement = engagement.engagementType === 'MICRO_SERVICE';
+  const persistedKind = engagement.microServiceKind ?? null;
+  if (isMicroServiceEngagement && !persistedKind) {
+    return finishRow(
+      db, row, 'BLOCKED', null,
+      'Service job refused: the engagement is a MICRO_SERVICE but no bounded catalogue kind is recorded on it '
+      + '(fail-closed micro-service bounds gate).',
+      null, row.retryCount,
+    );
+  }
+  if (isMicroServiceEngagement && !findMicroService(persistedKind)) {
+    return finishRow(
+      db, row, 'BLOCKED', null,
+      `Service job refused: the recorded micro-service kind "${persistedKind}" is not a current catalogue kind.`,
+      null, row.retryCount,
+    );
+  }
+  const claimedKind = typeof payload.microServiceKind === 'string' ? payload.microServiceKind : null;
+  if (claimedKind && persistedKind && claimedKind !== persistedKind) {
+    return finishRow(
+      db, row, 'BLOCKED', null,
+      `Service job refused: payload declared micro-service kind "${claimedKind}" but the engagement is recorded `
+      + `as "${persistedKind}". The persisted kind is authoritative.`,
+      null, row.retryCount,
+    );
+  }
+
+  // PHASE 11.9 (G1) — ROUTE AGREEMENT GATE.
+  // If the engagement's offer has a RESOLVED route, the job type being run must
+  // belong to that route. This is what stops routing from being decorative: a
+  // job cannot execute under a route the offer was never assigned.
+  //
+  // An UNRESOLVED route (historical row, or routing resolution failed) does not
+  // authorize anything — it is refused rather than assumed compatible.
+  if (engagement.offerId && db.offer) {
+    const offerRow = await db.offer
+      .findUnique({ where: { id: engagement.offerId } })
+      .catch(() => null) as { id: string; halalStatus: string; route?: string | null; routeJobTypes?: string | null } | null;
+    if (offerRow?.route) {
+      const routeJobTypes = (() => {
+        try {
+          const parsed: unknown = JSON.parse(offerRow.routeJobTypes ?? '[]');
+          return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+        } catch {
+          return [];
+        }
+      })();
+      if (!routeJobTypes.includes(jobType)) {
+        return finishRow(
+          db, row, 'BLOCKED', null,
+          `Service job refused: jobType ${jobType} is not part of the recorded route ${offerRow.route} `
+          + `(${routeJobTypes.join(', ') || 'no job types recorded'}).`,
+          null, row.retryCount,
+        );
+      }
+    }
+  }
+
   if (jobType === 'SERVICE_BUILD') {
     return finishRow(db, row, 'SUCCEEDED', {
       serviceJob: jobType,
       engagementId,
       engagementType: engagement.engagementType,
-      microServiceKind: typeof payload.microServiceKind === 'string' ? payload.microServiceKind : null,
+      microServiceKind: persistedKind,
+      // `bounded` keeps its established meaning: this is a BOUNDED, deterministic
+      // service job (no AI, no network) as opposed to an agent job. Whether the
+      // engagement is additionally catalogue-bounded is reported separately so
+      // this contract is not silently repurposed.
       bounded: true,
+      microServiceBounded: isMicroServiceEngagement,
     }, null, null, row.retryCount, 'MOCKED');
   }
 
@@ -575,18 +650,31 @@ async function executeServiceJobViaRunner(
   if (jobType === 'SERVICE_QA') {
     // QA is DISTINCT from generation and FAILS CLOSED: a check that was not
     // reported as passed is treated as not passed.
-    const definition = typeof payload.microServiceKind === 'string' ? findMicroService(payload.microServiceKind) : null;
+    const definition = persistedKind ? findMicroService(persistedKind) : null;
+    // PHASE 11.9 (G8): QA is graded against the PERSISTED catalogue definition.
+    // A CLIENT_SERVICE engagement is not catalogue-bounded, so it has no
+    // definition by design — grading it against a payload-supplied catalogue
+    // kind is exactly the trust bug being closed. In that case QA still fails
+    // closed: it passes only when at least one check was actually reported and
+    // every reported check passed.
     const reported = Array.isArray(payload.qaChecks)
       ? payload.qaChecks.filter((c): c is { check: string; passed: unknown; detail?: unknown } =>
         typeof c === 'object' && c !== null && typeof (c as { check?: unknown }).check === 'string')
       : [];
+    const reportedChecksPass = reported.length > 0 && reported.every((c) => c.passed === true);
     const verdict: ReturnType<typeof evaluateMicroServiceQa> = definition
       ? evaluateMicroServiceQa(definition, reported)
-      : {
-        passed: false,
-        failed: [{ check: 'known-catalog-definition', passed: false, detail: 'No catalogue definition available; QA fails closed.' }],
-        reason: 'QA could not be evaluated from a bounded catalogue definition.',
-      };
+      : reportedChecksPass
+        ? { passed: true, checks: reported.map((c) => ({ check: c.check, passed: true, detail: 'reported as passed' })) }
+        : {
+          passed: false,
+          failed: reported
+            .filter((c) => c.passed !== true)
+            .map((c) => ({ check: c.check, passed: false, detail: 'reported as not passed' })),
+          reason: reported.length === 0
+            ? 'No QA checks were reported. QA fails closed: an unreported check is not a passed check.'
+            : 'One or more QA checks were not reported as passed.',
+        };
 
     if (!verdict.passed) {
       return finishRow(db, row, 'FAILED', {
