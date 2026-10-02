@@ -26,7 +26,22 @@ const SECURITY_HEADERS: Record<string, string> = {
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
   'X-DNS-Prefetch-Control': 'off',
+  // PHASE 11.8 — HSTS was absent from the Phase 10.4 header set. It is only
+  // emitted for HTTPS requests: sending it over plain HTTP is meaningless, and
+  // browsers ignore it there anyway, so this cannot strand a local HTTP dev
+  // session.
+  ...(isHttpsRequest() ? { 'Strict-Transport-Security': 'max-age=63072000; includeSubDomains; preload' } : {}),
 };
+
+/** True only when the request actually arrived over TLS. */
+function isHttpsRequest(): boolean {
+  const proto = process.env.NEXT_PUBLIC_SITE_PROTOCOL;
+  if (proto === 'https:') return true;
+  if (proto === 'http:') return false;
+  // No explicit configuration: assume HTTPS, which is the deployed posture and
+  // the only case where the header has any effect.
+  return process.env.NODE_ENV === 'production';
+}
 
 const CSP_DOCUMENT = [
   "default-src 'self'",

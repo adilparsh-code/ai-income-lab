@@ -13,6 +13,7 @@ import { describeRufloIntegration } from '@/lib/ruflo/capability';
 import { describeRufloRuntime } from '@/lib/ruflo/runtime';
 import { describePublishingStatus } from '@/lib/publishing/contract';
 import { describeVercelConfig } from '@/lib/product-factory/deployment-vercel';
+import { describeCommunicationHealth } from '@/lib/commercial/communication-provider';
 import { operatorControlToken } from '@/lib/security/guard';
 import type { GitHubWatcherView, IntegrationHealth } from './types';
 
@@ -144,6 +145,27 @@ export async function getIntegrationHealth(): Promise<IntegrationHealth[]> {
         ? 'Operator credential is configured server-side; control endpoints active for admin/operator callers.'
         : 'No operator credential configured; control endpoints fail closed (503).',
       requiredForConnected: operatorControlToken() ? [] : ['OPERATOR_CONTROL_TOKEN (server-side)'],
+    },
+    // Phase 11.3 — one row per communication channel, derived from the
+    // providers' OWN health descriptors. No channel is connected: the
+    // abstraction and its deterministic test adapter exist, but no credential
+    // does. Nothing here claims otherwise.
+    ...describeCommunicationHealth().map((channel) => ({
+      name: `Client Communication — ${channel.channel}`,
+      state: channel.state === 'HEALTHY' ? 'CONNECTED' as const : channel.state === 'DEGRADED' ? 'DEGRADED' as const : 'NOT_CONNECTED' as const,
+      detail: channel.detail,
+      requiredForConnected: channel.requiredForConnected,
+    })),
+    // Phase 11.3 — service execution is INTERNAL and bounded: no external
+    // provider is involved, so this row reports AVAILABLE for what it truly is.
+    {
+      name: 'Service Execution (internal bounded)',
+      state: 'AVAILABLE' as const,
+      detail:
+        'Service execution runs in-process through the existing Job Runner (SERVICE_BUILD / SERVICE_QA / '
+        + 'SERVICE_DELIVERY). No external execution provider is connected and none is required; work stays '
+        + 'blocked until an engagement is payment-authorized.',
+      requiredForConnected: [],
     },
   ];
 }

@@ -56,6 +56,7 @@ model Opportunity {
   growthDecisions       GrowthDecision[]
   learningEntries       LearningEntry[]
   resourceAllocations   ResourceAllocation[]
+  offers                Offer[]
 }
 
 model Product {
@@ -81,6 +82,9 @@ model Product {
   
   revenues        Revenue[]
   contents        Content[]
+  // Phase 11.2 — an Offer may present a Product for sale. The Offer never
+  // duplicates Product data; it only adds commercial terms.
+  offers          Offer[]
 
   // Phase 5.3 — Product Factory additions (all optional; additive only).
   solution        String   @default("")
@@ -367,9 +371,32 @@ model Revenue {
   // same payment can never be recorded twice. Written by the shared
   // revenueIdempotencyKey() rule — never by the API caller.
   idempotencyKey  String?  @unique
+
+  // Phase 11.7 — evidence + service attribution. ALL ADDITIVE; every existing
+  // writer is unaffected and historical rows keep their (null) values.
+  //
+  // revenueBasis separates what actually happened from what was modelled.
+  // ACTUAL is only reachable through an evidence-backed write (a signature-
+  // verified provider event, or an approved admin manual verification).
+  // ESTIMATED / PROJECTED / SIMULATED rows exist for planning and learning but
+  // are NEVER summed into recognized revenue.
+  revenueBasis    String   @default("ACTUAL") // ACTUAL | ESTIMATED | PROJECTED | SIMULATED
+  recognizedUsd   Float    @default(0)        // ACTUAL rows only; reduced by refunds
+  refundTotalUsd  Float    @default(0)
+  serviceEngagementId String?
+  serviceEngagement   ServiceEngagement? @relation(fields: [serviceEngagementId], references: [id])
+  milestoneId     String?
+  milestone       Milestone? @relation(fields: [milestoneId], references: [id])
+  paymentEventId  String?
+  paymentEvent    PaymentEvent? @relation(fields: [paymentEventId], references: [id])
+  evidenceBasis   String   @default("PROVIDER_WEBHOOK")
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+  
+  @@index([revenueBasis])
+  @@index([serviceEngagementId])
+  @@index([milestoneId])
 }
 
 model Affiliate {
@@ -1233,6 +1260,8 @@ model Prospect {
   suppressionReason String?
 
   conversations Conversation[]
+  proposals     Proposal[]
+  engagements   ServiceEngagement[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1363,4 +1392,572 @@ model AgentControlAction {
   @@index([agentId, createdAt])
   @@index([correlationId])
   @@index([action, createdAt])
+}
+
+// ============================================================================
+// PHASE 11.2 — GOVERNED INCOME OFFER + PROPOSAL FOUNDATION
+// ============================================================================
+// The governed commercial layer connecting validated opportunities and
+// products to priced, finite-scope, immutable-versioned proposals.
+// ADDITIVE ONLY: Opportunity / Product / Revenue / JobRun / AgentRun /
+// HumanReview / LearningEntry / SecurityEvent are reused unchanged — this
+// phase creates no duplicate business entities.
+//
+// Hard invariants (docs/phase-11-design.md §1, §5, §8, §9, §19):
+// - An OFFER is an asking price for work that has NOT been sold. No Offer row
+//   may ever imply that payment happened; payment truth lives exclusively on
+//   ProposalVersion.paymentVerification* and Milestone (Phase 11.3), which are
+//   reachable only through a PaymentVerificationSource.
+// - PROPOSAL VERSIONS ARE APPEND-ONLY. An approved/sent version is frozen;
+//   any commercial change creates a NEW version (version N+1) and supersedes
+//   the old one. No update path to a locked version exists in the service.
+// - SCOPE IS FINITE. ScopeItem rows carry an explicit classification
+//   (IN_SCOPE | OUT_OF_SCOPE | ASSUMPTION | CHANGE_REQUEST); a request that
+//   does not match an IN_SCOPE item of the currently approved version can
+//   never be executed as in-scope work.
+// - REVISIONS ARE FINITE. revisionAllowance is stored ON the immutable
+//   version, so raising the limit is itself a priced change (new version).
+// ============================================================================
+
+/// One priced, sellable thing. The governed abstraction that makes digital
+/// products, micro-services and client services first-class peers of the same
+/// commercial pipeline without forking three architectures.
+///   - DIGITAL_PRODUCT links a Product (self-serve purchase, no Prospect).
+///   - MICRO_SERVICE / CLIENT_SERVICE link a Prospect via a Proposal.
+/// `price` is the ASK, never money received. `paymentState` is the ONLY place
+/// an offer's payment claim may live, and it is server-derived from a
+/// verification source — never from a client message.
+model Offer {
+  id             String   @id @default(cuid())
+  type           String   // DIGITAL_PRODUCT | MICRO_SERVICE | CLIENT_SERVICE
+  title          String
+  description    String   @default("")
+  scopeSummary   String   @default("")   // short, bounded, non-binding summary (the binding scope lives on ProposalVersion)
+
+  price          Float    @default(0)    // the ASK; > 0 required before an offer can be published/proposed
+  currency       String   @default("USD")
+  estimatedEffortHours Float @default(0)
+  estimatedCost  Float    @default(0)
+  estimatedMargin Float   @default(0)    // derived server-side (price - cost); never client-supplied
+
+  // Provenance — where this offer came from. Never fabricated.
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+  productId      String?
+  product        Product? @relation(fields: [productId], references: [id])
+
+  // Screening + governance (deterministic, code-validated).
+  // halalStatus: HALAL | REVIEW_REQUIRED | BLOCKED | UNVERIFIED.
+  // UNVERIFIED is the honest default — an unscreened offer is NOT halal.
+  halalStatus    String   @default("UNVERIFIED")
+  riskState      String   @default("UNVERIFIED")
+  status         String   @default("DRAFT")  // DRAFT REVIEW_REQUIRED ACTIVE RETIRED BLOCKED
+
+  // Payment truth for THIS offer (server-derived only; see Phase 11.3 Milestone
+  // for the engagement-level ledger). Cannot become VERIFIED without a source.
+  paymentState   String   @default("NOT_PAYMENT_VERIFIED")
+  paymentVerificationSource String?
+  paymentVerificationRef    String?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  proposals      Proposal[]
+  engagements    ServiceEngagement[]
+
+  @@index([type, status])
+  @@index([opportunityId])
+  @@index([productId])
+}
+
+/// A proposal to one prospect for one offer. Holds lifecycle + which version is
+/// current; the COMMERCIAL TERMS live on the immutable ProposalVersion rows.
+model Proposal {
+  id              String   @id @default(cuid())
+  prospectId      String
+  prospect        Prospect @relation(fields: [prospectId], references: [id])
+  offerId         String
+  offer           Offer    @relation(fields: [offerId], references: [id])
+  opportunityId   String?
+
+  state           String   @default("DRAFT")
+  // DRAFT | INTERNAL_REVIEW | SENT | ACCEPTED | DECLINED | EXPIRED | SUPERSEDED
+  //
+  // approvalState is INTERNAL admin approval of the SEND action — it is never
+  // set by a client message:
+  // NOT_APPROVED | APPROVED_FOR_SEND | SEND_REFUSED
+  approvalState   String   @default("NOT_APPROVED")
+  approvedBy      String?
+  approvedAt      DateTime?
+
+  // The version whose terms currently bind. NULL until v1 exists; never
+  // points at a superseded version.
+  currentVersionId String?
+  approvedVersionId String?   // the version accepted by the client (evidence-backed)
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  versions       ProposalVersion[]
+  engagements    ServiceEngagement[]
+  changeRequests ScopeChangeRequest[]
+
+  @@index([prospectId, state])
+  @@index([state])
+}
+
+/// Immutable commercial terms. APPEND-ONLY: once `locked` is true no code path
+/// updates any commercial field. `locked` becomes true when the version is
+/// approved for send or sent — from that moment a change means a NEW version.
+model ProposalVersion {
+  id              String   @id @default(cuid())
+  proposalId      String
+  proposal        Proposal @relation(fields: [proposalId], references: [id])
+  version         Int
+
+  title           String
+  summary         String   @default("")
+  scopeItems      String   @default("[]")   // JSON [{id,title,classification,detail}]
+  deliverables    String   @default("[]")   // JSON [{title,kind,description}]
+  exclusions      String   @default("[]")   // JSON [string]
+  assumptions     String   @default("[]")   // JSON [string]
+
+  price           Float    @default(0)
+  currency        String   @default("USD")
+  estimatedTimeline String @default("")
+  paymentTerms    String   @default("")
+
+  // FINITE by construction (docs/phase-11-design.md §9).
+  revisionAllowance Int   @default(2)
+
+  validityDays    Int      @default(30)
+  halalStatus     String   @default("UNVERIFIED")
+  identityDisclosure String @default("AI-assisted business operator")
+
+  // Provenance of the version — who/which system created it (never client input).
+  createdBy       String   // admin email or 'system:<reason>'
+  createdSource   String   @default("ADMIN")   // ADMIN | SYSTEM
+  changeReason    String   @default("")
+
+  // Immutable marker. Terminal: true once frozen. Never set back to false.
+  locked          Boolean  @default(false)
+  lockedAt        DateTime?
+  createdAt       DateTime @default(now())
+
+  changeRequests  ScopeChangeRequest[]
+  scopeItemRows   ScopeItem[]
+
+  @@unique([proposalId, version])
+  @@index([proposalId, createdAt])
+}
+
+/// Finite scope, one row per explicit item on an immutable proposal version.
+/// A requested item that matches NO IN_SCOPE row cannot be executed as in-scope
+/// work — it must become a ScopeChangeRequest instead (scope overrun).
+model ScopeItem {
+  id                String   @id @default(cuid())
+  proposalVersionId String
+  proposalVersion   ProposalVersion @relation(fields: [proposalVersionId], references: [id])
+
+  itemKey           String   // stable key inside the version's scope contract
+  title             String
+  // IN_SCOPE | OUT_OF_SCOPE | ASSUMPTION | CHANGE_REQUEST
+  classification    String   @default("IN_SCOPE")
+  detail            String   @default("")
+  estimatedHours    Float    @default(0)
+
+  createdAt         DateTime @default(now())
+
+  @@unique([proposalVersionId, itemKey])
+  @@index([classification])
+}
+
+/// A controlled request to exceed approved scope. NEVER executed directly:
+/// overrun → REVIEW_REQUIRED → new proposal version → approval → payment if
+/// applicable → execution. Created from a client message WITHOUT trusting it:
+/// the message is data; the classification is deterministic, and the
+/// human/admin is the only actor who can convert it into a priced version.
+model ScopeChangeRequest {
+  id                String   @id @default(cuid())
+  proposalId        String
+  proposal          Proposal @relation(fields: [proposalId], references: [id])
+  proposalVersionId String?
+  proposalVersion   ProposalVersion? @relation(fields: [proposalVersionId], references: [id])
+
+  requestedSummary  String
+  requestedDetail   String   @default("")
+  // Deterministic classification of the REQUEST (never of the client's intent).
+  classification    String   @default("SCOPE_CHANGE_REQUEST")
+  status            String   @default("REVIEW_REQUIRED")
+  // REVIEW_REQUIRED | APPROVED | REJECTED | CONVERTED_TO_VERSION
+
+  sourceMessageId   String?   // provenance: the Message row this came from (DATA only)
+  sourceFlag        String?   // the trust flag that raised it (SCOPE_CHANGE_REQUEST etc.)
+
+  estimatedHours    Float    @default(0)
+  estimatedCost     Float    @default(0)
+  requiresPayment   Boolean  @default(true)
+
+  resolvedVersionId String?
+  resolutionNote    String   @default("")
+  resolvedBy        String?
+  resolvedAt        DateTime?
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([proposalId, status])
+}
+
+// ============================================================================
+// PHASE 11.3 — EXECUTION + DELIVERY (client service + micro-service)
+// ============================================================================
+// Bounded, governed service execution. Everything here reuses the EXISTING
+// Job Runner / AgentRun / Supervisor / Revenue / Learning machinery — there is
+// no second job system. The tables below record STATE, never authority.
+//
+// HARD INVARIANT: UNPAID → EXECUTING is impossible by default.
+// WORK_AUTHORIZED is reachable ONLY from PAYMENT_VERIFIED, which is reachable
+// ONLY through a PaymentVerificationSource (PROVIDER_WEBHOOK | PROVIDER_API |
+// MANUAL_ADMIN_APPROVED). The only exception is an explicitly configured
+// low-risk exception (exposureCap + LOW_RISK/PAYMENT_VERIFIED prospect), OFF by
+// default and always SecurityEvent-audited.
+/// ============================================================================
+
+/// One governed engagement: an accepted proposal version plus its execution,
+/// delivery and issue state. `engagementType` folds micro-services and client
+/// services into the SAME tables — a micro-service is a smaller engagement,
+/// not a parallel architecture.
+model ServiceEngagement {
+  id              String   @id @default(cuid())
+  // MICRO_SERVICE | CLIENT_SERVICE
+  engagementType  String   @default("CLIENT_SERVICE")
+
+  offerId         String?
+  offer           Offer?   @relation(fields: [offerId], references: [id])
+  proposalId      String?
+  proposal        Proposal? @relation(fields: [proposalId], references: [id])
+  proposalVersionId String?
+  opportunityId   String?
+  prospectId      String?
+  prospect        Prospect? @relation(fields: [prospectId], references: [id])
+
+  title           String
+  scopeSummary    String   @default("")
+
+  // NO_COMMITMENT | PROPOSAL_SENT | ACCEPTED | PAYMENT_REQUIRED
+  // | PAYMENT_PENDING | PAYMENT_VERIFIED | WORK_AUTHORIZED | WORK_IN_PROGRESS
+  // | DELIVERABLE_READY | FINAL_PAYMENT_REQUIRED | DELIVERY_AUTHORIZED
+  // | COMPLETED | PAUSED | TERMINATED | CANCELLED
+  state           String   @default("NO_COMMITMENT")
+
+  // Payment truth (server-derived only).
+  paymentState    String   @default("NOT_DUE")
+  // NOT_DUE | PAYMENT_REQUIRED | PAYMENT_PENDING | PAYMENT_VERIFIED | REFUNDED
+  verificationSource String?  // PROVIDER_WEBHOOK | PROVIDER_API | MANUAL_ADMIN_APPROVED
+  providerRef     String?
+  verifiedAt      DateTime?
+
+  // Explicit, bounded unpaid-exposure ceiling. 0 = no unpaid work at all.
+  exposureCapUsd  Float    @default(0)
+  lowRiskExceptionApplied Boolean @default(false)
+
+  totalPrice      Float    @default(0)
+  currency        String   @default("USD")
+
+  workAuthorizedAt DateTime?
+  completedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  milestones     Milestone[]
+  deliverables   Deliverable[]
+  issues         ServiceIssue[]
+  revenue        Revenue[]
+  costs          EngagementCost[]
+  paymentEvents  PaymentEvent[]
+  outreachSends  OutreachSend[]
+  manualPaymentVerifications ManualPaymentVerification[]
+
+  // Phase 11.7 — declared, bounded effort/cost envelope for this engagement.
+  // These are ESTIMATES, never actuals, and are labelled as such everywhere.
+  estimatedCostUsd Float @default(0)
+  actualCostUsd    Float @default(0)
+
+  @@index([state])
+  @@index([engagementType, state])
+  @@index([prospectId])
+  @@index([opportunityId])
+}
+
+/// A payment/acceptance step inside an engagement. The payment machine lives
+/// here (docs/phase-11-design.md §3.4): a client claim can set PAYMENT_PENDING
+/// at most — PAYMENT_VERIFIED requires a PaymentVerificationSource.
+model Milestone {
+  id            String   @id @default(cuid())
+  engagementId  String
+  engagement    ServiceEngagement @relation(fields: [engagementId], references: [id])
+
+  key           String
+  title         String
+  percent       Int      @default(0)
+  amountUsd     Float    @default(0)
+  currency      String   @default("USD")
+
+  paymentState  String   @default("NOT_DUE")
+  verificationSource String?
+  providerRef   String?
+  verifiedAt    DateTime?
+
+  acceptanceEvidence String?   // structured evidence; NEVER synthesized
+  acceptedAt    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  revenue       Revenue[]
+
+  @@unique([engagementId, key])
+  @@index([paymentState])
+}
+
+/// One deliverable with EXPLICIT states. A generated artifact is DRAFT until it
+/// passes QA (distinct from generation), and DELIVERED is never ACCEPTED
+/// without evidence. Finite revisions: exceeding revisionLimit lands in
+/// REVISION_LIMIT_REACHED, which requires a paid change request to resume.
+model Deliverable {
+  id            String   @id @default(cuid())
+  engagementId  String
+  engagement    ServiceEngagement @relation(fields: [engagementId], references: [id])
+  milestoneKey  String?
+
+  title         String
+  kind          String   // bounded deliverable kind, code-validated
+
+  // DRAFT | QA_PENDING | QA_PASSED | READY_FOR_DELIVERY | DELIVERED
+  // | CLIENT_REVIEW | ACCEPTED | REVISION_REQUESTED | REVISION_LIMIT_REACHED
+  // | WITHHELD | COMPLETED
+  state         String   @default("DRAFT")
+  // PREVIEW vs FINAL_DELIVERABLE. A FINAL release requires QA_PASSED plus
+  // DELIVERY_AUTHORIZED on the engagement.
+  isPreview     Boolean  @default(false)
+
+  artifactRefs  String   @default("[]")   // bounded refs only — never secrets, never client credentials
+  revisionCount Int      @default(0)
+  revisionLimit Int      @default(2)
+  qaSummary     String   @default("")
+
+  deliveredAt   DateTime?
+  acceptedAt    DateTime?
+  acceptanceEvidence String?   // evidence-backed; never fabricated, never inferred from silence
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([engagementId, state])
+}
+
+/// Disputes, cancellations, refunds, pauses. One table (docs/phase-11-design.md
+/// §13). Every decision requires a human — the system only drafts.
+model ServiceIssue {
+  id            String   @id @default(cuid())
+  engagementId  String
+  engagement    ServiceEngagement @relation(fields: [engagementId], references: [id])
+
+  // CANCELLATION_REQUESTED | CANCELLATION_APPROVED | DISPUTE | CHARGEBACK
+  // | REFUND_REQUESTED | REFUND_PROCESSED | PAUSE_REQUESTED | TERMINATION_REQUESTED
+  issueType     String
+  status        String   @default("OPEN")   // OPEN | APPROVED | REJECTED | RESOLVED | PROCESSED
+  summary       String   @default("")
+  evidenceRefs  String   @default("[]")   // conversation + delivery history preserved
+
+  requiresHuman Boolean  @default(true)
+  decidedBy     String?
+  decidedAt     DateTime?
+  resolutionNote String  @default("")
+  correlationId String   @default("")
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([engagementId])
+  @@index([issueType, status])
+}
+
+// ============================================================================
+// PHASE 11.4 — PAYMENT EVIDENCE LEDGER
+// ============================================================================
+// Payment truth is evidence-backed or it is nothing. This table is the single
+// append-only record of every payment-bearing event the system was asked to
+// trust, together with the VERDICT on it. Nothing here is mutable except the
+// transition from RECORDED to REVERSED, and that transition is itself audited.
+//
+// Replay protection: `providerEventId` is UNIQUE per provider. A replayed
+// webhook therefore collapses to a single row and can never move an engagement
+// state twice or record revenue twice.
+//
+// Untrusted input classes are recorded as REJECTED rows rather than discarded,
+// so "someone tried to claim payment from a screenshot" is auditable.
+// ============================================================================
+model PaymentEvent {
+  id                String   @id @default(cuid())
+  provider          String   @default("POLAR")
+  // Provider-scoped event id. UNIQUE: this is the replay guard.
+  providerEventId   String
+  eventType         String
+  // ACCEPTED | REJECTED | DUPLICATE | REVERSED | IGNORED
+  outcome           String   @default("RECORDED")
+  rejectionReason   String   @default("")
+
+  // Signature verification result, decided by webhook-verification.ts (Phase 8).
+  // A false value here means the payload was NEVER trusted for anything.
+  signatureVerified Boolean  @default(false)
+  verificationMethod String  @default("NONE")
+  // PROVIDER_WEBHOOK | PROVIDER_API | MANUAL_ADMIN_APPROVED | NONE
+
+  amountUsd         Float    @default(0)
+  currency          String   @default("USD")
+
+  // Intended target. A verified event with no engagement is still recorded,
+  // but it can never authorize service work.
+  engagementId      String?
+  engagement        ServiceEngagement? @relation(fields: [engagementId], references: [id])
+  milestoneId       String?
+  offerId           String?
+
+  // Bounded, non-secret provenance only (never a card number, never a body).
+  evidenceRefs      String   @default("[]")
+  receivedAt        DateTime @default(now())
+  processedAt       DateTime?
+  reversalOfId      String?
+  reversalReason    String   @default("")
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  revenue           Revenue[]
+
+  @@unique([provider, providerEventId])
+  @@index([engagementId, outcome])
+  @@index([outcome, createdAt])
+}
+
+// ============================================================================
+// PHASE 11.4 — CONTROLLED MANUAL PAYMENT VERIFICATION (admin review path)
+// ============================================================================
+// MANUAL_ADMIN_APPROVED is a legitimate source, but only as a *controlled*
+// review: it must name a reviewer, record what evidence was examined, state a
+// reason, and carry a timestamp. Without all four, the source is refused.
+//
+// This is deliberately NOT the PaymentEvent table: manual review is a distinct
+// authority with a distinct audit shape, and conflating the two would let a
+// webhook path borrow manual-review bookkeeping.
+// ============================================================================
+model ManualPaymentVerification {
+  id                String   @id @default(cuid())
+  engagementId      String
+  engagement        ServiceEngagement @relation(fields: [engagementId], references: [id])
+  milestoneId       String?
+
+  // The human who performed the review. Required — an unattributed approval
+  // is not an approval.
+  reviewer          String
+  reviewedAt        DateTime @default(now())
+  // Why the reviewer concluded payment was made. Required, bounded, non-empty.
+  reason            String
+  // What was actually examined: bounded references only (bank ref, receipt id,
+  // provider dashboard capture id). NEVER card data, never credentials.
+  evidenceRefs      String   @default("[]")
+
+  amountUsd         Float
+  currency          String   @default("USD")
+
+  // APPROVED | REFUSED
+  outcome           String   @default("APPROVED")
+  // Deterministic dedupe key so re-running the same review is idempotent.
+  idempotencyKey    String   @unique
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([engagementId])
+  @@index([outcome, createdAt])
+}
+
+// ============================================================================
+// PHASE 11.7 — ENGAGEMENT COST LEDGER (actual vs estimated, kept distinct)
+// ============================================================================
+// Revenue already existed; cost at the ENGAGEMENT level did not. Without it,
+// per-engagement P&L is impossible and "margin" is just price under a
+// different name.
+//
+// basis is the whole point of this table:
+//   ACTUAL     — an evidenced cost (a provider invoice row, a recorded fee).
+//   ESTIMATED  — a planning figure. Never summed into realized profit.
+//
+// realizedCostUsd on EngagementEngagement aggregates ONLY ACTUAL rows.
+// ============================================================================
+model EngagementCost {
+  id            String   @id @default(cuid())
+  engagementId  String
+  engagement    ServiceEngagement @relation(fields: [engagementId], references: [id])
+
+  // AI_EXECUTION | TOOLING | INFRASTRUCTURE | PLATFORM_FEE | REFUND | OTHER
+  category      String
+  description   String   @default("")
+  amountUsd     Float
+  currency      String   @default("USD")
+  // ACTUAL | ESTIMATED — an estimate is never presented as a real cost.
+  basis         String   @default("ACTUAL")
+  evidenceRefs  String   @default("[]")
+
+  // Deterministic dedupe so the same evidenced cost cannot be counted twice.
+  idempotencyKey String  @unique
+
+  occurredAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([engagementId, basis])
+}
+
+// ============================================================================
+// PHASE 11.5 — OUTBOUND COMMUNICATION LEDGER
+// ============================================================================
+// Provenance and duplicate-send prevention for governed outbound contact.
+//
+// `idempotencyKey` is UNIQUE: the same logical outreach can never be sent
+// twice, so a retried request is an idempotent no-op rather than a second
+// message to a real business.
+//
+// `contentDigest` records WHAT was screened, so an auditor can prove the copy
+// that passed screening is the copy that was sent. `simulated` is carried
+// explicitly: a test-adapter send must never be countable as a real send.
+// ============================================================================
+model OutreachSend {
+  id              String   @id @default(cuid())
+  prospectId      String?
+  engagementId    String?
+  engagement      ServiceEngagement? @relation(fields: [engagementId], references: [id])
+
+  channel         String   // EMAIL | CLIENT_PORTAL | MESSAGING
+  recipientDigest String   // hashed contact; the raw address is not duplicated here
+  subjectDigest   String
+  contentDigest   String
+
+  // QUEUED | SENT | DELIVERED | BOUNCED | COMPLAINED | SUPPRESSED | FAILED
+  status          String   @default("QUEUED")
+  providerId      String
+  providerMessageId String?
+  simulated       Boolean  @default(false)
+
+  // Bounded screening result: which gate refused, or that it passed.
+  screeningResult String   @default("")
+  approvedBy      String?
+  idempotencyKey  String   @unique
+  detail          String   @default("")
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([prospectId, createdAt])
+  @@index([status, createdAt])
 }

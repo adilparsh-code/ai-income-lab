@@ -7,6 +7,7 @@
 // re-derivation remains the authority. No screening is presented as a fatwa.
 
 import { db } from '@/lib/db';
+import { describeCommunicationHealth } from '@/lib/commercial/communication-provider';
 import type { CustomerInteractionView, HalalMap, IntegrationHealth, PublishingRow } from './types';
 
 export async function getHalalMap(): Promise<HalalMap> {
@@ -150,14 +151,23 @@ export async function getPublishingRows(limit = 40): Promise<{
 // Phase 10.5 — Client / customer interaction observability.
 // ---------------------------------------------------------------------------
 
-/** No customer-communication connector exists in the codebase — always truthful. */
+/**
+ * Phase 11.3 — the customer-communication abstraction now EXISTS
+ * (src/lib/commercial/communication-provider.ts) with a truthful registry, but
+ * NO provider is connected: there is no email credential in this deployment.
+ * The view therefore stays NOT_CONNECTED, derived from the providers' own
+ * health descriptors rather than asserted here.
+ */
 export async function getCustomerInteractions(): Promise<CustomerInteractionView> {
+  const channels = describeCommunicationHealth();
   return {
     state: 'NOT_CONNECTED',
     detail:
-      'No customer communication connector exists in this system. ProductEvent rows record anonymous '
-      + 'funnel events (no PII); no conversations, tickets or client sessions are captured or fabricated.',
+      'A communication-provider abstraction exists (deterministic test adapter included), but NO provider is '
+      + 'connected to this deployment: no message has been sent and none is fabricated. Channels report '
+      + `${channels.map((c) => `${c.channel}=${c.state}`).join(', ')}. Prospect/Conversation/Message rows record `
+      + 'client communications as untrusted DATA only; ProductEvent rows remain anonymous funnel events (no PII).',
     interactions: [],
-    requiredForConnected: ['A real customer-communication provider adapter (none implemented)'],
+    requiredForConnected: channels[0]?.requiredForConnected ?? ['A real customer-communication provider adapter'],
   };
 }

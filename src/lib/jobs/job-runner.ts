@@ -37,12 +37,19 @@ import { classifyFailure, planRecovery, type FailureClassification, type Recover
 import {
   JOB_TYPE_TO_AGENT,
   isFactoryJobType,
+  isServiceJobType,
   type JobOutcome,
   type JobPayload,
   type JobStatus,
   type JobType,
   type JobExecutionMode,
 } from './types';
+import {
+  isWorkAuthorized,
+  canTransitionDeliverable,
+  type DeliverableState,
+} from '@/lib/commercial/engagement-states';
+import { isDeliverableKind, evaluateMicroServiceQa, findMicroService } from '@/lib/commercial/micro-services';
 
 const MAX_RETRIES = readPositiveInt('JOB_MAX_RETRIES', 2);
 
@@ -67,6 +74,31 @@ export interface JobOpportunityRow {
   halalStatus: string;
 }
 
+export interface JobEngagementRow {
+  id: string;
+  state: string;
+  paymentState: string;
+  engagementType: string;
+  exposureCapUsd: number;
+  lowRiskExceptionApplied: boolean;
+  // PHASE 11.6: the runner reads the linked offer's halal verdict and the
+  // engagement's cancellation state, so execution is blocked at the JOB level
+  // and not only at engagement creation.
+  offerId?: string | null;
+}
+
+export interface JobDeliverableRow {
+  id: string;
+  state: string;
+  kind: string;
+  revisionCount: number;
+  revisionLimit: number;
+  isPreview: boolean;
+  // PHASE 11.6: ownership, so a job cannot act on another engagement's
+  // deliverable (the job-level twin of the F16 IDOR fix).
+  engagementId?: string | null;
+}
+
 export interface JobRunRow {
   id: string;
   jobType: string;
@@ -89,6 +121,20 @@ export interface JobRunRow {
 export interface JobDb {
   opportunity: {
     findUnique(args: { where: { id: string } }): Promise<JobOpportunityRow | null>;
+  };
+  /**
+   * Phase 11.3 — optional. Required only by service jobs, which consult the
+   * engagement payment gate BEFORE executing anything. A client without these
+   * methods makes service jobs fail closed rather than run unauthorized.
+   */
+  serviceEngagement?: {
+    findUnique(args: { where: { id: string } }): Promise<JobEngagementRow | null>;
+  };
+  deliverable?: {
+    findUnique(args: { where: { id: string } }): Promise<JobDeliverableRow | null>;
+  };
+  offer?: {
+    findUnique(args: { where: { id: string } }): Promise<{ id: string; halalStatus: string } | null>;
   };
   jobRun: {
     findUnique(args: { where: { idempotencyKey: string } }): Promise<JobRunRow | null>;
@@ -323,6 +369,9 @@ export async function runJob(
     if (isFactoryJobType(jobType)) {
       return await executeFactoryJobViaRunner(db, row, jobType, payload, opportunity, options);
     }
+    if (isServiceJobType(jobType)) {
+      return await executeServiceJobViaRunner(db, row, jobType, payload);
+    }
     return await executeSingleAgentJob(db, row, jobType, payload, opportunity, options);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -357,6 +406,225 @@ async function executeFactoryJobViaRunner(
     productId: typeof payload.productId === 'string' ? payload.productId : null,
     ...(outcome.summary ?? {}),
   }, outcome.error ?? null, null, row.retryCount, executionMode);
+}
+
+/**
+ * Phase 11.3 — service job branch. Bounded, deterministic, and gated by the
+ * engagement's REAL payment state before anything executes:
+ *
+ *   - SERVICE_BUILD / SERVICE_QA / SERVICE_DELIVERY require an engagement that
+ *     is already authorized (WORK_AUTHORIZED … DELIVERY_AUTHORIZED) or an
+ *     explicitly configured, audited low-risk exception. UNPAID → executing is
+ *     refused here, not merely documented upstream.
+ *   - The engagement lookup FAILS CLOSED: a client without the service tables
+ *     refuses the job instead of skipping the gate.
+ *   - No AI is invoked and no network call is made: these jobs move the
+ *     governed state machines forward and record the real outcome.
+ */
+async function executeServiceJobViaRunner(
+  db: JobDb,
+  row: JobRunRow,
+  jobType: JobType,
+  payload: JobPayload,
+): Promise<JobOutcome> {
+  const engagementId = typeof payload.engagementId === 'string' ? payload.engagementId : null;
+  if (!engagementId) {
+    return finishRow(db, row, 'FAILED', null, 'engagementId is required for service jobs.', null, row.retryCount);
+  }
+
+  if (!db.serviceEngagement) {
+    return finishRow(
+      db, row, 'BLOCKED', null,
+      'Service job refused: the payment gate could not be evaluated (fail-closed).', null, row.retryCount,
+    );
+  }
+
+  let engagement: JobEngagementRow | null = null;
+  try {
+    engagement = await db.serviceEngagement.findUnique({ where: { id: engagementId } });
+  } catch (error) {
+    logger.warn('Service engagement lookup failed; refusing (fail-closed)', {
+      error: String(error).slice(0, 150), jobId: row.id,
+    });
+  }
+  if (!engagement) {
+    return finishRow(db, row, 'FAILED', null, `Engagement "${engagementId}" was not found.`, null, row.retryCount);
+  }
+
+  // THE PAYMENT GATE. Unauthorized work is structurally impossible here.
+  const authorized = isWorkAuthorized(engagement.state) || engagement.lowRiskExceptionApplied;
+  if (!authorized) {
+    logger.info('Service job blocked by payment gate; nothing executed', { jobType, engagementId, state: engagement.state });
+    return finishRow(
+      db, row, 'BLOCKED', null,
+      `Blocked: engagement state ${engagement.state} is not authorized for work. `
+      + 'WORK_AUTHORIZED requires PAYMENT_VERIFIED (a verified provider webhook, provider API, or approved admin manual verification).',
+      null, row.retryCount,
+    );
+  }
+
+  // PHASE 11.6 — TERMINATION/CANCELLATION GATE.
+  // isWorkAuthorized() does not cover CANCELLED / TERMINATED (neither is an
+  // authorized state), but this is enforced explicitly so that a future change
+  // to the authorized-state list can never accidentally re-open execution on a
+  // cancelled engagement.
+  if (engagement.state === 'CANCELLED' || engagement.state === 'TERMINATED') {
+    return finishRow(
+      db, row, 'BLOCKED', null,
+      `Blocked: engagement is ${engagement.state}. Execution after cancellation or termination is refused; `
+      + 'nothing was executed.',
+      null, row.retryCount,
+    );
+  }
+
+  // PHASE 11.6 — PAYMENT REVERSAL GATE.
+  // A refunded or reversed engagement must not keep executing, even if its
+  // state was not yet walked back through the state machine.
+  if (engagement.paymentState === 'REFUNDED') {
+    return finishRow(
+      db, row, 'BLOCKED', null,
+      'Blocked: the engagement payment state is REFUNDED. Execution after a payment reversal is refused; '
+      + 'nothing was executed.',
+      null, row.retryCount,
+    );
+  }
+
+  // PHASE 11.6 — HALAL GATE AT EXECUTION TIME.
+  // Phase 11.3 screened halal only at offer creation, and the runner's step-4
+  // gate keys on payload.opportunityId, which service payloads do not carry.
+  // So a BLOCKED or UNVERIFIED offer could reach SERVICE_BUILD. The verdict is
+  // therefore re-checked HERE, from the engagement's own linked offer, and the
+  // check FAILS CLOSED if the offer cannot be read.
+  if (engagement.offerId) {
+    if (!db.offer) {
+      return finishRow(
+        db, row, 'BLOCKED', null,
+        'Service job refused: the linked offer halal verdict could not be read (fail-closed).',
+        null, row.retryCount,
+      );
+    }
+    const offer = await db.offer.findUnique({ where: { id: engagement.offerId } }).catch(() => null);
+    if (!offer) {
+      return finishRow(
+        db, row, 'BLOCKED', null,
+        'Service job refused: the linked offer could not be read (fail-closed halal gate).',
+        null, row.retryCount,
+      );
+    }
+    if (offer.halalStatus === 'BLOCKED' || offer.halalStatus === 'NOT_ALLOWED') {
+      logger.info('Service job blocked by halal gate', { jobType, engagementId, halalStatus: offer.halalStatus });
+      return finishRow(
+        db, row, 'BLOCKED', null,
+        `Blocked: the linked offer halalStatus is ${offer.halalStatus}. No work was executed.`,
+        null, row.retryCount,
+      );
+    }
+    if (offer.halalStatus === 'UNVERIFIED') {
+      return finishRow(
+        db, row, 'BLOCKED', null,
+        'Blocked: the linked offer has no halal verdict (UNVERIFIED). An unscreened offer is not halal and '
+        + 'cannot be executed.',
+        null, row.retryCount,
+      );
+    }
+    if (offer.halalStatus === 'REVIEW_REQUIRED') {
+      return finishRow(
+        db, row, 'HUMAN_REVIEW', null,
+        'Paused: the linked offer halalStatus is REVIEW_REQUIRED. A qualified human must review before any '
+        + 'execution proceeds.',
+        null, row.retryCount,
+      );
+    }
+  }
+
+  if (jobType === 'SERVICE_BUILD') {
+    return finishRow(db, row, 'SUCCEEDED', {
+      serviceJob: jobType,
+      engagementId,
+      engagementType: engagement.engagementType,
+      microServiceKind: typeof payload.microServiceKind === 'string' ? payload.microServiceKind : null,
+      bounded: true,
+    }, null, null, row.retryCount, 'MOCKED');
+  }
+
+  // SERVICE_QA and SERVICE_DELIVERY are deliverable-scoped.
+  const deliverableId = typeof payload.deliverableId === 'string' ? payload.deliverableId : null;
+  if (!deliverableId) {
+    return finishRow(db, row, 'FAILED', null, 'deliverableId is required for SERVICE_QA and SERVICE_DELIVERY.', null, row.retryCount);
+  }
+  if (!db.deliverable) {
+    return finishRow(db, row, 'BLOCKED', null, 'Service job refused: deliverable state could not be read (fail-closed).', null, row.retryCount);
+  }
+  const deliverable = await db.deliverable.findUnique({ where: { id: deliverableId } }).catch(() => null);
+  if (!deliverable) {
+    return finishRow(db, row, 'FAILED', null, `Deliverable "${deliverableId}" was not found.`, null, row.retryCount);
+  }
+
+  // PHASE 11.6 — ownership check (the job-level twin of the F16 IDOR fix).
+  // A job naming a deliverable that belongs to a DIFFERENT engagement is
+  // refused rather than silently acting on someone else's work.
+  if (deliverable.engagementId && deliverable.engagementId !== engagementId) {
+    return finishRow(
+      db, row, 'BLOCKED', null,
+      `Refused: deliverable belongs to a different engagement than the one named in this job. `
+      + 'Cross-engagement execution is refused.',
+      null, row.retryCount,
+    );
+  }
+
+  if (jobType === 'SERVICE_QA') {
+    // QA is DISTINCT from generation and FAILS CLOSED: a check that was not
+    // reported as passed is treated as not passed.
+    const definition = typeof payload.microServiceKind === 'string' ? findMicroService(payload.microServiceKind) : null;
+    const reported = Array.isArray(payload.qaChecks)
+      ? payload.qaChecks.filter((c): c is { check: string; passed: unknown; detail?: unknown } =>
+        typeof c === 'object' && c !== null && typeof (c as { check?: unknown }).check === 'string')
+      : [];
+    const verdict: ReturnType<typeof evaluateMicroServiceQa> = definition
+      ? evaluateMicroServiceQa(definition, reported)
+      : {
+        passed: false,
+        failed: [{ check: 'known-catalog-definition', passed: false, detail: 'No catalogue definition available; QA fails closed.' }],
+        reason: 'QA could not be evaluated from a bounded catalogue definition.',
+      };
+
+    if (!verdict.passed) {
+      return finishRow(db, row, 'FAILED', {
+        serviceJob: jobType,
+        deliverableId,
+        qaPassed: false,
+        failedChecks: verdict.failed.slice(0, 5),
+      }, verdict.reason, null, row.retryCount, 'MOCKED');
+    }
+    return finishRow(db, row, 'SUCCEEDED', {
+      serviceJob: jobType,
+      deliverableId,
+      qaPassed: true,
+      checks: verdict.checks.length,
+    }, null, null, row.retryCount, 'MOCKED');
+  }
+
+  // SERVICE_DELIVERY — the state machine decides whether release is legal.
+  if (!isDeliverableKind(deliverable.kind)) {
+    return finishRow(db, row, 'FAILED', null, `Deliverable kind "${deliverable.kind}" is not a bounded deliverable kind.`, null, row.retryCount);
+  }
+  const verdict = canTransitionDeliverable({
+    from: deliverable.state as DeliverableState,
+    to: 'DELIVERED',
+    actor: 'ADMIN',
+    revisionCount: deliverable.revisionCount,
+    revisionLimit: deliverable.revisionLimit,
+    engagementState: engagement.state,
+    isPreview: deliverable.isPreview,
+  });
+  if (!verdict.ok) {
+    return finishRow(db, row, 'BLOCKED', null, `Delivery refused: ${verdict.reason}`, null, row.retryCount, 'MOCKED');
+  }
+  return finishRow(db, row, 'SUCCEEDED', {
+    serviceJob: jobType,
+    deliverableId,
+    released: true,
+  }, null, null, row.retryCount, 'MOCKED');
 }
 
 async function executeSingleAgentJob(

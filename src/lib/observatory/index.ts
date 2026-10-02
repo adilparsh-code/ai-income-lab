@@ -11,6 +11,7 @@ import { getCustomerInteractions, getHalalMap, getPublishingRows } from './safet
 import { getGitHubWatcher, getIntegrationHealth } from './integration-health';
 import { getExecutiveNow, getNextActions } from './executive-view';
 import { getControlReflection, type ControlReflectionView } from './control-reflection';
+import { getCommercialSummary, type CommercialSummary } from '@/lib/commercial/commercial-summary';
 import type {
   CustomerInteractionView,
   ExecutiveNow,
@@ -41,10 +42,17 @@ export interface ObservatoryView {
   nextActions: NextActionsView;
   /** Phase 10A — read-only control-state reflection (the Control Center remains the only controller). */
   control: ControlReflectionView;
+  /**
+   * Phase 11.2 + 11.3 — read-only commercial pipeline summary (offers,
+   * proposals, scope reviews, engagements, payment, delivery, learning).
+   * Truthful by construction: real row counts, NOT_CONNECTED providers, and
+   * UNKNOWN rather than a fabricated figure.
+   */
+  commercial: CommercialSummary;
 }
 
 export async function getObservatoryView(): Promise<ObservatoryView> {
-  const [agents, timeline, learning, pnl, halal, publishing, customerInteractions, integrations, github, executive, nextActions, control] =
+  const [agents, timeline, learning, pnl, halal, publishing, customerInteractions, integrations, github, executive, nextActions, control, commercial] =
     await Promise.all([
       getAgentObservations(),
       getObservatoryTimeline({ limit: 80 }),
@@ -58,6 +66,7 @@ export async function getObservatoryView(): Promise<ObservatoryView> {
       getExecutiveNow(),
       getNextActions(),
       getControlReflection(),
+      getCommercialSummary(),
     ]);
 
   return {
@@ -74,8 +83,11 @@ export async function getObservatoryView(): Promise<ObservatoryView> {
     executive,
     nextActions,
     control,
+    commercial,
   };
 }
 
 export { epistemicStateFor, getAgentObservations, getObservatoryTimeline, getLearningObservations, getPnlObservatory, getHalalMap, getPublishingRows, getCustomerInteractions, getIntegrationHealth, getGitHubWatcher, getExecutiveNow, getNextActions, getControlReflection };
+export { getCommercialSummary } from '@/lib/commercial/commercial-summary';
+export type { CommercialSummary } from '@/lib/commercial/commercial-summary';
 export * from './types';
