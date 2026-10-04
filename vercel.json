@@ -9,3 +9,4 @@
   "framework": "nextjs",
   "buildCommand": "prisma7 generate && if [ \"$VERCEL_ENV\" = \"production\" ]; then prisma7 migrate deploy; fi && next build"
 }
+
