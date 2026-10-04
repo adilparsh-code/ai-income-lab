@@ -3,6 +3,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
-  "buildCommand": "prisma7 generate && if [ \"$VERCEL_ENV\" = \"production\" ]; then prisma7 migrate deploy; fi && next build"
+  "buildCommand": "prisma7 generate && next build"
+  
 }
 
