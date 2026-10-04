@@ -439,7 +439,7 @@ describe('route surface & secret hygiene (static, deterministic)', () => {
   it('operator token and admin password are never logged (audit events carry outcomes only)', () => {
     const sessionRoute = read('src/app/api/admin/session/route.ts');
     assert.equal(/console\.(log|info|debug|error|warn)/.test(sessionRoute), false);
-    assert.match(sessionRoute, /auditAdminEvent\('ADMIN_LOGIN', 'refused', 'bad-credentials'\)/);
+    assert.match(sessionRoute, /auditAdminEvent\('ADMIN_LOGIN', 'refused', classifyAdminLoginFailure\(email, password\)\)/);
     // No logging call anywhere in src passes ADMIN_PASSWORD or a cookie value.
     const offenders: string[] = [];
     const walk = (dir: string): void => {
