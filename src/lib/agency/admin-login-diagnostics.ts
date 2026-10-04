@@ -34,6 +34,17 @@ function textEquals(a: string, b: string): boolean {
 const HEX = /^[0-9a-f]+$/i;
 
 /** Structural check only: "scrypt:<hex>:<hex>". Never inspects the password. */
+// Exact shape emitted by scripts/hash-admin-password.mjs: 16-byte salt (32 hex)
+// and 64-byte scrypt key (128 hex). Applied to the SAME trimmed env value that
+// verifyAdminCredentials() uses, so quotes, an "ADMIN_PASSWORD_HASH=" prefix,
+// or inner whitespace all fail here.
+// NOTE: verifyScryptHash() itself is looser (it accepts any hex lengths); this
+// classifier is stricter on purpose, so a non-standard hash that fails verify
+// is reported as hash-malformed rather than password-mismatch.
+const SALT_HEX = /^[0-9a-f]{32}$/i;
+const HASH_HEX = /^[0-9a-f]{128}$/i;
+
+/** Structural check only: "scrypt:<32 hex>:<128 hex>". Never inspects the password. */
 function hashIsWellFormed(stored: string): boolean {
   const parts = stored.split(':');
   if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
@@ -42,6 +53,7 @@ function hashIsWellFormed(stored: string): boolean {
     HEX.test(saltHex) && saltHex.length % 2 === 0 &&
     HEX.test(hashHex) && hashHex.length % 2 === 0
   );
+  return SALT_HEX.test(saltHex) && HASH_HEX.test(hashHex);
 }
 
 function scryptMatches(password: string, stored: string): boolean {

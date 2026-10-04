@@ -64,6 +64,37 @@ describe('classifyAdminLoginFailure (non-secret reasons)', () => {
     }
   });
 
+  it('hash-malformed unless salt is exactly 32 hex and hash exactly 128 hex', () => {
+    const [, salt, key] = makeHash(PASSWORD).split(':');
+    const variants = [
+      `scrypt:${salt.slice(0, 30)}:${key}`, // salt too short
+      `scrypt:${salt}00:${key}`, // salt too long
+      `scrypt:${salt}:${key.slice(0, 126)}`, // hash too short
+      `scrypt:${salt}:${key}00`, // hash too long
+      `scrypt:${salt}:${key.slice(0, 64)} ${key.slice(64)}`, // inner whitespace
+      `scrypt: ${salt}:${key}`, // inner whitespace after prefix
+    ];
+    for (const hash of variants) {
+      assert.equal(
+        classifyAdminLoginFailure(EMAIL, PASSWORD, { ADMIN_EMAIL: EMAIL, ADMIN_PASSWORD_HASH: hash }),
+        'hash-malformed',
+      );
+    }
+  });
+
+  it('env hash is trimmed like the real verifier: padding around a valid hash is not malformed', () => {
+    const hash = `  ${makeHash(PASSWORD)}\n`;
+    assert.equal(
+      classifyAdminLoginFailure(EMAIL, 'wrong-password-xx', { ADMIN_EMAIL: EMAIL, ADMIN_PASSWORD_HASH: hash }),
+      'password-mismatch',
+    );
+    // whitespace-only hash is "unset" for the verifier → falls through to ADMIN_PASSWORD
+    assert.equal(
+      classifyAdminLoginFailure(EMAIL, 'wrong-password-xx', { ADMIN_EMAIL: EMAIL, ADMIN_PASSWORD_HASH: '  ', ADMIN_PASSWORD: PASSWORD }),
+      'password-mismatch',
+    );
+  });
+
   it('a malformed hash is NOT rescued by a correct ADMIN_PASSWORD (hash precedence preserved)', () => {
     const env = { ADMIN_EMAIL: EMAIL, ADMIN_PASSWORD: PASSWORD, ADMIN_PASSWORD_HASH: `"${makeHash(PASSWORD)}"` };
     assert.equal(classifyAdminLoginFailure(EMAIL, PASSWORD, env), 'hash-malformed');

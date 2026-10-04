@@ -21,6 +21,8 @@ Object.assign(process.env, {
   NODE_ENV: 'test',
 });
 
+delete process.env.DIRECT_URL;
+
 before(async () => {
   // Pin the v7 CLI (same convention as the other hermetic suites): the default
   // `prisma` binary's Prisma 8 "agent skills" gate fails non-interactive runs.

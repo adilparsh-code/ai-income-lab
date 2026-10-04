@@ -286,6 +286,35 @@ function parseSql(sqlText) {
       continue;
     }
 
+    // Additive column: ALTER TABLE "T" ADD COLUMN "C" <rest>. The engine also
+    // emits this form for ALTER TABLE "T" ADD COLUMN ... , so both prefixes are
+    // accepted. This is additive only — a DROP COLUMN never matches here, so a
+    // destructive column change still surfaces as an unparsed statement.
+    const addColumn = /^ALTER TABLE "(\w+)" ADD COLUMN ("?\w+"?) (.+)$/.exec(statement);
+    if (addColumn) {
+      const [, table, rawName, rest] = addColumn;
+      const target = tables.get(table);
+      if (!target) continue;
+      const name = rawName.replace(/"/g, '');
+      const nullable = !/NOT NULL/i.test(rest);
+      // DEFAULT must be searched only AFTER the NOT NULL marker, otherwise the
+      // "NULL" inside "NOT NULL" is mistaken for a default value.
+      const afterNullability = nullable ? rest : rest.replace(/NOT\s+NULL/i, '');
+      const defaultMatch = /\bDEFAULT\s+('(?:[^']*)'|[\w().]+)/i.exec(afterNullability);
+      // Multi-word SQL types (DOUBLE PRECISION, TIMESTAMP WITH TIME ZONE, ...)
+      // but the trailing column constraints are NOT part of the type. Cut the
+      // fragment at the first constraint keyword before reading the type.
+      const typePart = rest.split(/\b(?:NOT\s+NULL|NULL|DEFAULT|UNIQUE|PRIMARY|REFERENCES|COLLATE|CHECK)\b/i)[0];
+      const type = /^\s*((?:[A-Z][A-Z0-9_]*)(?:\s+[A-Z][A-Z0-9_]*)*(?:\s*\([\d,]+\))?)/.exec(typePart);
+      target.columns.set(name, [
+        `"${name}"`,
+        type ? type[1] : 'TEXT',
+        nullable ? '' : 'NOT NULL',
+        defaultMatch ? `DEFAULT ${defaultMatch[1]}` : '',
+      ].filter(Boolean).join(' '));
+      continue;
+    }
+
     const index = /^CREATE (UNIQUE )?INDEX "(\w+)" ON "(\w+)" ?\(([^)]*)\)/.exec(statement);
     if (index) {
       const [, unique, name, table, cols] = index;
