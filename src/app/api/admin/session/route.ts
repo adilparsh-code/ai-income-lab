@@ -27,6 +27,7 @@ import {
   revokeAdminSession,
   verifyAdminCredentials,
 } from '@/lib/agency/admin-auth';
+import { classifyAdminLoginFailure } from '@/lib/agency/admin-login-diagnostics';
 import { presentedSessionToken, safeReturnTo } from '@/lib/agency/session-guard';
 import { clientIpFrom, enforceRateLimit, auditSecurityEvent, readJsonBody } from '@/lib/security/guard';
 
@@ -105,7 +106,8 @@ export async function POST(request: Request) {
   }
 
   if (!verifyAdminCredentials(email, password)) {
-    await auditAdminEvent('ADMIN_LOGIN', 'refused', 'bad-credentials');
+    // Non-secret reason code (fixed set) → SecurityEvent.detail only; response unchanged.
+    await auditAdminEvent('ADMIN_LOGIN', 'refused', classifyAdminLoginFailure(email, password));
     return NextResponse.json({ ok: false, error: 'Invalid credentials.' }, { status: 401 });
   }
 
