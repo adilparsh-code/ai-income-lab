@@ -19,7 +19,9 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     db.opportunity.findMany(),
     db.product.findMany(),
     db.experiment.findMany(),
-    db.revenue.findMany(),
+    // Explicit select: only the columns this loader reads, so the dashboard
+    // does not depend on unrelated Revenue columns added by later migrations.
+    db.revenue.findMany({ select: { date: true, netRevenue: true } }),
   ]);
   
   const now = new Date();
@@ -110,6 +112,7 @@ export interface RevenueChartData {
 
 export async function getRevenueChartData(): Promise<RevenueChartData[]> {
   const revenues = await db.revenue.findMany({
+    select: { date: true, netRevenue: true },
     orderBy: { date: 'asc' },
   });
   

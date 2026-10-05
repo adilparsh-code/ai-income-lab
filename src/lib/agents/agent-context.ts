@@ -107,7 +107,10 @@ export interface AgentContextDb {
     findMany(args: { where: { opportunityId: string } }): Promise<ContextExperimentRow[]>;
   };
   revenue: {
-    findMany(args: { where: { opportunityId: string } }): Promise<ContextRevenueRow[]>;
+    findMany(args: {
+      where: { opportunityId: string };
+      select: { id: true; grossRevenue: true; netRevenue: true; createdAt: true };
+    }): Promise<ContextRevenueRow[]>;
   };
   productEvent: {
     findMany(args: {
@@ -281,7 +284,10 @@ export async function buildAgentContext(
       }),
       data.product.findMany({ where: { opportunityId } }),
       data.experiment.findMany({ where: { opportunityId } }),
-      data.revenue.findMany({ where: { opportunityId } }),
+      data.revenue.findMany({
+        where: { opportunityId },
+        select: { id: true, grossRevenue: true, netRevenue: true, createdAt: true },
+      }),
       data.productEvent.findMany({
         where: { opportunityId },
         orderBy: { occurredAt: 'desc' },

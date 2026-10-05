@@ -28,6 +28,8 @@ import { TopOpportunities } from '@/components/dashboard/top-opportunities';
 import { LifecyclePipeline } from '@/components/dashboard/lifecycle-pipeline';
 import { BusinessIntelligenceCard } from '@/components/dashboard/business-intelligence-card';
 import { AiUsageCard } from '@/components/dashboard/ai-usage-card';
+import { SectionUnavailable } from '@/components/dashboard/section-unavailable';
+import { loadDashboardSection } from '@/lib/ops/dashboard-section';
 import { PageHeader } from '@/components/shared/page-header';
 import { db } from '@/lib/db';
 import Link from 'next/link';
@@ -36,12 +38,14 @@ import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 export default async function DashboardPage() {
   const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary, operationsSummary, controlCenter, incomeEngineSummary] =
     await Promise.all([
-      getDashboardStats(),
-      getNextBestAction(),
-      getRevenueChartData(),
-      getOpportunities({ sortBy: 'overallScore', sortOrder: 'desc' }),
-      getLifecycleOverview(),
-      getRecentPipelineRuns(1),
+      // Core sections load independently: one failing query renders that
+      // section as unavailable instead of crashing the whole dashboard.
+      loadDashboardSection('Stats', getDashboardStats),
+      loadDashboardSection('Next best action', getNextBestAction),
+      loadDashboardSection('Revenue chart', getRevenueChartData),
+      loadDashboardSection('Opportunities', () => getOpportunities({ sortBy: 'overallScore', sortOrder: 'desc' })),
+      loadDashboardSection('Lifecycle', getLifecycleOverview),
+      loadDashboardSection('Pipeline runs', () => getRecentPipelineRuns(1)),
       getBusinessIntelligenceSummary(),
       getAiUsageForRange('7d').catch(() => null),
       // Activity listing is non-critical for page load; degrade to empty.
@@ -58,7 +62,8 @@ export default async function DashboardPage() {
       // Phase 7 — Income Engine summary degrades to null, never fabricated.
       getIncomeEngineSummary().catch(() => null),
     ]);
-  const latestPipelineRun = recentPipelineRuns[0] ?? null;
+  const latestPipelineRun = recentPipelineRuns.ok ? (recentPipelineRuns.data[0] ?? null) : null;
+  const nextActionData = nextAction.ok ? nextAction.data : null;
 
   // Phase 5 — evidence provenance counts from real stored records.
   const [verifiedEvidenceCount, discoveryCount] = await Promise.all([
@@ -80,12 +85,12 @@ export default async function DashboardPage() {
       lastWorkflowStatus: workflowRuns[0]?.status ?? null,
     },
     growth: {
-      lastAction: nextAction?.action ? nextAction.action.replace(/_/g, ' ').slice(0, 40) : null,
+      lastAction: nextActionData?.action ? nextActionData.action.replace(/_/g, ' ').slice(0, 40) : null,
       dataStatus: biSummary ? 'RECORDED_DATA' : null,
     },
   };
 
-  const topOpportunities = opportunities.slice(0, 5);
+  const topOpportunities = opportunities.ok ? opportunities.data.slice(0, 5) : [];
 
   return (
     <div className="p-6 lg:p-8 space-y-8">
@@ -119,7 +124,7 @@ export default async function DashboardPage() {
       </PageHeader>
 
       {/* Stats Cards */}
-      <StatsCards stats={stats} />
+      {stats.ok ? <StatsCards stats={stats.data} /> : <SectionUnavailable title="Dashboard stats" reason={stats.reason} />}
 
       {/* Phase 6 — Intelligent Agent Control Center */}
       <section>
@@ -179,7 +184,11 @@ export default async function DashboardPage() {
         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
           Recommended Next Action
         </h2>
-        <NextBestAction action={nextAction} />
+        {nextAction.ok ? (
+          <NextBestAction action={nextAction.data} />
+        ) : (
+          <SectionUnavailable title="Recommended next action" reason={nextAction.reason} />
+        )}
       </section>
 
       {/* Business Intelligence — Profitability (LIVE vs MOCKED/PLANNED) */}
@@ -253,17 +262,29 @@ export default async function DashboardPage() {
         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
           Business Loop — Discover → Research → Validate → Build → Publish → Measure
         </h2>
-        <LifecyclePipeline opportunities={lifecycle.opportunities} />
+        {lifecycle.ok ? (
+          <LifecyclePipeline opportunities={lifecycle.data.opportunities} />
+        ) : (
+          <SectionUnavailable title="Business loop lifecycle" reason={lifecycle.reason} />
+        )}
       </section>
 
       {/* Charts and Top Opportunities */}
       <div className="grid gap-6 lg:grid-cols-2">
-        <RevenueChart data={revenueData} />
-        <TopOpportunities opportunities={topOpportunities} />
+        {revenueData.ok ? (
+          <RevenueChart data={revenueData.data} />
+        ) : (
+          <SectionUnavailable title="Revenue chart" reason={revenueData.reason} />
+        )}
+        {opportunities.ok ? (
+          <TopOpportunities opportunities={topOpportunities} />
+        ) : (
+          <SectionUnavailable title="Top opportunities" reason={opportunities.reason} />
+        )}
       </div>
 
       {/* Sample Data Notice */}
-      {opportunities.some(o => o.confidenceLevel === 'SAMPLE_DATA') && (
+      {opportunities.ok && opportunities.data.some(o => o.confidenceLevel === 'SAMPLE_DATA') && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
           <strong>Note:</strong> The dashboard currently displays sample data for demonstration purposes.
           Sample opportunities are clearly labelled. Replace them with real research to get accurate recommendations.

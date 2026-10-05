@@ -10,7 +10,7 @@ const SECRET_PATTERNS: RegExp[] = [
   /(sk-|pk-|rk-|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_\-]{35})[A-Za-z0-9_\-]*/g,
   /(?:\bBearer\s+)[A-Za-z0-9._~+\-/=]+/gi,
   /((?:password|passwd|secret|token|api[_-]?key|apikey|authorization|cookie)\s*[=:]\s*["']?)[A-Za-z0-9_\-./:@]{4,}/gi,
-  /(\b(?:postgres|mysql|mongodb(\+srv)?|libsql|turso|http|https):\/\/[^\/\s]*):[^@\s]+@/gi,
+  /(\b(?:postgres(?:ql)?|mysql|mongodb(\+srv)?|libsql|turso|http|https):\/\/[^\/\s]*):[^@\s]+@/gi,
 ];
 
 export function redactSecrets(input: string): string {
