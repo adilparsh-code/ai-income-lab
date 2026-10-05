@@ -35,7 +35,18 @@ export async function getBusinessIntelligenceSummary(): Promise<BusinessIntellig
       db.opportunity.findMany(),
       db.product.findMany(),
       db.experiment.findMany(),
-      db.revenue.findMany(),
+      db.revenue.findMany({
+        select: {
+          id: true,
+          grossRevenue: true,
+          fees: true,
+          advertisingCost: true,
+          otherCosts: true,
+          netRevenue: true,
+          opportunityId: true,
+          productId: true,
+        },
+      }),
     ]);
 
     const bi = buildBusinessIntelligence({

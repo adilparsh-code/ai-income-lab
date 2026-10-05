@@ -17,7 +17,7 @@ export async function getLifecycleOverview(): Promise<PortfolioLifecycleSummary>
     db.opportunity.findMany(),
     db.experiment.findMany(),
     db.product.findMany(),
-    db.revenue.findMany(),
+    db.revenue.findMany({ select: { id: true, opportunityId: true, productId: true } }),
     db.agentLog.findMany({
       where: { agentType: { in: ['research', 'validation'] } },
       orderBy: { createdAt: 'desc' },
