@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import { Sidebar } from "@/components/layout/sidebar";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -15,15 +14,13 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // SHELL NOTE: the console chrome (Sidebar + offset main) lives in
+  // src/app/(admin)/layout.tsx so the PUBLIC storefront at /store renders
+  // outside the admin console. Root stays minimal: html/body only.
   return (
     <html lang="en">
       <body className={`${inter.className} antialiased`}>
-        <div className="flex min-h-screen">
-          <Sidebar />
-          <main className="flex-1 lg:ml-64">
-            {children}
-          </main>
-        </div>
+        {children}
       </body>
     </html>
   );
