@@ -5,11 +5,12 @@
 // revenue system:
 //
 //   signature verified (webhook-verification.ts)
-//     → parse (strict, fail-closed)
-//     → event-type allowlist (order.paid / order.confirmed only)
-//     → amount validation (positive finite number, major units)
-//     → currency validation (must be supported by market config)
-//     → product linkage (must map to a known product)
+//     → parse (strict, fail-closed)//   → event-type allowlist (order.paid / order.confirmed only)
+//   → amount validation (positive finite number, major units)
+//   → currency validation (must be supported by market config)
+//   → offer linkage (metadata.offerId — set only by our human-gated Polar
+//     publication bridge; unknown or non-halal offers are REJECTED)
+//   → product linkage (must map to a known product)
 //     → idempotency (shared revenueIdempotencyKey via the existing pipeline)
 //     → safe failure (bad events are rejected with a verdict, never crash)
 //
@@ -133,12 +134,41 @@ export async function processVerifiedPaymentEvent(event: VerifiedEvent, received
   }
   const currency = currencyRaw;
 
+  const meta = order.metadata ?? {};
+  const { db } = await import('@/lib/db');
+
+  // Offer linkage: metadata.offerId is stamped into the Polar product ONLY by
+  // our own human-gated publication bridge (offer-publishing.ts). Because the
+  // field only ever comes from us, an unknown or non-halal offer fails closed
+  // before any revenue row exists — a paid order on a retired-offer path or a
+  // forged mapping is never silently recorded as verified revenue.
+  const offerIdFromMeta =
+    typeof meta.offerId === 'string' && meta.offerId.trim().length > 0 && meta.offerId.trim().length <= 128
+      ? meta.offerId.trim()
+      : null;
+  let offer: { id: string; opportunityId: string | null; productId: string | null } | null = null;
+  if (offerIdFromMeta) {
+    const matched = await db.offer.findFirst({
+      where: { id: offerIdFromMeta },
+      select: { id: true, opportunityId: true, productId: true, halalStatus: true },
+    });
+    if (!matched) {
+      return { status: 'REJECTED', reason: 'OFFER_NOT_LINKED', detail: 'Order metadata references an unknown offer; refusing to record revenue.' };
+    }
+    if (matched.halalStatus !== 'HALAL') {
+      return {
+        status: 'REJECTED',
+        reason: 'OFFER_NOT_ELIGIBLE',
+        detail: `Offer halal status is ${matched.halalStatus}; a paid order on a non-HALAL offer is not recorded as verified revenue.`,
+      };
+    }
+    offer = { id: matched.id, opportunityId: matched.opportunityId, productId: matched.productId };
+  }
+
   // Product linkage: resolve to a known product via explicit id or provider
   // product id/name. An unlinked order is REJECTED — never guessed.
-  const meta = order.metadata ?? {};
   const productIdFromMeta = typeof meta.productId === 'string' ? meta.productId : null;
   let product: { id: string; name: string; opportunityId: string | null } | null = null;
-  const { db } = await import('@/lib/db');
   if (productIdFromMeta) {
     product = await db.product.findFirst({ where: { id: productIdFromMeta }, select: { id: true, name: true, opportunityId: true } });
   }
@@ -151,15 +181,22 @@ export async function processVerifiedPaymentEvent(event: VerifiedEvent, received
   if (!product) {
     return { status: 'REJECTED', reason: 'PRODUCT_NOT_LINKED', detail: 'No known product matches the order payload; refusing to guess.' };
   }
+  if (offer?.productId && offer.productId !== product.id) {
+    return {
+      status: 'REJECTED',
+      reason: 'OFFER_PRODUCT_MISMATCH',
+      detail: 'Order metadata offer and resolved product disagree; refusing to guess the mapping.',
+    };
+  }
 
   const result = await recordRevenueWithAttribution({
     date: order.created_at ?? receivedAt.toISOString(),
     revenueSource: 'POLAR_WEBHOOK',
     grossRevenue: grossMajor,
     currency,
-    referenceNote: `webhook:${eventId} order:${order.id}`,
+    referenceNote: `webhook:${eventId} order:${order.id}${offer ? ` offer:${offer.id}` : ''}`,
     productId: product.id,
-    opportunityId: product.opportunityId,
+    opportunityId: offer?.opportunityId ?? product.opportunityId,
   });
 
   if (result.status === 'RECORDED') {
