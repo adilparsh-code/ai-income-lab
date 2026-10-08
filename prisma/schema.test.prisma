@@ -1,9 +1,10 @@
 generator client {
+  output   = "./test-client"
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
 }
 
 model Opportunity {
