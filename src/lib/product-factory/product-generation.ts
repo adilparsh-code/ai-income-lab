@@ -16,10 +16,13 @@
 //    identity are never overwritten. A changed product creates a NEW generation +
 //    NEW version. Packaging creates a new ProductPackage row and never mutates a
 //    historical version.
-//  - Content dedup: if a version with the same content canonical hash already
-//    exists, generateFromSpecification returns the existing version rather than
-//    creating a duplicate. The content canonical hash unique constraint is the
-//    backstop; the service handles it gracefully.
+//  - Content dedup with provenance: a version is only reused if it was produced
+//    by the SAME specification + generation mode. Identical content from a
+//    different specification or generation mode produces a new version, because
+//    provenance is part of version identity.
+//  - Package identity: packageHash includes versionId + packageType + canonical
+//    body, so the same package body can exist for different versions. The unique
+//    constraint prevents duplicate packages for the same version/type/content.
 
 import { db } from '@/lib/db';
 import {
@@ -102,9 +105,6 @@ function canonicalSpecOf(request: ProductSpecificationRequest): CanonicalSpecifi
   if (!request.spec || typeof request.spec !== 'object' || Array.isArray(request.spec)) {
     throw new Error('Product specification must be a plain JSON object.');
   }
-  // Reuse isPlainRecord logic from canonical.ts via asCanonicalRecord's check.
-  // We call asCanonicalRecord to validate, then canonicalSpecificationOf to build
-  // the full canonical form with all fields (including nulls for omitted ones).
   asCanonicalRecord(request.spec);
   return canonicalSpecificationOf(request.spec);
 }
@@ -118,20 +118,6 @@ export function canonicalHashFor(request: ProductSpecificationRequest): string {
 // Specification persistence (idempotent by canonical identity)
 // ---------------------------------------------------------------------------
 
-/**
- * Find an existing specification by canonical identity, or create one.
- *
- * Duplicate protection is enforced at TWO levels:
- *  1. Application-level: we look up by canonicalHash first and return the
- *     existing row when present.
- *  2. Database-level: `canonicalHash` is @unique, so two concurrent requests for
- *     the same logical spec collide on the unique constraint and only one row is
- *     created. The caller receives the existing row either way.
- *
- * IMPORTANT: we do NOT rely on "find -> if missing -> create" as the only
- * protection. The unique constraint is the real guard against concurrent
- * duplicates; the lookup is the fast path.
- */
 export async function getOrCreateSpecification(
   request: ProductSpecificationRequest,
 ): Promise<{ spec: ProductSpecificationRecord; created: boolean }> {
@@ -171,18 +157,9 @@ export async function getOrCreateSpecification(
 }
 
 // ---------------------------------------------------------------------------
-// Generation + version creation (immutable)
+// Generation + version creation (immutable, provenance-aware dedup)
 // ---------------------------------------------------------------------------
 
-/**
- * The result of generating a product from a specification.
- *
- * Preserves:
- *  - specification identity (specificationId + canonicalHash via the spec row)
- *  - generation identity (generationId + generationRef)
- *  - generation mode (persisted on ProductGeneration AND ProductVersion)
- *  - resulting product version (ProductVersion, immutable)
- */
 export interface GenerationResult {
   specification: ProductSpecificationRecord;
   generation: {
@@ -198,64 +175,57 @@ export interface GenerationResult {
   version: ProductVersionRecord;
 }
 
-/** Compute the content canonical hash for a version's content. */
 function contentCanonicalHashFor(content: string): string {
   const parsed = JSON.parse(content);
   const canonical = asCanonicalRecord({ content: parsed });
   return sha256Hex(toCanonicalJson(canonical));
 }
 
-/** Try to find an existing version with the given content canonical hash.
- *  Returns the version if found, null otherwise. */
+/**
+ * Find an existing version with the given content canonical hash that was
+ * ALSO produced from the same specification + generation mode.
+ *
+ * Provenance is part of version identity: a version is only reused if it was
+ * produced by the same specification and generation mode. Identical content from
+ * a different specification or generation mode produces a NEW version.
+ */
 async function findExistingVersionByContentHash(
   contentCanonicalHash: string,
+  specificationId: string,
+  generationMode: GenerationMode,
 ): Promise<{ version: ProductVersionRecord; generation: { id: string; specificationId: string; generationMode: GenerationMode; generationRef: string; status: string; outcomeSummary: string; createdAt: Date; completedAt: Date | null } } | null> {
-  const row = await db.productVersion.findUnique({
+  const rows = await db.productVersion.findMany({
     where: { contentCanonicalHash },
     include: { generation: true },
   });
-  if (!row) return null;
-  return {
-    version: row as unknown as ProductVersionRecord,
-    generation: {
-      id: row.generation.id,
-      specificationId: row.generation.specificationId,
-      generationMode: row.generation.generationMode as GenerationMode,
-      generationRef: row.generation.generationRef,
-      status: row.generation.status,
-      outcomeSummary: row.generation.outcomeSummary,
-      createdAt: row.generation.createdAt,
-      completedAt: row.generation.completedAt,
-    },
-  };
+  for (const row of rows) {
+    if (row.generation.specificationId === specificationId &&
+        row.generation.generationMode === generationMode) {
+      return {
+        version: row as unknown as ProductVersionRecord,
+        generation: {
+          id: row.generation.id,
+          specificationId: row.generation.specificationId,
+          generationMode: row.generation.generationMode as GenerationMode,
+          generationRef: row.generation.generationRef,
+          status: row.generation.status,
+          outcomeSummary: row.generation.outcomeSummary,
+          createdAt: row.generation.createdAt,
+          completedAt: row.generation.completedAt,
+        },
+      };
+    }
+  }
+  return null;
 }
 
-/**
- * Generate a concrete immutable product version from a specification.
- *
- * `generationMode` names HOW the product was generated. It is persisted on the
- * ProductGeneration row AND copied onto the resulting ProductVersion, so the
- * version is self-describing and the mode is never transient request metadata.
- *
- * Content deduplication: if a version with the same content canonical hash
- * already exists, the existing version is returned (no duplicate is created).
- * This is enforced by the contentCanonicalHash unique constraint as backstop.
- *
- * A new version is created for each unique content. Existing versions are
- * never mutated.
- */
 export async function generateFromSpecification(
   specificationId: string,
   options: {
-    /** The generation mode - persisted, not transient. */
     generationMode: GenerationMode;
-    /** Optional link to the existing Product row the lab tracks (plain column). */
     productId?: string;
-    /** The generated product content for this version (JSON string or object). */
     content: string | Record<string, unknown>;
-    /** Optional human-readable version label. If omitted, derived deterministically. */
     versionLabel?: string;
-    /** Bounded, safe generation outcome summary (JSON). */
     outcomeSummary?: string | Record<string, unknown>;
   },
 ): Promise<GenerationResult> {
@@ -270,8 +240,8 @@ export async function generateFromSpecification(
     typeof options.content === 'string' ? options.content : JSON.stringify(options.content);
   const contentCanonicalHash = contentCanonicalHashFor(contentString);
 
-  // If a version with this exact content already exists, return it (dedup).
-  const existing = await findExistingVersionByContentHash(contentCanonicalHash);
+  // If a version with this exact content AND provenance already exists, return it.
+  const existing = await findExistingVersionByContentHash(contentCanonicalHash, specificationId, generationMode);
   if (existing) {
     return {
       specification: (await db.productSpecification.findUnique({ where: { id: specificationId } })) as unknown as ProductSpecificationRecord,
@@ -289,8 +259,6 @@ export async function generateFromSpecification(
 
   const generationRef = `${canonicalHash.slice(0, 16)}+${generationMode}`;
 
-  // Insert generation + version in one transactional batch so the version cannot
-  // exist without its generation, and vice-versa.
   const [gen] = await db.$transaction([
     db.productGeneration.create({
       data: {
@@ -335,28 +303,14 @@ export async function generateFromSpecification(
 }
 
 // ---------------------------------------------------------------------------
-// Packaging (traceable, immutable)
+// Packaging (traceable, immutable, provenance-aware identity)
 // ---------------------------------------------------------------------------
 
-/**
- * Create a deterministic package/artifact representation for a generated
- * product version.
- *
- * Traceability chain:
- *   ProductSpecification -> ProductGeneration -> ProductVersion -> ProductPackage
- *
- * Packaging MUST NOT mutate an existing historical version. This function only
- * creates a new ProductPackage row referencing the version. The version's
- * content, generationMode, and canonical identity remain unchanged.
- */
 export async function createPackageForVersion(
   versionId: string,
   options: {
-    /** The package kind/format, e.g. 'build-manifest' | 'artifact-bundle-descriptor' | 'listing-draft'. */
     packageType: string;
-    /** Deterministic package content (JSON string or object). Frozen at creation. */
     packageBody: string | Record<string, unknown>;
-    /** Optional reference to where the package artifact lives (path/id/url). No secrets. */
     artifactRef?: string;
   },
 ): Promise<ProductPackageRecord> {
@@ -371,7 +325,8 @@ export async function createPackageForVersion(
 
   const packageBodyString =
     typeof options.packageBody === 'string' ? options.packageBody : JSON.stringify(options.packageBody);
-  const packageCanonical = asCanonicalRecord({ body: JSON.parse(packageBodyString) });
+  // Package identity includes version provenance: versionId + packageType + canonical body.
+  const packageCanonical = asCanonicalRecord({ versionId, packageType: options.packageType, body: JSON.parse(packageBodyString) });
   const packageHash = sha256Hex(toCanonicalJson(packageCanonical));
 
   const packageRow = await db.productPackage.create({
@@ -391,7 +346,6 @@ export async function createPackageForVersion(
 // Read helpers (traceability + immutability audits)
 // ---------------------------------------------------------------------------
 
-/** Load a version with its generation -> specification chain for traceability. */
 export async function loadVersionWithChain(
   versionId: string,
 ): Promise<{
@@ -427,7 +381,6 @@ export async function loadVersionWithChain(
   };
 }
 
-/** Load all packages for a version, in creation order (traceability). */
 export async function loadPackagesForVersion(
   versionId: string,
 ): Promise<ProductPackageRecord[]> {
@@ -438,9 +391,18 @@ export async function loadPackagesForVersion(
   return rows as unknown as ProductPackageRecord[];
 }
 
-/** Check whether a version with the given content canonical hash already exists
- *  (immutability audit: identical content should not produce a new version). */
+/**
+ * Check whether a version with the given content canonical hash already exists.
+ *
+ * Uses findFirst since contentCanonicalHash is now part of a composite unique
+ * (generationId, contentCanonicalHash) rather than a standalone unique field.
+ * This is an immutability audit: identical content should not produce a new
+ * version within the same generation.
+ */
 export async function versionContentExists(contentCanonicalHash: string): Promise<boolean> {
-  const row = await db.productVersion.findUnique({ where: { contentCanonicalHash } });
+  const row = await db.productVersion.findFirst({
+    where: { contentCanonicalHash },
+  });
   return row !== null;
 }
+

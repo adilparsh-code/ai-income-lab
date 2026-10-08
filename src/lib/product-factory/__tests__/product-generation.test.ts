@@ -636,3 +636,337 @@ describe('B1 production surface unchanged', () => {
     await db.opportunity.delete({ where: { id: opp.id } });
   });
 });
+
+// ===========================================================================
+// 10. PROVENANCE-AWARE VERSION DEDUPLICATION (Codex issue #2 fix)
+// ===========================================================================
+// Verifies that identical content from different specifications or generation
+// modes produces NEW versions, not a reuse of an unrelated historical version.
+// Provenance (specificationId + generationMode) is part of version identity.
+
+describe('B1 provenance-aware version deduplication', () => {
+  it('identical content from a different specification creates a NEW version', async () => {
+    const specA = await getOrCreateSpecification({
+      spec: baseSpec({ name: 'Spec-A-' + Math.random().toString(36).slice(2, 8) }),
+    });
+    const specB = await getOrCreateSpecification({
+      spec: baseSpec({ name: 'Spec-B-' + Math.random().toString(36).slice(2, 8) }),
+    });
+    assert.notEqual(specA.spec.id, specB.spec.id);
+
+    const content = { name: 'shared-content', productType: 'DIGITAL_PRODUCT' };
+    const versionA = await generateFromSpecification(specA.spec.id, {
+      generationMode: 'deterministic-builder',
+      content,
+    });
+    const versionB = await generateFromSpecification(specB.spec.id, {
+      generationMode: 'deterministic-builder',
+      content,
+    });
+
+    assert.notEqual(versionA.version.id, versionB.version.id,
+      'identical content from different specs must create separate versions');
+    assert.notEqual(versionA.version.generationId, versionB.version.generationId,
+      'generations must be distinct for different specs');
+    assert.equal(versionA.version.content, versionB.version.content,
+      'content is identical (expected)');
+    assert.equal(versionA.version.contentCanonicalHash, versionB.version.contentCanonicalHash,
+      'content canonical hash is identical (expected — same content)');
+
+    const chainA = await loadVersionWithChain(versionA.version.id);
+    const chainB = await loadVersionWithChain(versionB.version.id);
+    assert.ok(chainA);
+    assert.ok(chainB);
+    assert.equal(chainA.specification.id, specA.spec.id);
+    assert.equal(chainB.specification.id, specB.spec.id);
+  });
+
+  it('identical content from a different generation mode creates a NEW version', async () => {
+    const { spec } = await getOrCreateSpecification({
+      spec: baseSpec({ name: 'Mode-diff-' + Math.random().toString(36).slice(2, 8) }),
+    });
+
+    const content = { name: 'mode-content', productType: 'DIGITAL_PRODUCT' };
+
+    const versionA = await generateFromSpecification(spec.id, {
+      generationMode: 'deterministic-builder',
+      content,
+    });
+
+    const versionB = await generateFromSpecification(spec.id, {
+      generationMode: 'manual-review',
+      content,
+    });
+
+    assert.notEqual(versionA.version.id, versionB.version.id,
+      'identical content with different generation modes must create separate versions');
+    assert.notEqual(versionA.version.generationId, versionB.version.generationId);
+    assert.equal(versionA.version.generationMode, 'deterministic-builder');
+    assert.equal(versionB.version.generationMode, 'manual-review');
+  });
+
+  it('identical content from the SAME specification + mode returns the existing version (dedup still works)', async () => {
+    const { spec } = await getOrCreateSpecification({
+      spec: baseSpec({ name: 'Dedup-ok-' + Math.random().toString(36).slice(2, 8) }),
+    });
+
+    const content = { name: 'dedup-content', productType: 'DIGITAL_PRODUCT' };
+
+    const first = await generateFromSpecification(spec.id, {
+      generationMode: 'deterministic-builder',
+      content,
+      versionLabel: 'v1',
+    });
+
+    const second = await generateFromSpecification(spec.id, {
+      generationMode: 'deterministic-builder',
+      content,
+      versionLabel: 'v2',
+    });
+
+    assert.equal(second.version.id, first.version.id,
+      'same spec + same mode + same content must return the existing version');
+    assert.equal(second.version.versionLabel, 'v1',
+      'original label is preserved (version is immutable)');
+  });
+
+  it('three specs with identical content each get their own version', async () => {
+    const specs = await Promise.all([
+      getOrCreateSpecification({ spec: baseSpec({ name: 'Triple-A' }) }),
+      getOrCreateSpecification({ spec: baseSpec({ name: 'Triple-B' }) }),
+      getOrCreateSpecification({ spec: baseSpec({ name: 'Triple-C' }) }),
+    ]);
+
+    const content = { name: 'triple-content', productType: 'DIGITAL_PRODUCT' };
+
+    const versions = await Promise.all(
+      specs.map(s => generateFromSpecification(s.spec.id, {
+        generationMode: 'deterministic-builder',
+        content,
+      })),
+    );
+
+    const versionIds = new Set(versions.map(v => v.version.id));
+    assert.equal(versionIds.size, 3,
+      'each specification must get its own version despite identical content');
+    assert.equal(versions[0].version.contentCanonicalHash,
+                 versions[1].version.contentCanonicalHash,
+                 'content hashes match (same content)');
+    assert.equal(versions[1].version.contentCanonicalHash,
+                 versions[2].version.contentCanonicalHash,
+                 'content hashes match (same content)');
+
+    const chains = await Promise.all(
+      versions.map(v => loadVersionWithChain(v.version.id)),
+    );
+    for (let i = 0; i < 3; i++) {
+      assert.ok(chains[i]);
+      assert.equal(chains[i].specification.id, specs[i].spec.id,
+        `version ${i} must trace to spec ${i}`);
+    }
+  });
+});
+
+// ===========================================================================
+// 11. PACKAGE IDENTITY WITH PROVENANCE (Codex issue #3 fix)
+// ===========================================================================
+// packageHash now includes versionId + packageType + canonical body.
+// This means:
+//  - Same body CAN exist for different versions (different versionId -> different hash)
+//  - Same body CANNOT be duplicated for the same version + type (unique constraint)
+//  - Package provenance is always traceable through versionId FK
+
+describe('B1 package identity with provenance', () => {
+  it('the same package body can exist for different versions', async () => {
+    const { spec } = await getOrCreateSpecification({
+      spec: baseSpec({ name: 'Pkg-provenance-' + Math.random().toString(36).slice(2, 8) }),
+    });
+
+    const v1 = await generateFromSpecification(spec.id, {
+      generationMode: 'deterministic-builder',
+      content: { name: 'v1-pkg-test', productType: 'DIGITAL_PRODUCT' },
+      versionLabel: 'v1',
+    });
+    const v2 = await generateFromSpecification(spec.id, {
+      generationMode: 'deterministic-builder',
+      content: { name: 'v2-pkg-test', productType: 'DIGITAL_PRODUCT' },
+      versionLabel: 'v2',
+    });
+
+    const sameBody = { title: 'Shared Draft', version: '1.0.0' };
+
+    const pkg1 = await createPackageForVersion(v1.version.id, {
+      packageType: 'listing-draft',
+      packageBody: sameBody,
+    });
+    const pkg2 = await createPackageForVersion(v2.version.id, {
+      packageType: 'listing-draft',
+      packageBody: sameBody,
+    });
+
+    assert.notEqual(pkg1.packageHash, pkg2.packageHash,
+      'same body for different versions must produce different package hashes');
+    assert.equal(pkg1.versionId, v1.version.id);
+    assert.equal(pkg2.versionId, v2.version.id);
+
+    const packages1 = await loadPackagesForVersion(v1.version.id);
+    const packages2 = await loadPackagesForVersion(v2.version.id);
+    assert.equal(packages1.length, 1);
+    assert.equal(packages2.length, 1);
+    assert.equal(packages1[0].packageBody, pkg1.packageBody);
+    assert.equal(packages2[0].packageBody, pkg2.packageBody);
+  });
+
+  it('the same package body CANNOT be duplicated for the same version + type', async () => {
+    const { spec } = await getOrCreateSpecification({
+      spec: baseSpec({ name: 'Pkg-dedup-' + Math.random().toString(36).slice(2, 8) }),
+    });
+
+    const gen = await generateFromSpecification(spec.id, {
+      generationMode: 'deterministic-builder',
+      content: { name: 'pkg-dedup-test', productType: 'DIGITAL_PRODUCT' },
+    });
+
+    const body = { title: 'Unique Draft', version: '1.0.0' };
+
+    const pkg1 = await createPackageForVersion(gen.version.id, {
+      packageType: 'listing-draft',
+      packageBody: body,
+    });
+
+    await assert.rejects(
+      () => createPackageForVersion(gen.version.id, {
+        packageType: 'listing-draft',
+        packageBody: body,
+      }),
+      /unique constraint|Unique constraint|SQLITE_CONSTRAINT|P2002/i,
+      'duplicate package for same version+type+body must be rejected',
+    );
+
+    const packages = await loadPackagesForVersion(gen.version.id);
+    assert.equal(packages.length, 1,
+      'only one package should exist for this version after duplicate rejection');
+    assert.equal(packages[0].id, pkg1.id);
+  });
+
+  it('the same package body CAN exist for the same version with different package types', async () => {
+    const { spec } = await getOrCreateSpecification({
+      spec: baseSpec({ name: 'Pkg-type-diff-' + Math.random().toString(36).slice(2, 8) }),
+    });
+
+    const gen = await generateFromSpecification(spec.id, {
+      generationMode: 'deterministic-builder',
+      content: { name: 'pkg-type-test', productType: 'DIGITAL_PRODUCT' },
+    });
+
+    const body = { title: 'Multi-type Draft', version: '1.0.0' };
+
+    const pkg1 = await createPackageForVersion(gen.version.id, {
+      packageType: 'build-manifest',
+      packageBody: body,
+    });
+    const pkg2 = await createPackageForVersion(gen.version.id, {
+      packageType: 'listing-draft',
+      packageBody: body,
+    });
+
+    assert.notEqual(pkg1.packageHash, pkg2.packageHash,
+      'different package types must produce different hashes');
+    assert.equal(pkg1.versionId, pkg2.versionId);
+    assert.equal(pkg1.packageType, 'build-manifest');
+    assert.equal(pkg2.packageType, 'listing-draft');
+
+    const packages = await loadPackagesForVersion(gen.version.id);
+    assert.equal(packages.length, 2,
+      'two packages with different types should both exist for the same version');
+  });
+
+  it('package provenance remains traceable through the full chain', async () => {
+    const { spec } = await getOrCreateSpecification({
+      spec: baseSpec({ name: 'Pkg-trace-' + Math.random().toString(36).slice(2, 8) }),
+    });
+
+    const gen = await generateFromSpecification(spec.id, {
+      generationMode: 'autonomous-pipeline',
+      content: { name: 'trace-test', productType: 'DIGITAL_PRODUCT' },
+      versionLabel: 'v1.0.0',
+    });
+
+    const pkg = await createPackageForVersion(gen.version.id, {
+      packageType: 'artifact-bundle-descriptor',
+      packageBody: { artifactId: 'art-1', format: 'tar.gz' },
+      artifactRef: 'artifacts/bundle-1.tar.gz',
+    });
+
+    const chain = await loadVersionWithChain(gen.version.id);
+    assert.ok(chain);
+    assert.equal(chain.version.id, gen.version.id);
+    assert.equal(chain.generation.id, gen.generation.id);
+    assert.equal(chain.generation.generationMode, 'autonomous-pipeline');
+    assert.equal(chain.specification.id, spec.id);
+    assert.equal(chain.generation.specificationId, spec.id);
+
+    const packages = await loadPackagesForVersion(gen.version.id);
+    assert.equal(packages.length, 1);
+    assert.equal(packages[0].id, pkg.id);
+    assert.equal(packages[0].versionId, gen.version.id);
+    assert.equal(packages[0].packageType, 'artifact-bundle-descriptor');
+  });
+});
+
+// ===========================================================================
+// 12. IMMUTABILITY REGRESSION (ensure fixes did not weaken immutability)
+// ===========================================================================
+
+describe('B1 immutability regression after provenance fixes', () => {
+  it('a version is never overwritten when content changes (new generation created)', async () => {
+    const { spec } = await getOrCreateSpecification({
+      spec: baseSpec({ name: 'Immut-regress-' + Math.random().toString(36).slice(2, 8) }),
+    });
+
+    const v1 = await generateFromSpecification(spec.id, {
+      generationMode: 'deterministic-builder',
+      content: { name: 'original', productType: 'DIGITAL_PRODUCT' },
+      versionLabel: 'v1',
+    });
+
+    const v2 = await generateFromSpecification(spec.id, {
+      generationMode: 'deterministic-builder',
+      content: { name: 'changed', productType: 'DIGITAL_PRODUCT' },
+      versionLabel: 'v2',
+    });
+
+    assert.notEqual(v1.version.id, v2.version.id);
+    assert.equal(JSON.parse(v1.version.content).name, 'original');
+    assert.equal(JSON.parse(v2.version.content).name, 'changed');
+
+    const reloadedV1 = await db.productVersion.findUnique({ where: { id: v1.version.id } });
+    assert.ok(reloadedV1);
+    assert.equal(JSON.parse(reloadedV1.content).name, 'original');
+  });
+
+  it('a package is never used to mutate a version', async () => {
+    const { spec } = await getOrCreateSpecification({
+      spec: baseSpec({ name: 'Pkg-immut-' + Math.random().toString(36).slice(2, 8) }),
+    });
+
+    const gen = await generateFromSpecification(spec.id, {
+      generationMode: 'deterministic-builder',
+      content: { name: 'pkg-immut-content', productType: 'DIGITAL_PRODUCT' },
+    });
+
+    const versionBefore = await db.productVersion.findUnique({ where: { id: gen.version.id } });
+    await createPackageForVersion(gen.version.id, {
+      packageType: 'build-manifest',
+      packageBody: { productId: 'p-999', productType: 'DIGITAL_PRODUCT', version: '9.9.9' },
+    });
+
+    // Version must be unchanged after packaging.
+    const versionAfter = await db.productVersion.findUnique({ where: { id: gen.version.id } });
+    assert.ok(versionAfter);
+    assert.equal(versionAfter.content, versionBefore.content);
+    assert.equal(versionAfter.generationMode, versionBefore.generationMode);
+    assert.equal(versionAfter.contentCanonicalHash, versionBefore.contentCanonicalHash);
+    assert.equal(versionAfter.versionLabel, versionBefore.versionLabel);
+  });
+});

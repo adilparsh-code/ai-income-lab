@@ -284,13 +284,14 @@ model ProductVersion {
   /// Canonical identity of the version content (SHA-256 of the canonical JSON
   /// of the version content fields). Used for immutability audits and deduplication
   /// of packaging.
-  contentCanonicalHash String  @unique
+  contentCanonicalHash String
 
   createdAt          DateTime @default(now())
 
   packages           ProductPackage[]
 
   @@unique([generationId, versionLabel])  // one label per generation
+  @@unique([generationId, contentCanonicalHash])  // one content per generation
   @@index([generationId])
   @@index([productId])
 }
