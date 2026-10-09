@@ -272,7 +272,7 @@ describe('B1 generation creates a product version', () => {
     });
     assert.equal(result.version.productId, product.id);
     const chain = await loadVersionWithChain(result.version.id);
-    assert.ok(chain);
+    if (!chain) throw new Error('chain must exist');
     assert.equal(chain!.specification.id, spec.id);
     assert.equal(chain!.generation.specificationId, spec.id);
     await db.product.delete({ where: { id: product.id } });
@@ -396,7 +396,7 @@ describe('B1 package traceability', () => {
     assert.ok(/^[0-9a-f]{64}$/.test(pkg.packageHash));
     assert.equal(pkg.artifactRef, 'manifests/p-1/v1/manifest.json');
     const chain = await loadVersionWithChain(gen.version.id);
-    assert.ok(chain);
+    if (!chain) throw new Error('chain must exist');
     assert.equal(chain!.version.id, gen.version.id);
     assert.equal(chain!.generation.generationMode, 'deterministic-builder');
     assert.equal(chain!.specification.id, spec.id);
@@ -576,7 +576,7 @@ describe('B1 production surface unchanged', () => {
       },
     });
     const reloaded = await db.product.findUnique({ where: { id: product.id } });
-    assert.ok(reloaded);
+    if (!reloaded) throw new Error('reloaded must exist');
     assert.equal(reloaded.solution, '{}');
     assert.equal(reloaded.userFlows, '[]');
     assert.equal(reloaded.techRequirements, '[]');
@@ -675,8 +675,8 @@ describe('B1 provenance-aware version deduplication', () => {
 
     const chainA = await loadVersionWithChain(versionA.version.id);
     const chainB = await loadVersionWithChain(versionB.version.id);
-    assert.ok(chainA);
-    assert.ok(chainB);
+    if (!chainA) throw new Error("chainA must exist");
+    if (!chainB) throw new Error("chainB must exist");
     assert.equal(chainA.specification.id, specA.spec.id);
     assert.equal(chainB.specification.id, specB.spec.id);
   });
@@ -760,7 +760,7 @@ describe('B1 provenance-aware version deduplication', () => {
       versions.map(v => loadVersionWithChain(v.version.id)),
     );
     for (let i = 0; i < 3; i++) {
-      assert.ok(chains[i]);
+      if (!chains[i]) throw new Error(`chain ${i} must exist`);
       assert.equal(chains[i].specification.id, specs[i].spec.id,
         `version ${i} must trace to spec ${i}`);
     }
@@ -899,7 +899,7 @@ describe('B1 package identity with provenance', () => {
     });
 
     const chain = await loadVersionWithChain(gen.version.id);
-    assert.ok(chain);
+    if (!chain) throw new Error('chain must exist');
     assert.equal(chain.version.id, gen.version.id);
     assert.equal(chain.generation.id, gen.generation.id);
     assert.equal(chain.generation.generationMode, 'autonomous-pipeline');
@@ -956,6 +956,8 @@ describe('B1 immutability regression after provenance fixes', () => {
     });
 
     const versionBefore = await db.productVersion.findUnique({ where: { id: gen.version.id } });
+    if (!versionBefore) throw new Error('versionBefore must exist');
+
     await createPackageForVersion(gen.version.id, {
       packageType: 'build-manifest',
       packageBody: { productId: 'p-999', productType: 'DIGITAL_PRODUCT', version: '9.9.9' },
@@ -963,7 +965,7 @@ describe('B1 immutability regression after provenance fixes', () => {
 
     // Version must be unchanged after packaging.
     const versionAfter = await db.productVersion.findUnique({ where: { id: gen.version.id } });
-    assert.ok(versionAfter);
+    if (!versionAfter) throw new Error('versionAfter must exist');
     assert.equal(versionAfter.content, versionBefore.content);
     assert.equal(versionAfter.generationMode, versionBefore.generationMode);
     assert.equal(versionAfter.contentCanonicalHash, versionBefore.contentCanonicalHash);
