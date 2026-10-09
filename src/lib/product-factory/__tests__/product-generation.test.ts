@@ -760,8 +760,9 @@ describe('B1 provenance-aware version deduplication', () => {
       versions.map(v => loadVersionWithChain(v.version.id)),
     );
     for (let i = 0; i < 3; i++) {
-      if (!chains[i]) throw new Error(`chain ${i} must exist`);
-      assert.equal(chains[i].specification.id, specs[i].spec.id,
+      const chain = chains[i];
+      if (!chain) throw new Error(`chain ${i} must exist`);
+      assert.equal(chain.specification.id, specs[i].spec.id,
         `version ${i} must trace to spec ${i}`);
     }
   });
