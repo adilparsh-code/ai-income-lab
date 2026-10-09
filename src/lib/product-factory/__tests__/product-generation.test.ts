@@ -7,7 +7,7 @@
 // packaging, immutability, and duplicate-identity protection are all real DB
 // operations. Concurrency is approximated by duplicate writes, not by threads
 // (Node single-threaded test runner).
-// ==========================================================================
+// ===========================================================================
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
