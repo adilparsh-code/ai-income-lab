@@ -16,6 +16,7 @@
 
 import { createHmac, randomBytes } from 'node:crypto';
 import type {
+  AccessHold,
   DeliveryRecord,
   DeliveryStorePort,
   DeliveryAsset,
@@ -32,12 +33,17 @@ export interface InMemoryDeliveryStore extends DeliveryStorePort {
   seedPayment(payment: VerifiedPayment): void;
   seedEntitlement(record: EntitlementRecord): void;
   seedTicket(record: TicketRecord): void;
+  /** Place an access hold on an order (refund, chargeback, dispute, ...). */
+  seedHold(hold: AccessHold): void;
+  /** Lift the access hold on an order. */
+  releaseHold(orderId: string): void;
   /** A read-only view of everything the store holds. */
   snapshot(): {
     entitlements: EntitlementRecord[];
     tickets: TicketRecord[];
     deliveries: DeliveryRecord[];
     payments: VerifiedPayment[];
+    holds: AccessHold[];
   };
 }
 
@@ -60,6 +66,7 @@ export function createInMemoryDeliveryStore(
   const entitlements = new Map<string, EntitlementRecord>();
   const tickets = new Map<string, TicketRecord>();
   const deliveries = new Map<string, DeliveryRecord>();
+  const holds = new Map<string, AccessHold>();
 
   const store: InMemoryDeliveryStore = {
     seedPayment(payment) {
@@ -74,12 +81,21 @@ export function createInMemoryDeliveryStore(
       tickets.set(record.ticketId, { ...record, assets: record.assets.map((asset) => ({ ...asset })) });
     },
 
+    seedHold(hold) {
+      holds.set(hold.orderId, { ...hold });
+    },
+
+    releaseHold(orderId) {
+      holds.delete(orderId);
+    },
+
     snapshot() {
       return {
         entitlements: [...entitlements.values()].map((record) => ({ ...record })),
         tickets: [...tickets.values()].map((record) => ({ ...record })),
         deliveries: [...deliveries.values()].map((record) => ({ ...record })),
         payments: [...payments.values()].map((record) => ({ ...record })),
+        holds: [...holds.values()].map((hold) => ({ ...hold })),
       };
     },
 
@@ -102,6 +118,12 @@ export function createInMemoryDeliveryStore(
         }
       }
       return null;
+    },
+
+    async findAccessHold(orderId) {
+      if (options.failReads) throw new Error('store unavailable');
+      const hold = holds.get(orderId);
+      return hold ? { ...hold } : null;
     },
 
     async saveEntitlement(record) {

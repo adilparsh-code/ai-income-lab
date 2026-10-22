@@ -34,6 +34,7 @@ import { sha256Hex } from '@/lib/product-factory/canonical';
 import {
   DELIVERY_ASSET_KINDS,
   PAYMENT_VERIFICATION_SOURCES,
+  type AccessHold,
   type DeliveryAsset,
   type DeliveryRecord,
   type DeliveryStatus,
@@ -105,6 +106,25 @@ function boundReason(reason: string): string {
   return reason.slice(0, MAX_REASON);
 }
 
+/**
+ * The active access hold on an order, if any.
+ *
+ * `null` means "no hold". A store that cannot answer returns `ok: false` —
+ * which is NOT the same as "no hold": the caller must fail closed, because
+ * the whole point of the hold is to stop a delivery that would otherwise
+ * succeed.
+ */
+async function readAccessHold(
+  deps: DeliveryDeps,
+  orderId: string,
+): Promise<{ ok: true; hold: AccessHold | null } | { ok: false }> {
+  try {
+    return { ok: true, hold: await deps.store.findAccessHold(orderId) };
+  } catch {
+    return { ok: false };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 1. ENTITLEMENT
 // ---------------------------------------------------------------------------
@@ -115,6 +135,7 @@ export type EntitlementRefusalCode =
   | 'BUYER_MISMATCH'
   | 'ASSET_INVALID'
   | 'NO_ASSETS'
+  | 'ACCESS_HELD'
   | 'STORE_UNAVAILABLE';
 
 export interface EntitlementRequest {
@@ -234,6 +255,27 @@ export async function evaluateEntitlement(
     };
   }
 
+  // A refund, chargeback, cancellation or dispute places a hold on the
+  // order. An entitlement is a promise to deliver; a held order must not
+  // receive one.
+  const hold = await readAccessHold(deps, orderId);
+  if (!hold.ok) {
+    return {
+      ok: false,
+      code: 'STORE_UNAVAILABLE',
+      reason: 'The entitlement store could not be read. Try again shortly.',
+      status: 'PENDING',
+    };
+  }
+  if (hold.hold) {
+    return {
+      ok: false,
+      code: 'ACCESS_HELD',
+      reason: 'Access to this order is currently held.',
+      status: 'REVOKED',
+    };
+  }
+
   const entitlement: EntitlementRecord = {
     entitlementId: entitlementIdFor(orderId, buyerId, productVersionId),
     orderId,
@@ -286,6 +328,7 @@ export type TicketRefusalCode =
   | 'ENTITLEMENT_REVOKED'
   | 'ENTITLEMENT_EXPIRED'
   | 'NO_ASSETS'
+  | 'ACCESS_HELD'
   | 'STORE_UNAVAILABLE';
 
 export interface TicketRequest {
@@ -302,7 +345,10 @@ export interface IssuedTicket {
   /** The raw token. Never stored, never logged, never returned twice. */
   token: string;
   entitlementId: string;
+  orderId: string;
   buyerId: string;
+  /** The product version this ticket is bound to. */
+  productVersionId: string;
   assets: DeliveryAsset[];
   issuedAt: string;
   expiresAt: string;
@@ -397,6 +443,26 @@ export async function issueDeliveryTicket(
     };
   }
 
+  // A hold placed between the payment and the ticket (a chargeback, a
+  // dispute) must stop the ticket from being issued at all.
+  const hold = await readAccessHold(deps, entitlement.orderId);
+  if (!hold.ok) {
+    return {
+      ok: false,
+      code: 'STORE_UNAVAILABLE',
+      reason: 'The entitlement store could not be read. Try again shortly.',
+      status: 'PENDING',
+    };
+  }
+  if (hold.hold) {
+    return {
+      ok: false,
+      code: 'ACCESS_HELD',
+      reason: 'Access to this order is currently held.',
+      status: 'REVOKED',
+    };
+  }
+
   const token = randomBytes(32).toString('base64url');
   const tokenFingerprint = deps.signer.fingerprint(token);
   const ticketId = `tkt_${sha256Hex(tokenFingerprint).slice(0, 24)}`;
@@ -407,7 +473,9 @@ export async function issueDeliveryTicket(
     ticketId,
     tokenFingerprint,
     entitlementId: entitlement.entitlementId,
+    orderId: entitlement.orderId,
     buyerId: entitlement.buyerId,
+    productVersionId: entitlement.productVersionId,
     assets: entitlement.assets.map((asset) => ({ ...asset })),
     state: 'ISSUED',
     issuedAt: now.toISOString(),
@@ -432,7 +500,9 @@ export async function issueDeliveryTicket(
       ticketId: ticket.ticketId,
       token,
       entitlementId: ticket.entitlementId,
+      orderId: ticket.orderId,
       buyerId: ticket.buyerId,
+      productVersionId: ticket.productVersionId,
       assets: ticket.assets,
       issuedAt: ticket.issuedAt,
       expiresAt: ticket.expiresAt,
@@ -448,6 +518,8 @@ export type RedemptionRefusalCode =
   | 'INVALID_REQUEST'
   | 'INVALID_TICKET'
   | 'BUYER_MISMATCH'
+  | 'ORDER_MISMATCH'
+  | 'VERSION_MISMATCH'
   | 'TICKET_EXPIRED'
   | 'TICKET_REVOKED'
   | 'TICKET_ALREADY_USED'
@@ -455,6 +527,7 @@ export type RedemptionRefusalCode =
   | 'ENTITLEMENT_REVOKED'
   | 'ENTITLEMENT_EXPIRED'
   | 'ENTITLEMENT_NOT_GRANTED'
+  | 'ACCESS_HELD'
   | 'ASSET_TAMPERED'
   | 'ASSET_NOT_FOUND'
   | 'STORAGE_NOT_CONFIGURED'
@@ -638,6 +711,26 @@ export async function redeemDeliveryTicket(
     };
   }
 
+  // The ticket's binding must still match the entitlement it came from. A
+  // ticket that points at another order, or at another product version, was
+  // not issued for this entitlement.
+  if (ticket.orderId !== entitlement.orderId) {
+    return {
+      ok: false,
+      status: 'FAILED',
+      code: 'ORDER_MISMATCH',
+      reason: 'This delivery ticket does not match the order it was issued for.',
+    };
+  }
+  if (ticket.productVersionId !== entitlement.productVersionId) {
+    return {
+      ok: false,
+      status: 'FAILED',
+      code: 'VERSION_MISMATCH',
+      reason: 'This delivery ticket was issued for a different product version.',
+    };
+  }
+
   const deliveryId = deliveryIdFor(ticket.ticketId, buyerId);
 
   // A previous attempt may already exist for this deterministic id.
@@ -657,6 +750,32 @@ export async function redeemDeliveryTicket(
       status: 'FAILED',
       code: 'ASSET_TAMPERED',
       reason: priorDelivery.value.reason || 'A previous delivery attempt for this ticket failed.',
+      deliveryId,
+    };
+  }
+
+  // ---- The access hold, checked as late as possible ------------------------
+  // A refund, chargeback, cancellation or dispute that arrived AFTER the
+  // ticket was issued must still stop the delivery. The check sits
+  // immediately before the private read, which is the last point before
+  // bytes can reach the buyer, and a store that cannot answer is treated as
+  // "maybe held" — never as "not held".
+  const hold = await readAccessHold(deps, ticket.orderId);
+  if (!hold.ok) {
+    return {
+      ok: false,
+      status: 'PENDING',
+      code: 'STORE_UNAVAILABLE',
+      reason: 'The entitlement store could not be read. Try again shortly.',
+      deliveryId,
+    };
+  }
+  if (hold.hold) {
+    return {
+      ok: false,
+      status: 'REVOKED',
+      code: 'ACCESS_HELD',
+      reason: 'Access to this order is currently held.',
       deliveryId,
     };
   }

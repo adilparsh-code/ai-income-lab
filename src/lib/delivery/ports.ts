@@ -130,6 +130,25 @@ export interface EntitlementRecord {
 export type TicketState = 'ISSUED' | 'CONSUMED' | 'EXPIRED' | 'REVOKED';
 
 /**
+ * A durable block on access for one order.
+ *
+ * Produced by the adverse-intake pipeline when a refund, chargeback,
+ * cancellation or dispute is reported. A hold means: do not hand over the
+ * private assets, even when the buyer holds a valid, unspent ticket. The
+ * check is fail-closed — a store that cannot answer "is this order held?"
+ * must be treated as "held", never as "not held".
+ */
+export interface AccessHold {
+  orderId: string;
+  /** Bounded reason, e.g. CHARGEBACK_CREATED. Never buyer content. */
+  reason: string;
+  /** The provider event that caused the hold. */
+  sourceEventId: string;
+  /** ISO timestamp of the hold. */
+  createdAt: string;
+}
+
+/**
  * The durable record of a single-use delivery ticket.
  *
  * The raw token is NEVER stored: only its fingerprint (a keyed HMAC) is, so a
@@ -140,7 +159,11 @@ export interface TicketRecord {
   /** Keyed fingerprint of the raw token. The raw token is returned once. */
   tokenFingerprint: string;
   entitlementId: string;
+  /** The order the ticket was issued for. Never mutated. */
+  orderId: string;
   buyerId: string;
+  /** The product version the ticket is bound to. Never mutated. */
+  productVersionId: string;
   /** The assets with their pinned content hashes. */
   assets: DeliveryAsset[];
   state: TicketState;
@@ -208,6 +231,15 @@ export interface DeliveryStorePort {
 
   /** The entitlement for one order and buyer, or null. */
   findEntitlementByOrder(orderId: string, buyerId: string): Promise<EntitlementRecord | null>;
+
+  /**
+   * The active access hold on an order, or null when there is none.
+   *
+   * A refund, chargeback, cancellation or dispute places a hold; a held
+   * order must not deliver. A store that cannot answer must throw, so the
+   * caller can fail closed instead of assuming "not held".
+   */
+  findAccessHold(orderId: string): Promise<AccessHold | null>;
 
   /** Must be idempotent on `entitlementId`. */
   saveEntitlement(record: EntitlementRecord): Promise<{ ok: true } | { ok: false; reason: string }>;

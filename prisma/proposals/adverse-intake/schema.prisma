@@ -1,0 +1,201 @@
+// ============================================================================
+// ISOLATED PROPOSAL — durable adverse-event intake
+// ============================================================================
+// THIS FILE IS NOT PART OF THE ACTIVE APPLICATION SCHEMA.
+//
+// `prisma/schema.prisma` stays untouched. This proposal exists so the
+// durable contract can be reviewed, validated and type-checked in isolation
+// (see scripts/verify-adverse-intake-proposal.mjs) before anyone decides to
+// apply it as a migration. It is ADDITIVE: four new tables and two new
+// enums, zero changes to existing models.
+//
+// WHAT IT MODELS
+// --------------
+// An "adverse event" is a provider-reported event that can invalidate money
+// that was already earned: a chargeback, a refund, a dispute, a cancellation.
+// Intake of such an event has to survive a hostile and unreliable world:
+//
+//   - the same provider event may arrive many times      -> unique (provider,
+//                                                             providerEventId)
+//   - the same provider event may arrive with DIFFERENT
+//     content (a replay that was tampered with)          -> payloadDigest is
+//                                                             compared, never
+//                                                             silently ignored
+//   - an event may arrive before the order it refers to  -> orderId is
+//                                                             nullable, and the
+//                                                             event waits as
+//                                                             UNANCHORED
+//   - several workers may try to process one event       -> a lease with a
+//                                                             fencing epoch
+//   - a worker may crash mid-commit                      -> the outcome is
+//                                                             UNKNOWN until
+//                                                             reconciled
+//   - an event may be unprocessable                      -> QUARANTINED with a
+//                                                             reason, never
+//                                                             silently dropped
+//
+// The transaction contract these tables implement is documented in
+// docs/adverse-intake-transaction-contract.md.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "./generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// The lifecycle of one intake record.
+enum AdverseEventStatus {
+  /// Accepted and stored; not yet claimed by a worker.
+  RECEIVED
+  /// A worker holds a live lease and is processing it.
+  LEASED
+  /// The event's effect (hold + evidence) is durably applied.
+  APPLIED
+  /// The event cannot be processed automatically and needs a human.
+  QUARANTINED
+  /// The event was intentionally discarded (e.g. an event type with no effect).
+  IGNORED
+}
+
+/// Whether a hold currently blocks access to the delivered assets.
+enum AdverseHoldState {
+  ACTIVE
+  RELEASED
+}
+
+/// One provider event, deduplicated and anchored to an order when possible.
+model AdverseEvent {
+  id String @id @default(cuid())
+
+  /// The payment provider that reported the event (e.g. "polar").
+  provider String
+  /// The provider's own event id. Unique per provider: the dedupe key.
+  providerEventId String
+  /// The normalized adverse event type (CHARGEBACK_CREATED, ...).
+  eventType String
+  /// The envelope contract version the intake understood.
+  schemaVersion Int @default(1)
+  /// sha256 of the canonical payload. Two deliveries of the same provider
+  /// event id MUST carry the same digest; a different digest is a conflict.
+  payloadDigest String
+  /// Correlation id for cross-system tracing.
+  correlationId String
+
+  /// The paid order this event refers to, when it is known. NULL means the
+  /// event arrived before its order: it is stored, and anchored later.
+  orderId String?
+  /// The buyer the order belongs to, when known.
+  buyerId String?
+  /// The amount in minor units (cents). Non-negative when present.
+  amountMinor Int?
+  /// ISO 4217 currency code, when the provider reported one.
+  currency String?
+
+  /// When the provider says the event happened.
+  occurredAt DateTime
+  /// When this system received it.
+  receivedAt DateTime @default(now())
+
+  status AdverseEventStatus @default(RECEIVED)
+
+  /// How many processing attempts have been made. Int32: never overflow.
+  attemptCount Int @default(0)
+
+  /// The worker currently holding the lease, if any.
+  leaseOwner String?
+  /// Fencing counter. Bumped on every lease acquisition so a stale worker
+  /// (whose lease expired and was taken over) can be rejected on write.
+  leaseEpoch Int @default(0)
+  /// When the current lease expires. A lease is only valid while it is in
+  /// the future; expiry is evaluated against the caller's clock.
+  leaseExpiresAt DateTime?
+
+  /// Short, bounded reason for the last failure. Never secrets, never payloads.
+  lastError String?
+  /// When the event was quarantined.
+  quarantinedAt DateTime?
+  /// When the event's effect was durably applied.
+  appliedAt DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  attempts AdverseEventAttempt[]
+  holds    AdverseHold[]
+  evidence AdverseEventEvidence[]
+
+  @@unique([provider, providerEventId])
+  @@index([orderId])
+  @@index([status, receivedAt])
+  @@index([leaseExpiresAt])
+}
+
+/// One processing attempt. The attempt number is unique per event, so a
+/// replayed attempt can never be recorded twice.
+model AdverseEventAttempt {
+  id String @id @default(cuid())
+
+  /// The event this attempt belongs to.
+  eventId String
+  /// 1-based attempt number for this event.
+  attempt Int
+  /// The worker that made the attempt.
+  workerId String
+  /// APPLIED | REJECTED | QUARANTINED | LEASE_LOST | AMBIGUOUS | DUPLICATE.
+  outcome String
+  /// Short, bounded, human-safe detail. Never secrets.
+  detail String @default("")
+  createdAt DateTime @default(now())
+
+  event AdverseEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, attempt])
+  @@index([eventId, createdAt])
+}
+
+/// A block on access for an order, created by an adverse event.
+model AdverseHold {
+  id String @id @default(cuid())
+
+  /// The event that caused the hold.
+  eventId String
+  /// The order whose access is blocked.
+  orderId String
+  /// The buyer, when known.
+  buyerId String?
+  /// Bounded reason, e.g. "CHARGEBACK_CREATED".
+  reason String
+  state AdverseHoldState @default(ACTIVE)
+  /// The provider event id that caused the hold. One hold per (event, order).
+  sourceEventId String
+  createdAt DateTime @default(now())
+  /// When the hold was released (refund settled, dispute won, ...).
+  releasedAt DateTime?
+
+  event AdverseEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceEventId, orderId])
+  @@index([orderId, state])
+}
+
+/// The durable record of what an applied event actually did.
+model AdverseEventEvidence {
+  id String @id @default(cuid())
+
+  /// The event the evidence belongs to.
+  eventId String
+  /// HOLD_APPLIED | HOLD_RELEASED | REFUND_RECORDED | DISPUTE_OPENED.
+  kind String
+  /// The external reference this evidence is about (provider refund id, ...).
+  reference String
+  /// Short, bounded detail. Never secrets.
+  detail String @default("")
+  createdAt DateTime @default(now())
+
+  event AdverseEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, kind, reference])
+}

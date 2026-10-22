@@ -1,0 +1,267 @@
+// ============================================================================
+// ISOLATED PROPOSAL — durable private delivery
+// ============================================================================
+// THIS FILE IS NOT PART OF THE ACTIVE APPLICATION SCHEMA.
+//
+// `prisma/schema.prisma` stays untouched. This proposal exists so the durable
+// ticket contract can be reviewed, validated and type-checked in isolation
+// (see scripts/verify-private-delivery-proposal.mjs) before anyone decides to
+// apply it as a migration. It is ADDITIVE: six new tables and five new
+// enums, zero changes to existing models.
+//
+// WHAT IT MODELS
+// --------------
+// A paid buyer must receive EXACTLY the asset they paid for, ONCE, and ONLY
+// to them. The durable record of that promise needs to survive:
+//
+//   - the raw bearer token must NEVER be stored      -> only a keyed
+//     fingerprint (HMAC) is persisted, and it is unique
+//   - the promised content must be pinned             -> package id, version id,
+//     asset id and the sha256 content digest are copied onto the ticket, so a
+//     later change to the asset cannot silently change what was sold
+//   - the ticket must be SINGLE USE                  -> the state transition
+//     ISSUED -> CONSUMED is one compare-and-set, guarded by a unique
+//     (entitlementId, tokenFingerprint) pair
+//   - expiry must be durable                         -> issuedAt / expiresAt
+//   - revocation and consumption must be evidenced   -> revokedAt,
+//     consumedAt, consumedByDeliveryId and the DeliveryTicketEvent ledger
+//   - the audit trail must not become a data leak     -> only ids, digests,
+//     bounded reasons and timestamps are stored. No email, no name, no card
+//     data, no raw token, no storage handle.
+//
+// The rules that use these tables live in src/lib/delivery/private-delivery.ts;
+// the contract this schema has to satisfy is stated in
+// src/lib/delivery/private-delivery-schema.ts and explained in
+// docs/private-delivery-persistence-contract.md.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "./generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// The lifecycle of one entitlement.
+enum DeliveryEntitlementState {
+  /// Derived but not yet final (assets not review-ready).
+  PENDING
+  /// The buyer owns the assets.
+  GRANTED
+  /// Administratively withdrawn. Access is refused.
+  REVOKED
+  /// The entitlement is past its expiry.
+  EXPIRED
+}
+
+/// Whether the assets of an entitlement are final enough to release.
+enum DeliveryAssetReviewState {
+  DRAFT
+  REVIEW_READY
+}
+
+/// The lifecycle of one delivery ticket.
+enum DeliveryTicketState {
+  /// Issued and redeemable.
+  ISSUED
+  /// Spent. Exactly one delivery id may hold it.
+  CONSUMED
+  /// Past its expiry.
+  EXPIRED
+  /// Administratively withdrawn before use.
+  REVOKED
+}
+
+/// The outcome of one delivery attempt.
+enum DeliveryOutcomeState {
+  /// The outcome is not known yet (the commit may or may not have landed).
+  PENDING
+  /// The assets were handed to the entitled buyer and the fact is recorded.
+  DELIVERED
+  /// The attempt was refused.
+  FAILED
+}
+
+/// The kind of private asset being delivered.
+enum DeliveryAssetKind {
+  PRODUCT_PACKAGE
+  DELIVERABLE_FILE
+  DOCUMENT
+  ARCHIVE
+}
+
+/// "This buyer paid for this order and owns these assets."
+model DeliveryEntitlement {
+  id String @id @default(cuid())
+
+  /// The paid order (a ServiceEngagement id in the active model).
+  orderId String
+  /// The server-derived buyer identity that owns the order.
+  buyerId String
+  /// The product version this entitlement is bound to. Never mutated.
+  productVersionId String
+  /// The product package this entitlement is bound to, when there is one.
+  packageId String?
+
+  assetReviewState DeliveryAssetReviewState @default(DRAFT)
+  state DeliveryEntitlementState @default(PENDING)
+
+  issuedAt DateTime
+  expiresAt DateTime?
+  revokedAt DateTime?
+  /// Bounded, human-safe reason. Never buyer content, never secrets.
+  revocationReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assets DeliveryEntitlementAsset[]
+  tickets DeliveryTicket[]
+  deliveries DeliveryRecord[]
+
+  /// One entitlement per (order, buyer, version).
+  @@unique([orderId, buyerId, productVersionId])
+  @@index([buyerId])
+  @@index([orderId])
+}
+
+/// The assets an entitlement grants, with the content digest pinned at grant
+/// time. The digest is what the private storage is re-verified against.
+model DeliveryEntitlementAsset {
+  id String @id @default(cuid())
+
+  entitlementId String
+  /// The asset id. Never mutated once granted.
+  assetId String
+  kind DeliveryAssetKind
+  /// Lowercase sha256 hex of the asset bytes.
+  contentHash String
+  sizeBytes Int
+  /// Human-safe label. Never a path, never a credential.
+  label String
+
+  createdAt DateTime @default(now())
+
+  entitlement DeliveryEntitlement @relation(fields: [entitlementId], references: [id], onDelete: Cascade)
+
+  @@unique([entitlementId, assetId])
+}
+
+/// One single-use delivery ticket.
+///
+/// The raw token is NEVER stored: only its keyed fingerprint is, so a
+/// database dump cannot be replayed into a download.
+model DeliveryTicket {
+  /// The ticket id handed to the buyer.
+  id String @id
+
+  /// The keyed HMAC fingerprint of the bearer token. Unique.
+  tokenFingerprint String @unique
+
+  entitlementId String
+  orderId String
+  buyerId String
+  /// The product version this ticket is bound to. Never mutated.
+  productVersionId String
+  /// The product package this ticket is bound to, when there is one.
+  packageId String?
+
+  state DeliveryTicketState @default(ISSUED)
+
+  issuedAt DateTime
+  expiresAt DateTime
+  /// When the ticket was spent.
+  consumedAt DateTime?
+  /// The delivery id that spent it. The single-use marker.
+  consumedByDeliveryId String?
+  revokedAt DateTime?
+  /// Bounded, human-safe reason. Never secrets.
+  revocationReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entitlement DeliveryEntitlement @relation(fields: [entitlementId], references: [id], onDelete: Cascade)
+  assets DeliveryTicketAsset[]
+  events DeliveryTicketEvent[]
+  deliveries DeliveryRecord[]
+
+  /// One live token per entitlement: a second token cannot be issued for the
+  /// same entitlement while the first is unspent.
+  @@unique([entitlementId, tokenFingerprint])
+  @@index([buyerId])
+  @@index([state, expiresAt])
+}
+
+/// The assets a ticket promises, copied at issue time with their content
+/// digests. This is the pin: a later change to the asset cannot change what
+/// the buyer was promised.
+model DeliveryTicketAsset {
+  id String @id @default(cuid())
+
+  ticketId String
+  assetId String
+  kind DeliveryAssetKind
+  /// The sha256 pinned at issue time. Re-verified against private storage
+  /// before any handle is handed out.
+  contentHash String
+  sizeBytes Int
+  label String
+
+  createdAt DateTime @default(now())
+
+  ticket DeliveryTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@unique([ticketId, assetId])
+}
+
+/// One delivery attempt. The deterministic delivery id is the primary key, so
+/// a retry of the same (ticket, buyer) can never create a second row.
+model DeliveryRecord {
+  /// The deterministic delivery id: one ticket and one buyer is one delivery.
+  deliveryId String @id
+
+  ticketId String
+  entitlementId String
+  orderId String
+  buyerId String
+  outcome DeliveryOutcomeState @default(PENDING)
+  /// The asset ids that were handed over.
+  assetIds String[]
+  /// Bounded, human-safe reason. Never secrets, never buyer content.
+  reason String @default("")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ticket DeliveryTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  entitlement DeliveryEntitlement @relation(fields: [entitlementId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+  @@index([buyerId])
+  @@index([orderId])
+}
+
+/// The audit ledger of one ticket: issuance, consumption, revocation,
+/// expiry and refused attempts. Only ids, digests and bounded reasons.
+model DeliveryTicketEvent {
+  id String @id @default(cuid())
+
+  ticketId String
+  /// ISSUED | CONSUMED | REVOKED | EXPIRED | DELIVERY_RECORDED | REFUSED.
+  kind String
+  /// The reference this event is about (delivery id, hold id, ...).
+  reference String
+  /// Bounded, human-safe detail. Never secrets.
+  detail String @default("")
+
+  createdAt DateTime @default(now())
+
+  ticket DeliveryTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  /// The same event is never recorded twice.
+  @@unique([ticketId, kind, reference])
+  @@index([ticketId, createdAt])
+}
