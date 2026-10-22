@@ -117,6 +117,12 @@ export interface EntitlementRecord {
   orderId: string;
   buyerId: string;
   productVersionId: string;
+  /**
+   * The product package this entitlement is bound to, when the product has
+   * one. Null for a product that is not a package. Never mutated once
+   * granted: it is part of the promise the ticket repeats.
+   */
+  packageId: string | null;
   assets: DeliveryAsset[];
   assetReviewState: AssetReviewState;
   state: EntitlementState;
@@ -164,6 +170,11 @@ export interface TicketRecord {
   buyerId: string;
   /** The product version the ticket is bound to. Never mutated. */
   productVersionId: string;
+  /**
+   * The product package this ticket is bound to, when there is one.
+   * Never mutated: the ticket says which package was sold.
+   */
+  packageId: string | null;
   /** The assets with their pinned content hashes. */
   assets: DeliveryAsset[];
   state: TicketState;
@@ -181,6 +192,8 @@ export interface DeliveryRecord {
   deliveryId: string;
   ticketId: string;
   entitlementId: string;
+  /** The order the delivery belongs to. Never a client-supplied value. */
+  orderId: string;
   buyerId: string;
   outcome: DeliveryOutcome;
   assetIds: string[];

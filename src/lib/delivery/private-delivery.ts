@@ -143,6 +143,12 @@ export interface EntitlementRequest {
   /** The server-derived buyer identity. Never a client-supplied value. */
   buyerId: string;
   productVersionId: string;
+  /**
+   * The product package this entitlement is bound to, when the product has
+   * one. It is part of the promise: the ticket repeats it and the redemption
+   * re-checks it against the entitlement.
+   */
+  packageId?: string | null;
   assets: DeliveryAsset[];
   assetReviewState?: 'DRAFT' | 'REVIEW_READY';
   now: Date;
@@ -281,6 +287,7 @@ export async function evaluateEntitlement(
     orderId,
     buyerId,
     productVersionId,
+    packageId: request.packageId ?? null,
     assets: assets.map((asset) => ({ ...asset })),
     assetReviewState: request.assetReviewState ?? 'REVIEW_READY',
     state: 'GRANTED',
@@ -349,6 +356,8 @@ export interface IssuedTicket {
   buyerId: string;
   /** The product version this ticket is bound to. */
   productVersionId: string;
+  /** The product package this ticket is bound to, when there is one. */
+  packageId: string | null;
   assets: DeliveryAsset[];
   issuedAt: string;
   expiresAt: string;
@@ -476,6 +485,7 @@ export async function issueDeliveryTicket(
     orderId: entitlement.orderId,
     buyerId: entitlement.buyerId,
     productVersionId: entitlement.productVersionId,
+    packageId: entitlement.packageId,
     assets: entitlement.assets.map((asset) => ({ ...asset })),
     state: 'ISSUED',
     issuedAt: now.toISOString(),
@@ -503,6 +513,7 @@ export async function issueDeliveryTicket(
       orderId: ticket.orderId,
       buyerId: ticket.buyerId,
       productVersionId: ticket.productVersionId,
+      packageId: ticket.packageId,
       assets: ticket.assets,
       issuedAt: ticket.issuedAt,
       expiresAt: ticket.expiresAt,
@@ -520,6 +531,7 @@ export type RedemptionRefusalCode =
   | 'BUYER_MISMATCH'
   | 'ORDER_MISMATCH'
   | 'VERSION_MISMATCH'
+  | 'PACKAGE_MISMATCH'
   | 'TICKET_EXPIRED'
   | 'TICKET_REVOKED'
   | 'TICKET_ALREADY_USED'
@@ -730,6 +742,16 @@ export async function redeemDeliveryTicket(
       reason: 'This delivery ticket was issued for a different product version.',
     };
   }
+  // The package is part of the promise too. A ticket that names a different
+  // package than the entitlement it came from was not issued for this buyer.
+  if (ticket.packageId !== entitlement.packageId) {
+    return {
+      ok: false,
+      status: 'FAILED',
+      code: 'PACKAGE_MISMATCH',
+      reason: 'This delivery ticket was issued for a different product package.',
+    };
+  }
 
   const deliveryId = deliveryIdFor(ticket.ticketId, buyerId);
 
@@ -819,6 +841,7 @@ export async function redeemDeliveryTicket(
         deliveryId,
         ticketId: ticket.ticketId,
         entitlementId: entitlement.entitlementId,
+        orderId: ticket.orderId,
         buyerId,
         outcome: 'FAILED',
         assetIds: ticket.assets.map((asset) => asset.assetId),
@@ -840,6 +863,7 @@ export async function redeemDeliveryTicket(
         deliveryId,
         ticketId: ticket.ticketId,
         entitlementId: entitlement.entitlementId,
+        orderId: ticket.orderId,
         buyerId,
         outcome: 'FAILED',
         assetIds: ticket.assets.map((asset) => asset.assetId),
@@ -903,6 +927,7 @@ export async function redeemDeliveryTicket(
         deliveryId,
         ticketId: ticket.ticketId,
         entitlementId: entitlement.entitlementId,
+        orderId: ticket.orderId,
         buyerId,
         outcome: 'FAILED',
         assetIds: ticket.assets.map((asset) => asset.assetId),
@@ -953,6 +978,7 @@ export async function redeemDeliveryTicket(
       deliveryId,
       ticketId: ticket.ticketId,
       entitlementId: entitlement.entitlementId,
+      orderId: ticket.orderId,
       buyerId,
       outcome: 'PENDING',
       assetIds: ticket.assets.map((asset) => asset.assetId),
@@ -992,6 +1018,7 @@ export async function redeemDeliveryTicket(
     deliveryId,
     ticketId: ticket.ticketId,
     entitlementId: entitlement.entitlementId,
+    orderId: ticket.orderId,
     buyerId,
     outcome: 'DELIVERED',
     assetIds: handles.map((asset) => asset.assetId),
@@ -1025,6 +1052,7 @@ async function recordDelivery(
     deliveryId: string;
     ticketId: string;
     entitlementId: string;
+    orderId: string;
     buyerId: string;
     outcome: 'PENDING' | 'DELIVERED' | 'FAILED';
     assetIds: string[];
@@ -1039,6 +1067,7 @@ async function recordDelivery(
       deliveryId: input.deliveryId,
       ticketId: input.ticketId,
       entitlementId: input.entitlementId,
+      orderId: input.orderId,
       buyerId: input.buyerId,
       outcome: input.outcome,
       assetIds: input.assetIds,
