@@ -8,7 +8,7 @@ import {
   registerRufloOrchestrator,
   type RufloOrchestratorHandle,
 } from './connector';
-import { getConfiguredRufloMcpClient, type RufloMcpClient } from './runtime-client';
+import { resolveRufloRuntimeConfig, type RufloMcpClient } from './runtime-client';
 
 export interface RufloRuntimeConnection {
   connected: true;
@@ -24,7 +24,16 @@ export interface RufloRuntimeConnectionFailure {
 export async function connectConfiguredRufloRuntime(): Promise<
   RufloRuntimeConnection | RufloRuntimeConnectionFailure
 > {
-  const client = getConfiguredRufloMcpClient();
+  // Resolve the configuration WITHOUT throwing: a mis-configured endpoint
+  // must produce a clear refusal, not an unhandled exception out of a startup
+  // path. The reason never contains the configured URL or the token.
+  const resolution = resolveRufloRuntimeConfig();
+
+  if (!resolution.ok) {
+    return { connected: false, reason: resolution.reason };
+  }
+
+  const client = resolution.client;
 
   if (!client) {
     return {

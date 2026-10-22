@@ -27,6 +27,7 @@
 // the domain-shaped envelope rules on top.
 
 import { screenForHalalCompliance } from '@/lib/halal-filter';
+import { canonicalize, sha256Hex, toCanonicalJson } from '@/lib/product-factory/canonical';
 
 // ---------------------------------------------------------------------------
 // Contract constants
@@ -360,4 +361,57 @@ export function resolveEligibility(envelope: HandoffEnvelope): EligibilityResolu
 /** The job type the receiver dispatches for a validated envelope. */
 export function jobTypeForEvent(eventType: HandoffEventType): string {
   return EVENT_TYPE_TO_JOB_TYPE[eventType] ?? 'RESEARCH';
+}
+
+// ---------------------------------------------------------------------------
+// Content digest
+// ---------------------------------------------------------------------------
+
+/**
+ * The envelope fields that define WHAT was delivered.
+ *
+ * Two fields are deliberately excluded:
+ *
+ *   - `idempotencyKey` — it is the LOOKUP key, not the content. Including it
+ *     would make the digest change on every key change and tell us nothing.
+ *   - `assertedEligibility` — it is the sender's CLAIM. The receiver
+ *     recomputes the effective verdict server-side, so a change in the claim
+ *     does not change what was delivered. Including it would turn a
+ *     re-assertion into a false conflict.
+ *
+ * `correlationId` IS included: the Job Runner's own idempotency key is
+ * `<jobType>:<correlationId>`, so a different correlation id under the same
+ * idempotency key means a DIFFERENT logical delivery — and possibly a second
+ * execution. Detecting that is the point of the digest.
+ */
+export const HANDOFF_CONTENT_FIELDS = [
+  'contractVersion',
+  'contractId',
+  'correlationId',
+  'eventType',
+  'title',
+  'description',
+  'category',
+  'businessModel',
+  'monetizationMethod',
+  'payload',
+] as const;
+
+/**
+ * A stable digest of the delivered CONTENT.
+ *
+ * Canonical JSON (recursively sorted keys) over the content fields, hashed
+ * with SHA-256. Key order never affects the result, so a producer that
+ * re-serialises the same envelope gets the same digest.
+ *
+ * The digest is what lets the receiver tell a genuine replay (same key, same
+ * content) apart from a key reuse with different content — the case that must
+ * never be answered with "already processed".
+ */
+export function handoffContentDigest(envelope: HandoffEnvelope): string {
+  const content: Record<string, unknown> = {};
+  for (const field of HANDOFF_CONTENT_FIELDS) {
+    content[field] = canonicalize(envelope[field]);
+  }
+  return sha256Hex(toCanonicalJson(content));
 }

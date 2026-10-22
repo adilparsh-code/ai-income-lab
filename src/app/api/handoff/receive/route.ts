@@ -38,7 +38,13 @@ export async function POST(request: Request) {
   const ip = clientIpFrom(request);
   const limit = await enforceRateLimit({ surface: SURFACE, identity: ip, max: 20, windowSeconds: 60 });
   if (!limit.allowed) {
-    return NextResponse.json({ ok: false, error: 'Rate limit exceeded. Retry later.' }, { status: 429 });
+    // Retry-After is part of the producer-facing contract: the producer MUST
+    // honour it instead of guessing a backoff, so a 429 cannot turn into a
+    // retry storm against the receiver.
+    return NextResponse.json(
+      { ok: false, error: 'Rate limit exceeded. Retry later.' },
+      { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } },
+    );
   }
 
   // ---- AUTH (existing operator credential gate) --------------------------
