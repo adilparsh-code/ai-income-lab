@@ -20,13 +20,13 @@ reviews:
     - "!**/coverage/**"
     - "!**/dist/**"
   path_instructions:
-    - path: "app/api/**"
+    - path: "src/app/api/**"
       instructions: >
         Prioritize authentication and authorization, tenant isolation, schema
         validation, rate limiting, safe error responses, sensitive-data exposure,
         replay/idempotency risks, and regression tests. Do not assume middleware
         alone guarantees authorization; trace the complete request path.
-    - path: "**/*auth*/**"
+    - path: "{**/*auth*/**,**/*auth*.*,src/middleware.ts,src/lib/agency/session-guard.ts,src/app/api/admin/**}"
       instructions: >
         Treat authentication and session code as security-critical. Check account
         enumeration, session/token validation, cookie flags, CSRF where applicable,
