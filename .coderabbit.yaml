@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+early_access: false
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/package-lock.json"
+    - "!**/pnpm-lock.yaml"
+    - "!**/yarn.lock"
+    - "!**/.next/**"
+    - "!**/coverage/**"
+    - "!**/dist/**"
+  path_instructions:
+    - path: "app/api/**"
+      instructions: >
+        Prioritize authentication and authorization, tenant isolation, schema
+        validation, rate limiting, safe error responses, sensitive-data exposure,
+        replay/idempotency risks, and regression tests. Do not assume middleware
+        alone guarantees authorization; trace the complete request path.
+    - path: "**/*auth*/**"
+      instructions: >
+        Treat authentication and session code as security-critical. Check account
+        enumeration, session/token validation, cookie flags, CSRF where applicable,
+        privilege escalation, password handling, rate limiting, and safe logging.
+        Never recommend logging secrets, tokens, passwords, or personal data.
+    - path: "prisma/**"
+      instructions: >
+        Review schema and migration changes for data loss, unsafe defaults,
+        referential integrity, tenant isolation, index needs, rollback concerns,
+        and compatibility with existing production data. Flag destructive or
+        irreversible changes explicitly.
+    - path: "**/*agent*/**"
+      instructions: >
+        Review agent orchestration and tool execution for least privilege,
+        untrusted-input handling, prompt injection boundaries, tool authorization,
+        timeouts, retries, resource limits, auditability, and secret isolation.
+        Never assume model-generated decisions are trusted authorization.
+    - path: "**/*.test.*"
+      instructions: >
+        Check coverage for regressions, negative cases, authorization boundaries,
+        malformed input, failure paths, and meaningful assertions. Flag tests that
+        can pass without proving the intended behavior.
+    - path: ".github/workflows/**"
+      instructions: >
+        Review workflow permissions using least privilege, pinning of third-party
+        actions, untrusted pull-request execution, secret exposure, artifact
+        integrity, and whether deployment or release steps can run unexpectedly.
+
+chat:
+  auto_reply: true
