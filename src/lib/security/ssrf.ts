@@ -56,33 +56,59 @@ function normalizeIpv6(ip: string): string {
   return ip.trim().toLowerCase().replace(/^\[|\]$/g, '').split('%')[0];
 }
 
-/** Extract an embedded IPv4 address from IPv4-mapped/compatible IPv6 forms. */
-function embeddedIpv4(ip: string): string | null {
-  const dotted = /(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(ip);
-  if (dotted) return dotted[1];
-  const hexTail = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip);
-  if (hexTail) {
-    const hi = Number.parseInt(hexTail[1], 16);
-    const lo = Number.parseInt(hexTail[2], 16);
-    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+/**
+ * Expand an IPv6 literal to eight 16-bit groups, or null when it is malformed.
+ * Handles "::" compression and a trailing dotted IPv4 tail.
+ */
+function ipv6Groups(ip: string): number[] | null {
+  let text = ip;
+  const dotted = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text);
+  if (dotted) {
+    const o = [dotted[2], dotted[3], dotted[4], dotted[5]].map(Number);
+    if (o.some((n) => n > 255)) return null;
+    text = `${dotted[1]}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`;
   }
-  return null;
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return null;
+  const all = [...head, ...Array<string>(halves.length === 2 ? missing : 0).fill('0'), ...tail];
+  if (all.length !== 8) return null;
+  const groups = all.map((g) => (/^[0-9a-f]{1,4}$/.test(g) ? Number.parseInt(g, 16) : Number.NaN));
+  return groups.some((g) => Number.isNaN(g)) ? null : groups;
+}
+
+function groupsToIpv4(hi: number, lo: number): string {
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
 }
 
 function isPrivateIpv6(ip: string): boolean {
   const normalized = normalizeIpv6(ip);
   if (!normalized.includes(':')) return false;
+  const g = ipv6Groups(normalized);
+  if (!g) return true; // malformed -> unsafe (fail closed)
 
-  // IPv4-mapped / IPv4-compatible: classify by the embedded IPv4 address.
-  const embedded = embeddedIpv4(normalized);
-  if (embedded) return isPrivateIpv4(embedded);
-
-  if (normalized === '::' || normalized === '::1') return true; // unspecified / loopback
-  if (/^f[cd][0-9a-f]{2}:/.test(normalized)) return true; // fc00::/7 unique-local
-  if (/^fe[89ab][0-9a-f]:/.test(normalized)) return true; // fe80::/10 link-local
-  if (/^ff[0-9a-f]{2}:/.test(normalized)) return true; // ff00::/8 multicast
-  if (/^2001:0?db8:/.test(normalized)) return true; // documentation range
-  if (/^64:ff9b:/.test(normalized)) return true; // NAT64 well-known prefix
+  const firstFiveZero = g.slice(0, 5).every((x) => x === 0);
+  // ::/96 IPv4-compatible and ::ffff:0:0/96 IPv4-mapped: classify the embedded IPv4.
+  if (firstFiveZero && (g[5] === 0 || g[5] === 0xffff)) {
+    if (g[5] === 0 && g[6] === 0 && g[7] <= 1) return true; // :: and ::1
+    return isPrivateIpv4(groupsToIpv4(g[6], g[7]));
+  }
+  // 64:ff9b::/96 NAT64 and 64:ff9b:1::/48 local-use NAT64: can reach internal IPv4.
+  if (g[0] === 0x64 && g[1] === 0xff9b) return true;
+  // 2002::/16 6to4 embeds an IPv4 address; classify it (and refuse by default).
+  if (g[0] === 0x2002) return true;
+  // 2001::/32 Teredo; 2001:db8::/32 documentation; 2001:10::/28 ORCHID; 2001:20::/28 ORCHIDv2.
+  if (g[0] === 0x2001 && (g[1] === 0 || g[1] === 0xdb8 || (g[1] >= 0x10 && g[1] <= 0x2f))) return true;
+  if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true; // 100::/64 discard-only
+  if ((g[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
+  if ((g[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((g[0] & 0xffc0) === 0xfec0) return true; // fec0::/10 deprecated site-local
+  if ((g[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+  // Only global unicast 2000::/3 is routable on the public internet; refuse the rest.
+  if ((g[0] & 0xe000) !== 0x2000) return true;
   return false;
 }
 
