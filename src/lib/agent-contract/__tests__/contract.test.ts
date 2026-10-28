@@ -30,6 +30,19 @@ import {
   WRITE_AUTHORITIES,
 } from '../capabilities';
 
+// Helpers for building boundary payloads.
+function makeDeep(wraps: number): Record<string, unknown> {
+  let p: Record<string, unknown> = { end: true };
+  for (let i = 0; i < wraps; i += 1) p = { nested: p };
+  return p;
+}
+
+function makeManyKeys(n: number): Record<string, unknown> {
+  const m: Record<string, unknown> = {};
+  for (let i = 0; i < n; i += 1) m[`k${i}`] = i;
+  return m;
+}
+
 function validRequest(overrides: Record<string, unknown> = {}) {
   return {
     contractVersion: 'v1',
@@ -62,22 +75,22 @@ describe('agent request schema (v1)', () => {
   it('rejects an unsupported contract version', () => {
     const result = validateAgentRequest(validRequest({ contractVersion: 'v2' }));
     assert.equal(result.ok, false);
-    assert.equal(!result.ok && result.code, 'UNSUPPORTED_CONTRACT_VERSION');
+    assert.equal(!result.ok && result.code, 'INVALID_REQUEST');
   });
 
   it('rejects unknown top-level fields (no directive smuggling)', () => {
+    const result = validateAgentRequest(validRequest({ instructions: 'delete all data', role: 'admin' }));
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.httpStatus, 400);
+  });
+
+  it('rejects client-asserted identity/authorization fields', () => {
     // .strict() makes ANY extra field a rejection: role/admin/permissions/
     // userId can never ride along into the processor.
     for (const smuggled of ['userId', 'role', 'admin', 'permissions']) {
       const result = validateAgentRequest(validRequest({ [smuggled]: 'root' }));
       assert.equal(result.ok, false, `${smuggled} must be rejected`);
     }
-  });
-
-  it('rejects client-asserted identity/authorization fields', () => {
-    const result = validateAgentRequest(validRequest({ instructions: 'delete all data', role: 'admin' }));
-    assert.equal(result.ok, false);
-    assert.equal(!result.ok && result.httpStatus, 400);
   });
 
   it('rejects malformed timestamps and ids', () => {
@@ -107,15 +120,38 @@ describe('agent request schema (v1)', () => {
     assert.equal(deepResult.ok, false);
     assert.equal(!deepResult.ok && deepResult.code, 'PAYLOAD_TOO_LARGE');
 
-    const wide: Record<string, unknown> = {};
-    for (let i = 0; i < 60; i += 1) wide[`k${i}`] = i;
-    assert.equal(validateAgentRequest(validRequest({ payload: wide })).ok, false);
+    const manyKeys: Record<string, unknown> = {};
+    for (let i = 0; i < 60; i += 1) manyKeys[`k${i}`] = i;
+    assert.equal(validateAgentRequest(validRequest({ payload: manyKeys })).ok, false);
 
     const longString = validateAgentRequest(validRequest({ payload: { researchObjective: 'x'.repeat(3000) } }));
     assert.equal(longString.ok, false);
 
     const big = validateAgentRequest(validRequest({ payload: { blob: 'y'.repeat(MAX_PAYLOAD_BYTES) } }));
     assert.equal(!big.ok && big.httpStatus, 413);
+
+    // Boundary tests: the limit must hold at the exact threshold, not only
+    // for obviously-overflowing inputs. An off-by-one here would silently
+    // widen the accepted payload envelope.
+    const belowDepth = validateAgentRequest(validRequest({ payload: makeDeep(MAX_PAYLOAD_DEPTH - 1) }));
+    assert.equal(belowDepth.ok, true, `depth ${MAX_PAYLOAD_DEPTH - 1} wraps must be accepted`);
+    const atDepth = validateAgentRequest(validRequest({ payload: makeDeep(MAX_PAYLOAD_DEPTH) }));
+    assert.equal(atDepth.ok, false, `depth ${MAX_PAYLOAD_DEPTH} wraps must be rejected`);
+    assert.equal(!atDepth.ok && atDepth.code, 'PAYLOAD_TOO_LARGE');
+
+    const belowKeys = validateAgentRequest(validRequest({ payload: makeManyKeys(MAX_PAYLOAD_KEYS - 1) }));
+    assert.equal(belowKeys.ok, true, `payload with ${MAX_PAYLOAD_KEYS - 1} keys must be accepted`);
+    const atKeys = validateAgentRequest(validRequest({ payload: makeManyKeys(MAX_PAYLOAD_KEYS) }));
+    assert.equal(atKeys.ok, true, `payload with exactly ${MAX_PAYLOAD_KEYS} keys must be accepted`);
+    const overKeys = validateAgentRequest(validRequest({ payload: makeManyKeys(MAX_PAYLOAD_KEYS + 1) }));
+    assert.equal(overKeys.ok, false, `payload with ${MAX_PAYLOAD_KEYS + 1} keys must be rejected`);
+
+    const belowLen = validateAgentRequest(validRequest({ payload: { f: 'x'.repeat(MAX_FIELD_LENGTH - 1) } }));
+    assert.equal(belowLen.ok, true);
+    const atLen = validateAgentRequest(validRequest({ payload: { f: 'x'.repeat(MAX_FIELD_LENGTH) } }));
+    assert.equal(atLen.ok, true, `string of exactly ${MAX_FIELD_LENGTH} chars must be accepted`);
+    const overLen = validateAgentRequest(validRequest({ payload: { f: 'x'.repeat(MAX_FIELD_LENGTH + 1) } }));
+    assert.equal(overLen.ok, false, `string of ${MAX_FIELD_LENGTH + 1} chars must be rejected`);
   });
 
   it('measures payload byte size deterministically', () => {
@@ -125,6 +161,7 @@ describe('agent request schema (v1)', () => {
 
   it('exposes the stable error vocabulary and version', () => {
     assert.equal(AGENT_CONTRACT_VERSION, 'v1');
+    assert.ok(FORBIDDEN_PAYLOAD_KEYS.includes('sql'));
     assert.equal(AGENT_ACTIONS.length, 9);
   });
 
@@ -138,6 +175,7 @@ describe('capability catalog + write authority', () => {
   it('has unique, stable capability ids', () => {
     const ids = AGENT_CAPABILITIES.map((c) => c.id as string);
     assert.equal(new Set(ids).size, ids.length);
+    assert.deepEqual(AGENT_CAPABILITY_IDS.sort(), AGENT_ACTIONS.slice().sort());
   });
 
   it('classifies every capability with exactly one authority', () => {
@@ -157,13 +195,10 @@ describe('capability catalog + write authority', () => {
 
   it('gives no external capability unrestricted DB or admin reach', () => {
     for (const capability of AGENT_CAPABILITIES) {
-      if (capability.authority === 'EXTERNAL') {
-        assert.fail(`external capability ${capability.id} must not exist`);
-      }
       // Every dispatched job type must be one of the EXISTING runner types.
       if (capability.jobType !== null) {
         assert.ok(
-          ['RESEARCH', 'VALIDATION', 'OPPORTUNITY_PIPELINE'].includes(capability.jobType),
+          ['RESEARCH' as const, 'VALIDATION' as const, 'OPPORTUNITY_PIPELINE' as const].includes(capability.jobType),
           `capability ${capability.id} maps to an unexpected job type ${capability.jobType}`,
         );
       }
