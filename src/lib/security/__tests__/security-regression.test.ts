@@ -14,7 +14,7 @@
 // Everything is hermetic: temp DB, no network, no AI provider calls.
 // ============================================================================
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, before, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -345,6 +345,27 @@ describe('guard chain: fail-closed auth, durable rate limits, body caps', () => 
     const second = await guard.enforceRateLimit({ surface: 'test:bucketB', identity: 'ip-1', max: 2, windowSeconds: 60 });
     assert.equal(first.allowed, true);
     assert.equal(second.allowed, true);
+  });
+
+  it('fails closed when the rate-limit counter write fails', async () => {
+    const guard = await importGuard();
+    const { db } = await import('@/lib/db');
+    mock.method(db.rateLimitWindow, 'upsert', async () => {
+      throw new Error('simulated rate-limit storage failure');
+    });
+
+    try {
+      const verdict = await guard.enforceRateLimit({
+        surface: 'test:storage-failure',
+        identity: 'ip-storage-failure',
+        max: 3,
+        windowSeconds: 60,
+      });
+      assert.equal(verdict.allowed, false);
+      if (!verdict.allowed) assert.equal(verdict.retryAfterSeconds, 60);
+    } finally {
+      mock.restoreAll();
+    }
   });
 
   it('rejects oversized request bodies with 413', async () => {
