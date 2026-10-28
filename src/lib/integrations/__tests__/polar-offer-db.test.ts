@@ -20,6 +20,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { installTestDatabase } from '@/test-utils/install-test-database';
+import { createLiveAdminSession, issueOfferApprovalFromDb } from '@/test-utils/approvals';
 
 const tempDir = mkdtempSync(join(tmpdir(), 'aill-polar-offer-'));
 Object.assign(process.env, {
@@ -291,11 +292,12 @@ describe('human-gated Polar publication service', () => {
         return new Response(JSON.stringify(providerPayload), { status: 200 });
       };
 
+      const approvalToken = await issueOfferApprovalFromDb(offerId);
       const { publishOfferToPolar } = await import('../offer-publishing');
       const { PolarPublishingAdapter } = await import('../polar-publishing');
       const result = await publishOfferToPolar({
         offerId,
-        humanApprovalToken: 'approve-round-trip',
+        humanApprovalToken: approvalToken,
         actor: 'admin@aiincome.lab',
         surface: 'test:polar',
         createAdapter: () => new PolarPublishingAdapter({ fetchImpl: fakeFetch as unknown as typeof fetch }),
@@ -329,8 +331,16 @@ describe('human-gated Polar publication service', () => {
       assert.ok(events.length >= 1, 'expected an audit row');
       const detail = events[events.length - 1]?.detail ?? '';
       assert.equal(detail.includes(FAKE_POLAR_TOKEN), false, 'token must never be audited');
-      assert.equal(detail.includes('approve-round-trip'), false, 'approval token must never be audited raw');
-      assert.match(detail, /approved=[0-9a-f]{16}/);
+      assert.equal(detail.includes(approvalToken), false, 'approval token must never be audited raw');
+      assert.match(detail, /approval=\S{1,12}/, 'only a short grant id is audited');
+
+      // SINGLE USE: the same token can never publish again.
+      const replay = await publishOfferToPolar({
+        offerId, humanApprovalToken: approvalToken, actor: 'test', surface: 'test:polar',
+        createAdapter: () => { throw new Error('replayed approval must never reach the adapter'); },
+      });
+      assert.equal(replay.ok, true);
+      assert.equal(replay.status, 'ALREADY_PUBLISHED'); // idempotent guard; no second provider product
     } finally {
       delete process.env.POLAR_ACCESS_TOKEN;
     }
@@ -373,7 +383,7 @@ describe('human-gated Polar publication service', () => {
       const { PolarPublishingAdapter } = await import('../polar-publishing');
       const result = await publishOfferToPolar({
         offerId,
-        humanApprovalToken: 'approve-1',
+        humanApprovalToken: await issueOfferApprovalFromDb(offerId),
         actor: 'test',
         surface: 'test:polar',
         createAdapter: () => new PolarPublishingAdapter({ fetchImpl: fakeFetch as unknown as typeof fetch }),
@@ -403,7 +413,7 @@ describe('human-gated Polar publication service', () => {
       const { PolarPublishingAdapter } = await import('../polar-publishing');
       const result = await publishOfferToPolar({
         offerId,
-        humanApprovalToken: 'approve-1',
+        humanApprovalToken: await issueOfferApprovalFromDb(offerId),
         actor: 'test',
         surface: 'test:polar',
         createAdapter: () => new PolarPublishingAdapter({ fetchImpl: fakeFetch as unknown as typeof fetch }),
@@ -417,6 +427,101 @@ describe('human-gated Polar publication service', () => {
     } finally {
       delete process.env.POLAR_ACCESS_TOKEN;
     }
+  });
+});
+
+describe('approval enforcement at the Polar publication boundary (DB-backed)', () => {
+  async function publishWith(offerId: string, token: unknown) {
+    const { publishOfferToPolar } = await import('../offer-publishing');
+    const { PolarPublishingAdapter } = await import('../polar-publishing');
+    let adapterBuilt = 0;
+    const calls: string[] = [];
+    const fakeFetch = async (input: unknown, init?: { method?: string }) => {
+      calls.push(`${init?.method ?? 'GET'} ${String(input)}`);
+      return new Response(JSON.stringify({ id: 'pol_x', name: 'x' }), { status: 200 });
+    };
+    const result = await publishOfferToPolar({
+      offerId, humanApprovalToken: token, actor: 'test', surface: 'test:polar',
+      createAdapter: () => { adapterBuilt += 1; return new PolarPublishingAdapter({ fetchImpl: fakeFetch as unknown as typeof fetch }); },
+    });
+    return { result, adapterBuilt, calls };
+  }
+
+  it('a legacy any-string token is refused: no adapter, no provider call', async () => {
+    process.env.POLAR_ACCESS_TOKEN = FAKE_POLAR_TOKEN;
+    try {
+      for (const fake of ['approve-1', 'token', 'x'.repeat(64), 'A'.repeat(43)]) {
+        const { offerId } = await seedOffer({ title: `Legacy ${fake.slice(0, 6)}` });
+        const { result, adapterBuilt, calls } = await publishWith(offerId, fake);
+        assert.equal(result.ok, false, fake);
+        assert.equal(adapterBuilt, 0);
+        assert.equal(calls.length, 0);
+      }
+    } finally { delete process.env.POLAR_ACCESS_TOKEN; }
+  });
+
+  it('a token issued for ANOTHER offer is refused', async () => {
+    process.env.POLAR_ACCESS_TOKEN = FAKE_POLAR_TOKEN;
+    try {
+      const a = await seedOffer({ title: 'Offer A' });
+      const b = await seedOffer({ title: 'Offer B' });
+      const tokenForA = await issueOfferApprovalFromDb(a.offerId);
+      const { result, calls } = await publishWith(b.offerId, tokenForA);
+      assert.equal(result.ok, false);
+      assert.equal(calls.length, 0);
+      // The mismatching attempt must not have burned A's approval.
+      const ok = await publishWith(a.offerId, tokenForA);
+      assert.equal(ok.result.ok, true);
+    } finally { delete process.env.POLAR_ACCESS_TOKEN; }
+  });
+
+  it('changing the price after approval voids the approval (scope binding)', async () => {
+    process.env.POLAR_ACCESS_TOKEN = FAKE_POLAR_TOKEN;
+    try {
+      const { db } = await importDb();
+      const { offerId } = await seedOffer({ title: 'Price Bait', price: 29 });
+      const token = await issueOfferApprovalFromDb(offerId);
+      await db.offer.update({ where: { id: offerId }, data: { price: 1 } });
+      const { result, calls } = await publishWith(offerId, token);
+      assert.equal(result.ok, false);
+      assert.equal(calls.length, 0);
+    } finally { delete process.env.POLAR_ACCESS_TOKEN; }
+  });
+
+  it('an expired approval is refused', async () => {
+    process.env.POLAR_ACCESS_TOKEN = FAKE_POLAR_TOKEN;
+    try {
+      const { offerId } = await seedOffer({ title: 'Expired Approval' });
+      const token = await issueOfferApprovalFromDb(offerId, { now: new Date(Date.now() - 3_600_000) });
+      const { result, calls } = await publishWith(offerId, token);
+      assert.equal(result.ok, false);
+      assert.equal(calls.length, 0);
+    } finally { delete process.env.POLAR_ACCESS_TOKEN; }
+  });
+
+  it('an approval whose admin session has ended is refused', async () => {
+    process.env.POLAR_ACCESS_TOKEN = FAKE_POLAR_TOKEN;
+    try {
+      const { db } = await importDb();
+      const { offerId } = await seedOffer({ title: 'Session Ended' });
+      const session = await createLiveAdminSession();
+      const token = await issueOfferApprovalFromDb(offerId, { sessionId: session.id });
+      await db.adminSession.delete({ where: { id: session.id } });
+      const { result, calls } = await publishWith(offerId, token);
+      assert.equal(result.ok, false);
+      assert.equal(calls.length, 0);
+    } finally { delete process.env.POLAR_ACCESS_TOKEN; }
+  });
+
+  it('concurrent use of one approval publishes at most once (atomic consume)', async () => {
+    process.env.POLAR_ACCESS_TOKEN = FAKE_POLAR_TOKEN;
+    try {
+      const { offerId } = await seedOffer({ title: 'Race Approval' });
+      const token = await issueOfferApprovalFromDb(offerId);
+      const results = await Promise.all([publishWith(offerId, token), publishWith(offerId, token), publishWith(offerId, token)]);
+      const creates = results.flatMap((r) => r.calls).filter((c) => c.startsWith('POST'));
+      assert.ok(creates.length <= 1, `provider create was called ${creates.length} times`);
+    } finally { delete process.env.POLAR_ACCESS_TOKEN; }
   });
 });
 

@@ -12,6 +12,12 @@ import {
   normalizeStatus,
   type LifecycleGuard,
 } from '../lifecycle';
+import { mintVerifiedApproval } from '@/test-utils/approvals';
+
+/** Real issue->consume capability for the given lifecycle transition on a product. */
+async function approvalFor(transition: 'DEPLOY' | 'PUBLISH', productId = 'prod_1') {
+  return (await mintVerifiedApproval({ action: `LIFECYCLE_${transition}`, subjectId: productId })).approval;
+}
 
 function guard(overrides: Partial<LifecycleGuard> = {}): LifecycleGuard {
   return {
@@ -30,23 +36,23 @@ describe('lifecycle: allow-listed transitions', () => {
     );
   });
 
-  it('accepts the happy path IDEA → … → PUBLISHED with valid evidence', () => {
+  it('accepts the happy path IDEA → … → PUBLISHED with valid evidence', async () => {
     const steps: LifecycleGuard['transition'][] = [
       'VALIDATE', 'SPEC_READY', 'BUILD', 'START_TESTING', 'TEST_PASS', 'DEPLOY', 'PUBLISH',
     ];
     const expected = ['VALIDATED', 'SPEC_READY', 'BUILDING', 'TESTING', 'READY_TO_DEPLOY', 'DEPLOYED', 'PUBLISHED'];
-    const evidence = {
+    const evidenceFor = async (transition: string) => ({
       providerId: 'real-provider',
       externalRef: 'dep-123456',
-      humanApprovalToken: 'token-abc',
-    };
+      approval: transition === 'DEPLOY' || transition === 'PUBLISH' ? await approvalFor(transition) : undefined,
+    });
 
     let current = 'IDEA';
     for (let i = 0; i < steps.length; i++) {
       const decision = assertValidProductTransition(guard({
         currentStatus: current,
         transition: steps[i],
-        evidence,
+        evidence: await evidenceFor(steps[i]),
       }));
       assert.ok(decision.ok, `step ${steps[i]} from ${current} should be allowed: ${decision.reason}`);
       assert.equal(decision.nextStatus, expected[i]);
@@ -80,13 +86,14 @@ describe('lifecycle: allow-listed transitions', () => {
 });
 
 describe('lifecycle: halal gates dominate', () => {
-  it('NOT_ALLOWED refuses every work transition with status unchanged', () => {
+  it('NOT_ALLOWED refuses every work transition with status unchanged', async () => {
     for (const transition of ['BUILD', 'DEPLOY', 'PUBLISH', 'SPEC_READY'] as const) {
       const decision = assertValidProductTransition(guard({
         halalStatus: 'NOT_ALLOWED',
         currentStatus: 'VALIDATED',
         transition,
-        evidence: { providerId: 'p', externalRef: 'ref-123', humanApprovalToken: 't' },
+        // Even a REAL verified approval cannot override the halal gate.
+        evidence: { providerId: 'p', externalRef: 'ref-123', approval: transition === 'DEPLOY' || transition === 'PUBLISH' ? await approvalFor(transition) : undefined },
       }));
       assert.equal(decision.ok, false);
       assert.equal(decision.nextStatus, 'VALIDATED', 'rejected transitions must not change state');
@@ -128,7 +135,7 @@ describe('lifecycle: human approval gates', () => {
     assert.ok(APPROVAL_REQUIRED_TRANSITIONS.includes('PUBLISH'));
   });
 
-  it('DEPLOY without a token is refused with no state change', () => {
+  it('DEPLOY without an approval is refused with no state change', () => {
     const decision = assertValidProductTransition(guard({
       currentStatus: 'READY_TO_DEPLOY',
       transition: 'DEPLOY',
@@ -136,57 +143,91 @@ describe('lifecycle: human approval gates', () => {
     }));
     assert.equal(decision.ok, false);
     assert.equal(decision.nextStatus, 'READY_TO_DEPLOY');
-    assert.match(decision.reason, /human approval token/i);
+    assert.match(decision.reason, /verified, single-use human approval/i);
   });
 
-  it('PUBLISH without a token is refused', () => {
+  it('PUBLISH without an approval is refused', () => {
     const decision = assertValidProductTransition(guard({
       currentStatus: 'DEPLOYED',
       transition: 'PUBLISH',
       evidence: { providerId: 'gumroad', externalRef: 'pub-123456' },
     }));
     assert.equal(decision.ok, false);
-    assert.match(decision.reason, /human approval token/i);
+    assert.match(decision.reason, /verified, single-use human approval/i);
   });
 
-  it('DEPLOY/PUBLISH with a token still need real provider evidence', () => {
+  it('DEPLOY/PUBLISH with an approval still need real provider evidence', async () => {
     const decision = assertValidProductTransition(guard({
       currentStatus: 'READY_TO_DEPLOY',
       transition: 'DEPLOY',
-      evidence: { humanApprovalToken: 'token' }, // no provider evidence
+      evidence: { approval: await approvalFor('DEPLOY') }, // no provider evidence
     }));
     assert.equal(decision.ok, false);
     assert.match(decision.reason, /real provider id and a real external deployment reference/i);
   });
 });
 
+describe('lifecycle: approval contract (negative cases)', () => {
+  const ready = { currentStatus: 'READY_TO_DEPLOY', transition: 'DEPLOY' as const };
+  const evidenceBase = { providerId: 'vercel', externalRef: 'dpl-987654' };
+
+  it('a raw string (the legacy humanApprovalToken shape) is never an approval', () => {
+    for (const fake of ['token', 'approve-1', '   ', 'x'.repeat(64)]) {
+      const decision = assertValidProductTransition(guard({ ...ready, evidence: { ...evidenceBase, approval: fake as never } }));
+      assert.equal(decision.ok, false, `string "${fake}" must not satisfy the gate`);
+    }
+  });
+
+  it('no approval at all refuses DEPLOY and PUBLISH', () => {
+    assert.equal(assertValidProductTransition(guard({ ...ready, evidence: evidenceBase })).ok, false);
+    assert.equal(assertValidProductTransition(guard({ currentStatus: 'DEPLOYED', transition: 'PUBLISH', evidence: evidenceBase })).ok, false);
+  });
+
+  it('an approval minted for a different action cannot be reused (PUBLISH approval on DEPLOY and vice versa)', async () => {
+    const publishApproval = await approvalFor('PUBLISH');
+    assert.equal(assertValidProductTransition(guard({ ...ready, evidence: { ...evidenceBase, approval: publishApproval } })).ok, false);
+    const deployApproval = await approvalFor('DEPLOY');
+    assert.equal(assertValidProductTransition(guard({ currentStatus: 'DEPLOYED', transition: 'PUBLISH', evidence: { ...evidenceBase, approval: deployApproval } })).ok, false);
+  });
+
+  it('an offer/product-level approval of another action is not a lifecycle approval', async () => {
+    const { approval } = await mintVerifiedApproval({ action: 'PUBLISH_OFFER', subjectId: 'off_1' });
+    assert.equal(assertValidProductTransition(guard({ ...ready, evidence: { ...evidenceBase, approval } })).ok, false);
+  });
+
+  it('a plain object imitating a VerifiedApproval is rejected (capability cannot be forged)', () => {
+    const forged = { grantId: 'g', action: 'LIFECYCLE_DEPLOY', subjectType: 'product', subjectId: 'prod_1', approverEmail: 'a@b.c' };
+    assert.equal(assertValidProductTransition(guard({ ...ready, evidence: { ...evidenceBase, approval: forged as never } })).ok, false);
+  });
+});
+
 describe('lifecycle: external evidence guards (no fake success)', () => {
-  it('unavailable/mock provider ids can never confirm DEPLOY', () => {
+  it('unavailable/mock provider ids can never confirm DEPLOY', async () => {
     for (const providerId of ['unavailable', 'not_connected', 'mock', 'MOCKED', '', '  ']) {
       const decision = assertValidProductTransition(guard({
         currentStatus: 'READY_TO_DEPLOY',
         transition: 'DEPLOY',
-        evidence: { providerId, externalRef: 'dep-123456', humanApprovalToken: 't' },
+        evidence: { providerId, externalRef: 'dep-123456', approval: await approvalFor('DEPLOY') },
       }));
       assert.equal(decision.ok, false, `provider "${providerId}" must not count as real`);
     }
   });
 
-  it('unavailable provider ids can never confirm PUBLISH', () => {
+  it('unavailable provider ids can never confirm PUBLISH', async () => {
     const decision = assertValidProductTransition(guard({
       currentStatus: 'DEPLOYED',
       transition: 'PUBLISH',
-      evidence: { providerId: 'PUBLISHING_UNAVAILABLE', externalRef: 'pub-1', humanApprovalToken: 't' },
+      evidence: { providerId: 'PUBLISHING_UNAVAILABLE', externalRef: 'pub-1', approval: await approvalFor('PUBLISH') },
     }));
     assert.equal(decision.ok, false);
     assert.match(decision.reason, /real provider id and a real external publication reference/i);
   });
 
-  it('a mock operation success can never mark PUBLISHED', () => {
+  it('a mock operation success can never mark PUBLISHED', async () => {
     const decision = assertValidProductTransition(guard({
       currentStatus: 'DEPLOYED',
       transition: 'PUBLISH',
-      evidence: { providerId: 'mock', externalRef: 'mock-op-succeeded', humanApprovalToken: 't' },
+      evidence: { providerId: 'mock', externalRef: 'mock-op-succeeded', approval: await approvalFor('PUBLISH') },
     }));
     assert.equal(decision.ok, false);
   });
@@ -201,17 +242,19 @@ describe('lifecycle: external evidence guards (no fake success)', () => {
     assert.equal(isRealExternalRef(undefined), false);
   });
 
-  it('records provider evidence on accepted external transitions (audit trail)', () => {
+  it('records provider evidence on accepted external transitions (audit trail)', async () => {
     const decision = assertValidProductTransition(guard({
       currentStatus: 'READY_TO_DEPLOY',
       transition: 'DEPLOY',
-      evidence: { providerId: 'vercel', externalRef: 'dpl-987654', humanApprovalToken: 'token' },
+      evidence: { providerId: 'vercel', externalRef: 'dpl-987654', approval: await approvalFor('DEPLOY') },
     }));
     assert.equal(decision.ok, true);
     assert.equal(decision.record.providerId, 'vercel');
     assert.equal(decision.record.externalRef, 'dpl-987654');
     // The token itself must never appear in the persisted record.
-    assert.ok(!JSON.stringify(decision.record).includes('token'));
+    // The approval capability itself must never appear in the persisted record.
+    assert.ok(!JSON.stringify(decision.record).includes('grant_'));
+    assert.ok(!JSON.stringify(decision.record).toLowerCase().includes('approval'));
   });
 });
 

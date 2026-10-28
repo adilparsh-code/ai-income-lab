@@ -11,6 +11,10 @@ import {
   resolveVercelAwareDeploymentProvider,
 } from '../deployment-vercel';
 import { createUnavailableDeploymentProvider } from '../build-contract';
+import { mintVerifiedApproval } from '@/test-utils/approvals';
+
+const deployApproval = async (subjectId = TARGET.artifactRef) =>
+  (await mintVerifiedApproval({ action: 'DEPLOY_PRODUCT', subjectId })).approval;
 
 const TARGET = { target: 'NEXTJS' as const, artifactRef: 'artifact-123' };
 
@@ -22,7 +26,7 @@ function mockFetchResponder(response: { ok: boolean; status: number; body: unkno
 describe('vercel adapter — credential handling', () => {
   it('reports NOT_CONNECTED when no token is configured and makes no calls', async () => {
     const adapter = new VercelDeploymentAdapter({ hasToken: false });
-    const record = await adapter.deploy(TARGET, 'approval-token');
+    const record = await adapter.deploy(TARGET, await deployApproval());
     assert.equal(record.status, 'DEPLOYMENT_NOT_CONNECTED');
     assert.equal(record.deploymentId, null);
     assert.equal(record.url, null);
@@ -30,12 +34,31 @@ describe('vercel adapter — credential handling', () => {
     assert.match(record.errors[0], /VERCEL_TOKEN/);
   });
 
-  it('refuses to deploy without a human approval token even when connected', async () => {
-    const adapter = new VercelDeploymentAdapter({ hasToken: true, fetchImpl: mockFetchResponder({ ok: true, status: 200, body: { id: 'd1', url: 'x.vercel.app', readyState: 'READY' } }) });
-    const record = await adapter.deploy(TARGET, '   ');
-    assert.equal(record.status, 'DEPLOYMENT_NOT_CONNECTED');
-    assert.match(record.errors[0], /approval token/i);
-    assert.equal(record.deploymentId, null);
+  it('refuses to deploy without a verified approval even when connected', async () => {
+    let calls = 0;
+    const counting = (async () => { calls += 1; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch;
+    const adapter = new VercelDeploymentAdapter({ hasToken: true, fetchImpl: counting });
+    for (const bad of [null, '   ', 'approval-token', {} ] as unknown[]) {
+      const record = await adapter.deploy(TARGET, bad as never);
+      assert.equal(record.status, 'DEPLOYMENT_NOT_CONNECTED');
+      assert.match(record.errors[0], /verified, single-use human approval/i);
+      assert.equal(record.deploymentId, null);
+    }
+    assert.equal(calls, 0, 'no provider call may happen without a verified approval');
+  });
+
+  it('refuses an approval minted for a different product or a different action', async () => {
+    let calls = 0;
+    const counting = (async () => { calls += 1; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch;
+    const adapter = new VercelDeploymentAdapter({ hasToken: true, fetchImpl: counting });
+    const otherProduct = await deployApproval('some-other-artifact');
+    const wrongAction = (await mintVerifiedApproval({ action: 'PUBLISH_PRODUCT', subjectId: TARGET.artifactRef })).approval;
+    for (const approval of [otherProduct, wrongAction]) {
+      const record = await adapter.deploy(TARGET, approval);
+      assert.equal(record.deploymentId, null);
+      assert.match(record.errors[0], /verified, single-use human approval/i);
+    }
+    assert.equal(calls, 0);
   });
 
   it('describes config without exposing any token material', () => {
@@ -54,7 +77,7 @@ describe('vercel adapter — deployment via mocked provider responses', () => {
       hasToken: true,
       fetchImpl: mockFetchResponder({ ok: true, status: 200, body: { id: 'dpl_real_1', url: 'myapp.vercel.app', readyState: 'READY' } }),
     });
-    const record = await adapter.deploy(TARGET, 'approval-token');
+    const record = await adapter.deploy(TARGET, await deployApproval());
     assert.equal(record.status, 'DEPLOYED');
     assert.equal(record.deploymentId, 'dpl_real_1');
     assert.equal(record.url, 'https://myapp.vercel.app');
@@ -66,9 +89,11 @@ describe('vercel adapter — deployment via mocked provider responses', () => {
       hasToken: true,
       fetchImpl: mockFetchResponder({ ok: false, status: 402, body: { error: 'payment required' } }),
     });
-    const record = await adapter.deploy(TARGET, 'approval-token');
-    assert.equal(record.status, 'DEPLOYMENT_NOT_CONNECTED' === record.status ? 'DEPLOYMENT_NOT_CONNECTED' : record.status);
+    const record = await adapter.deploy(TARGET, await deployApproval());
+    // A provider error payload must never read as a deployment.
+    assert.notEqual(record.status, 'DEPLOYED');
     assert.equal(record.deploymentId, null);
+    assert.equal(record.url, null);
     assert.ok(record.errors.length > 0);
   });
 
@@ -77,7 +102,7 @@ describe('vercel adapter — deployment via mocked provider responses', () => {
       hasToken: true,
       fetchImpl: mockFetchResponder({ ok: false, status: 403, body: { error: { message: 'secret-token sk_live_abcdef should not leak' } } }),
     });
-    const record = await adapter.deploy(TARGET, 'approval-token');
+    const record = await adapter.deploy(TARGET, await deployApproval());
     const serialized = JSON.stringify(record);
     assert.equal(serialized.includes('sk_live_abcdef'), false);
   });
@@ -94,14 +119,16 @@ describe('vercel adapter — deployment via mocked provider responses', () => {
 
   it('rollback requires approval and parses provider confirmations', async () => {
     const noApproval = new VercelDeploymentAdapter({ hasToken: true, fetchImpl: mockFetchResponder({ ok: true, status: 200, body: { id: 'x' } }) });
-    const refused = await noApproval.rollback('dpl_1', '');
+    const refused = await noApproval.rollback('dpl_1', null);
     assert.equal(refused.deploymentId, null);
+    const wrongSubject = await noApproval.rollback('dpl_1', (await mintVerifiedApproval({ action: 'ROLLBACK_DEPLOYMENT', subjectId: 'dpl_other' })).approval);
+    assert.equal(wrongSubject.deploymentId, null);
 
     const adapter = new VercelDeploymentAdapter({
       hasToken: true,
       fetchImpl: mockFetchResponder({ ok: true, status: 200, body: { id: 'dpl_prev', url: 'prev.vercel.app', readyState: 'READY' } }),
     });
-    const rolled = await adapter.rollback('dpl_1', 'approval-token');
+    const rolled = await adapter.rollback('dpl_1', (await mintVerifiedApproval({ action: 'ROLLBACK_DEPLOYMENT', subjectId: 'dpl_1' })).approval);
     assert.equal(rolled.deploymentId, 'dpl_prev');
   });
 
