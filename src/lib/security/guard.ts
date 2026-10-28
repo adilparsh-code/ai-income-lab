@@ -442,12 +442,17 @@ export async function guardBrowserOrOperator(
     return { response: { ok: false, error: 'Cross-origin requests are not allowed on this endpoint.' }, status: 403 };
   }
 
-  if (sameOriginEvidence(request)) {
-    // Same-origin browser call from the app's own UI.
-    return { identity: `browser:${credentialFingerprint(ip)}`, ip };
+  // SECURITY: Origin/Referer/Host are attacker-controlled headers, so same-origin
+  // evidence is a CSRF check only and NEVER grants access. A browser caller must
+  // present a valid admin session cookie. Imported lazily to avoid the
+  // guard -> session-guard -> admin-auth -> guard import cycle.
+  const { currentAdminSession } = await import('@/lib/agency/session-guard');
+  const session = await currentAdminSession(request);
+  if (session) {
+    return { identity: `admin:${credentialFingerprint(session.sessionId)}`, ip };
   }
 
-  // No browser evidence: server-to-server caller → operator credential.
+  // No admin session: server-to-server caller → operator credential.
   const auth = await requireOperator(request, surface);
   if (!auth.ok) {
     return { response: { ok: false, error: auth.error }, status: auth.status };

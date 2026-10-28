@@ -2,6 +2,7 @@
 
 import { db } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
+import { requireAdminAction } from '@/lib/agency/action-guard';
 
 export interface CreateRevenueInput {
   date: string;
@@ -24,6 +25,7 @@ export interface UpdateRevenueInput extends Partial<CreateRevenueInput> {
  * GET all revenue entries
  */
 export async function getRevenues() {
+  await requireAdminAction();
   const revenues = await db.revenue.findMany({
     include: {
       opportunity: {
@@ -49,6 +51,7 @@ export async function getRevenues() {
  * GET revenue metrics summary
  */
 export async function getRevenueSummary() {
+  await requireAdminAction();
   const revenues = await db.revenue.findMany();
 
   const totalGross = revenues.reduce((sum, r) => sum + r.grossRevenue, 0);
@@ -78,6 +81,7 @@ export async function getRevenueSummary() {
  * Create a new revenue entry
  */
 export async function createRevenue(input: CreateRevenueInput) {
+  await requireAdminAction();
   if (!input.revenueSource || input.revenueSource.trim().length === 0) {
     throw new Error('Revenue source is required');
   }
@@ -120,6 +124,7 @@ export async function createRevenue(input: CreateRevenueInput) {
  * Update a revenue entry
  */
 export async function updateRevenue(input: UpdateRevenueInput) {
+  await requireAdminAction();
   const { id, ...data } = input;
 
   const existing = await db.revenue.findUnique({ where: { id } });
@@ -158,6 +163,7 @@ export async function updateRevenue(input: UpdateRevenueInput) {
  * Delete a revenue entry
  */
 export async function deleteRevenue(id: string) {
+  await requireAdminAction();
   const existing = await db.revenue.findUnique({ where: { id } });
   if (!existing) throw new Error('Revenue entry not found');
 

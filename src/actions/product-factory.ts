@@ -19,6 +19,7 @@ import { describeBuilderCapabilities, resolveSandboxedBuilder } from '@/lib/prod
 import { describeVercelConfig } from '@/lib/product-factory/deployment-vercel';
 import { describeRufloIntegration } from '@/lib/ruflo/capability';
 import type { PipelineRunResult } from '@/lib/ruflo/orchestrator';
+import { requireAdminAction } from '@/lib/agency/action-guard';
 
 /**
  * Phase 5.4 — honest capability discovery across every execution boundary.
@@ -68,6 +69,7 @@ export interface FactoryOpportunityOption {
 }
 
 export async function getFactoryOpportunities(): Promise<FactoryOpportunityOption[]> {
+  await requireAdminAction();
   const opportunities = await db.opportunity.findMany({
     select: {
       id: true,
@@ -93,6 +95,7 @@ export interface FactoryRunSummary {
 }
 
 export async function getRecentFactoryRuns(limit = 5): Promise<FactoryRunSummary[]> {
+  await requireAdminAction();
   try {
     const runs = await db.pipelineRun.findMany({
       orderBy: { startedAt: 'desc' },
@@ -139,6 +142,7 @@ export async function generateProductConcept(input: {
   monetizationPreference?: string;
   constraints?: string[];
 }): Promise<GenerateProductResult> {
+  await requireAdminAction();
   if (
     (typeof input?.objective !== 'string' || input.objective.trim().length === 0) &&
     (typeof input?.opportunityId !== 'string' || input.opportunityId.trim().length === 0)
@@ -175,6 +179,7 @@ export type RehydratedRunResult =
   | { ok: false; error: string };
 
 export async function getFactoryRunDetail(runId: string): Promise<RehydratedRunResult> {
+  await requireAdminAction();
   if (typeof runId !== 'string' || runId.trim().length === 0) {
     return { ok: false, error: 'A run id is required.' };
   }
@@ -244,6 +249,7 @@ const LIFECYCLE_ORDER = [
 ] as const;
 
 export async function getProductFactorySummary(limit = 12): Promise<ProductFactoryDashboardSummary> {
+  await requireAdminAction();
   try {
     const products = await db.product.findMany({
       orderBy: { updatedAt: 'desc' },
