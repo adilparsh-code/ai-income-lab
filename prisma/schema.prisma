@@ -2172,3 +2172,50 @@ model OutreachSend {
   @@index([prospectId, createdAt])
   @@index([status, createdAt])
 }
+
+// ---------------------------------------------------------------------------
+// Security remediation: server-issued, single-use human approvals.
+// An admin (verified session) mints a grant bound to ONE action on ONE subject
+// (and a content hash of that subject). The opaque token is shown once and only
+// its SHA-256 is stored. Consumption is an atomic conditional UPDATE, so a
+// grant can be spent at most once, only before expiry, only for the exact
+// action/subject/scope it was issued for.
+// ---------------------------------------------------------------------------
+model ApprovalGrant {
+  id                String    @id @default(cuid())
+  tokenHash         String
+  action            String
+  subjectType       String
+  subjectId         String
+  scopeHash         String    @default("")
+  approverSessionId String
+  approverEmail     String
+  createdAt         DateTime  @default(now())
+  expiresAt         DateTime
+  consumedAt        DateTime?
+  consumedBy        String?
+
+  @@unique([tokenHash])
+  @@index([subjectType, subjectId, action])
+  @@index([expiresAt])
+}
+
+// Append-only record of a human halal review decision. Not a religious ruling:
+// it records WHO overrode an automated REVIEW_REQUIRED result, WHEN, WHY, and
+// against WHICH exact content (contentHash) — any later edit of the screened
+// text invalidates the override.
+model HalalReview {
+  id                String   @id @default(cuid())
+  opportunityId     String
+  fromStatus        String
+  toStatus          String
+  screenStatus      String
+  screenFlags       String   @default("[]")
+  contentHash       String
+  note              String
+  reviewerEmail     String
+  reviewerSessionId String
+  createdAt         DateTime @default(now())
+
+  @@index([opportunityId, createdAt])
+}

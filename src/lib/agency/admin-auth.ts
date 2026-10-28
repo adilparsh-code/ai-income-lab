@@ -163,6 +163,22 @@ export async function resolveAdminSession(token: string | null | undefined): Pro
   }
 }
 
+/**
+ * True when the session row still exists, has not expired, and the admin
+ * account is not disabled. Used to re-verify an approver at the moment an
+ * approval is consumed (logout/expiry/disable between issue and use revokes it).
+ */
+export async function isAdminSessionLive(sessionId: string): Promise<boolean> {
+  if (adminDisabled()) return false;
+  if (!sessionId || sessionId.length > 128) return false;
+  try {
+    const row = await db.adminSession.findUnique({ where: { id: sessionId } });
+    return Boolean(row && row.expiresAt.getTime() > Date.now());
+  } catch {
+    return false; // fail closed
+  }
+}
+
 /** Revoke one session (logout). Audited by the route. */
 export async function revokeAdminSession(token: string): Promise<boolean> {
   try {

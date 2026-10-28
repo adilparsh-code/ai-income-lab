@@ -6,6 +6,8 @@ import { calculateOpportunityScore } from '@/lib/scoring';
 import { screenForHalalCompliance } from '@/lib/halal-filter';
 import { revalidatePath } from 'next/cache';
 import { requireAdminAction } from '@/lib/agency/action-guard';
+import { halalContentHash, decideHalalStatusOnUpdate, validateReviewNote } from '@/lib/halal-review';
+import { auditSecurityEvent } from '@/lib/security/guard';
 
 // Types for filters
 export interface OpportunityFilters {
@@ -168,13 +170,10 @@ export async function updateOpportunity(
   const merged = { ...existing, ...data };
 
   // SECURITY: the halal gate is re-run on EVERY update (not only when text
-  // fields change) and the caller can never loosen it past the automated
-  // screen. Rules:
-  //   - NOT_ALLOWED is sticky: neither a caller-supplied status nor an edit
-  //     can clear it (create a fresh opportunity if it was a false positive).
-  //   - The screen result is a floor: status can never be less strict than it.
-  //   - A human reviewer may move REVIEW_REQUIRED -> HALAL explicitly, only
-  //     when the screen itself is not NOT_ALLOWED.
+  // fields change). An edit can never loosen the status: NOT_ALLOWED is sticky,
+  // the screen is a floor, and HALAL for a flagged (REVIEW_REQUIRED) opportunity
+  // exists only while an audited human review (recordHalalReview) clears the
+  // exact current content. See src/lib/halal-review.ts.
   const halalResult = screenForHalalCompliance(
     merged.title,
     merged.problemSolved,
@@ -183,21 +182,17 @@ export async function updateOpportunity(
     merged.monetizationMethod,
     merged.targetAudience,
   );
-  const known = ['HALAL', 'REVIEW_REQUIRED', 'NOT_ALLOWED'];
-  if (data.halalStatus !== undefined && !known.includes(data.halalStatus)) {
-    throw new Error('Invalid halalStatus');
-  }
-  if (existing.halalStatus === 'NOT_ALLOWED' || halalResult.status === 'NOT_ALLOWED') {
-    merged.halalStatus = 'NOT_ALLOWED';
-  } else if (data.halalStatus === 'HALAL') {
-    // Explicit, admin-authenticated reviewer sign-off (screen is not NOT_ALLOWED).
-    merged.halalStatus = 'HALAL';
-  } else {
-    merged.halalStatus = getStricterHalalStatus(
-      data.halalStatus ?? existing.halalStatus,
-      halalResult.status,
-    );
-  }
+  const contentHash = halalContentHash(merged);
+  const clearance = await db.halalReview.findFirst({
+    where: { opportunityId: id, toStatus: 'HALAL', contentHash },
+    select: { id: true },
+  });
+  merged.halalStatus = decideHalalStatusOnUpdate({
+    existingStatus: existing.halalStatus,
+    screenStatus: halalResult.status,
+    requestedStatus: data.halalStatus,
+    hasMatchingClearance: Boolean(clearance),
+  });
 
   // Recalculate score
   const scoreResult = calculateOpportunityScore({
@@ -226,6 +221,78 @@ export async function updateOpportunity(
   revalidatePath(`/opportunities/${id}`);
   revalidatePath('/');
   
+  return opportunity;
+}
+
+/**
+ * Record an audited HUMAN halal review that clears a REVIEW_REQUIRED result.
+ *
+ * Not a religious ruling: it records who/when/why and binds the clearance to
+ * the exact current text (contentHash). Refuses NOT_ALLOWED outright, requires
+ * an admin session and a substantive written note, and is append-only.
+ */
+export async function recordHalalReview(id: string, input: { note: string }) {
+  const session = await requireAdminAction();
+  const note = validateReviewNote(input?.note);
+  if (!note.ok) throw new Error(note.error);
+
+  const existing = await db.opportunity.findUnique({ where: { id } });
+  if (!existing) throw new Error('Opportunity not found');
+  if (existing.halalStatus === 'NOT_ALLOWED') {
+    throw new Error('NOT_ALLOWED opportunities cannot be cleared by review.');
+  }
+  if (existing.halalStatus !== 'REVIEW_REQUIRED') {
+    throw new Error('Only REVIEW_REQUIRED opportunities can be cleared by a human review.');
+  }
+
+  const screen = screenForHalalCompliance(
+    existing.title, existing.problemSolved, existing.category,
+    existing.businessModel, existing.monetizationMethod, existing.targetAudience,
+  );
+  if (screen.status === 'NOT_ALLOWED') {
+    throw new Error('The automated screen reports NOT_ALLOWED for this content; it cannot be cleared by review.');
+  }
+
+  const review = await db.halalReview.create({
+    data: {
+      opportunityId: id,
+      fromStatus: existing.halalStatus,
+      toStatus: 'HALAL',
+      screenStatus: screen.status,
+      screenFlags: JSON.stringify(screen.flaggedKeywords.slice(0, 20)),
+      contentHash: halalContentHash(existing),
+      note: note.note,
+      reviewerEmail: session.email,
+      reviewerSessionId: session.sessionId,
+    },
+  });
+
+  const scoreResult = calculateOpportunityScore({
+    demandScore: existing.demandScore,
+    commercialIntentScore: existing.commercialIntentScore,
+    competitionScore: existing.competitionScore,
+    startupCostScore: costToScore(existing.estimatedStartupCost),
+    automationScore: existing.automationScore,
+    differentiationScore: existing.differentiationScore,
+    monetizationScore: existing.monetizationScore,
+    halalConfidenceScore: existing.halalConfidenceScore,
+    halalStatus: 'HALAL',
+  });
+  const opportunity = await db.opportunity.update({
+    where: { id },
+    data: { halalStatus: 'HALAL', overallScore: scoreResult.overallScore, updatedAt: new Date() },
+  });
+
+  await auditSecurityEvent({
+    kind: 'HALAL_REVIEW_RECORDED',
+    surface: 'action:recordHalalReview',
+    outcome: 'ok',
+    detail: `opportunity=${id.slice(0, 12)} review=${review.id.slice(0, 12)} flags=${screen.flaggedKeywords.length}`.slice(0, 300),
+  });
+
+  revalidatePath('/opportunities');
+  revalidatePath(`/opportunities/${id}`);
+  revalidatePath('/');
   return opportunity;
 }
 

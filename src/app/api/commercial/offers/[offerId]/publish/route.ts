@@ -48,7 +48,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ off
   const raw = bodyGuard.value;
   if (typeof raw.humanApprovalToken !== 'string' || raw.humanApprovalToken.trim().length === 0 || raw.humanApprovalToken.length > 512) {
     return NextResponse.json(
-      { ok: false, error: 'humanApprovalToken is required (explicit per-publication approval, max 512 chars).' },
+      { ok: false, error: 'humanApprovalToken is required: a server-issued, single-use approval from POST /api/approvals for this offer.' },
       { status: 400 },
     );
   }
@@ -86,6 +86,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ off
         },
         { status: 503 },
       );
+    case 'NOT_AUTHORIZED':
+      return NextResponse.json({ ok: false, status: result.status, error: result.errors?.[0] ?? 'Approval required.' }, { status: 403 });
     case 'VALIDATION':
       return NextResponse.json({ ok: false, status: result.status, errors: result.errors ?? [] }, { status: 422 });
     case 'PROVIDER_FAILED':

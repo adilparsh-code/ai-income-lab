@@ -160,15 +160,25 @@ export type AuthVerdict =
   | { ok: false; status: 401 | 503; error: string; configured: boolean };
 
 /**
- * The server-side credential that guards control endpoints. Falls back to the
- * legacy revenue token when the dedicated control token is absent so existing
- * deployments keep working.
+ * The server-side credential that guards control endpoints. It is ONLY
+ * OPERATOR_CONTROL_TOKEN. There is deliberately no fallback to
+ * OPERATOR_REVENUE_TOKEN: the revenue-ingestion credential is handed to
+ * automation/webhook senders and must never grant control-plane access.
  */
 export function operatorControlToken(): string | null {
   const dedicated = process.env.OPERATOR_CONTROL_TOKEN?.trim();
-  if (dedicated) return dedicated;
-  const legacy = process.env.OPERATOR_REVENUE_TOKEN?.trim();
-  return legacy ? legacy : null;
+  return dedicated ? dedicated : null;
+}
+
+/**
+ * True when both operator credentials are configured with the SAME value.
+ * That would collapse the two privileges into one secret, so every endpoint
+ * guarded by either token refuses (503) until the values are made distinct.
+ */
+export function operatorTokensConflict(): boolean {
+  const control = process.env.OPERATOR_CONTROL_TOKEN?.trim();
+  const revenue = process.env.OPERATOR_REVENUE_TOKEN?.trim();
+  return Boolean(control && revenue && constantTimeEquals(control, revenue));
 }
 
 function bearerFrom(request: Request): string | null {
@@ -187,6 +197,15 @@ export async function requireOperator(request: Request, surface: string): Promis
   const expected = operatorControlToken();
   const presented = bearerFrom(request);
 
+  if (operatorTokensConflict()) {
+    await auditSecurityEvent({ kind: 'AUTH_FAILURE', surface, outcome: 'refused', detail: 'operator-tokens-not-distinct' });
+    return {
+      ok: false,
+      status: 503,
+      configured: false,
+      error: 'Control endpoint is MISCONFIGURED: OPERATOR_CONTROL_TOKEN and OPERATOR_REVENUE_TOKEN must be different values.',
+    };
+  }
   if (!expected) {
     await auditSecurityEvent({ kind: 'AUTH_FAILURE', surface, outcome: 'refused', detail: 'not-configured' });
     return {
@@ -258,12 +277,11 @@ export async function requireSameOriginIfBrowser(request: Request, surface: stri
       allowed = false;
     }
   }
-  // Localhost dev servers are explicitly trusted for local tooling only.
   if (!allowed) {
     try {
-      const port = new URL(presented).port;
-      const local = /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(presented);
-      allowed = local && (port === '' || port !== '');
+      const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(presented);
+      // Localhost is trusted for local tooling ONLY outside production.
+      allowed = local && process.env.NODE_ENV !== 'production';
     } catch {
       allowed = false;
     }

@@ -163,7 +163,7 @@ export function screenForHalalCompliance(
 export function getHalalStatusDescription(status: HalalStatus): string {
   switch (status) {
     case 'HALAL':
-      return 'No compliance concerns identified by automated screening.';
+      return 'No concerns identified by automated keyword screening, or cleared by a recorded human review. This is a compliance workflow, not a religious ruling.';
     case 'REVIEW_REQUIRED':
       return 'This opportunity contains elements that require human review for halal compliance. The system is a screening tool, not a religious authority.';
     case 'NOT_ALLOWED':

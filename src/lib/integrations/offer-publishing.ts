@@ -26,7 +26,8 @@ import { PolarPublishingAdapter } from './polar-publishing';
 import type { PublishableProductSpec, PublishAttempt, PublishingDraft } from '@/lib/publishing/contract';
 import { publicListingVerdict } from '@/lib/storefront/eligibility';
 import { getOfferById } from '@/lib/commercial/offer-service';
-import { auditSecurityEvent, credentialFingerprint } from '@/lib/security/guard';
+import { auditSecurityEvent } from '@/lib/security/guard';
+import { consumeApproval, offerApprovalScope, approvalScopeHash, APPROVAL_DENIAL_MESSAGE } from '@/lib/security/approvals';
 import { db } from '@/lib/db';
 
 const POLAR_URL_PREFIX = 'https://polar.sh/';
@@ -153,6 +154,7 @@ export type OfferPublicationStatus =
   | 'ALREADY_PUBLISHED'
   | 'NOT_FOUND'
   | 'VALIDATION'
+  | 'NOT_AUTHORIZED'
   | 'AUTH_REQUIRED'
   | 'PROVIDER_FAILED';
 
@@ -271,9 +273,33 @@ export async function publishOfferToPolar(options: PublishOfferOptions): Promise
     : {}) as Record<string, unknown>;
   draft.payload.metadata = { ...metadata, offerId: offer.id, productId };
 
-  // The adapter re-checks the human token + configuration and only claims
-  // "published" after a create + confirm provider round-trip.
-  const attempt: PublishAttempt = await adapter.publish(draft, token);
+  // APPROVAL BOUNDARY: every refusable gate above has passed, so spend the
+  // single-use approval NOW — immediately before the external side effect.
+  // It must be server-issued by an authenticated admin, unexpired, unused, and
+  // bound to exactly this offer (and its current price/title/status/product).
+  const consumed = await consumeApproval(token, {
+    action: 'PUBLISH_OFFER',
+    subjectId: offerId,
+    scopeHash: approvalScopeHash(offerApprovalScope({
+      id: String(offer.id), title: String(offer.title), price: Number(offer.price),
+      currency: String(offer.currency), status: String(offer.status),
+      halalStatus: String(offer.halalStatus), productId: typeof offer.productId === 'string' ? offer.productId : null,
+    })),
+    surface,
+  });
+  if (!consumed.ok) {
+    await auditSecurityEvent({
+      kind: 'POLAR_PUBLICATION',
+      surface,
+      outcome: 'refused',
+      detail: `offer=${offerId.slice(0, 12)} approval denied: ${consumed.reason}`.slice(0, 300),
+    });
+    return { ok: false, status: 'NOT_AUTHORIZED', errors: [APPROVAL_DENIAL_MESSAGE] };
+  }
+
+  // The adapter additionally requires the verified capability (never a string)
+  // and only claims "published" after a create + confirm provider round-trip.
+  const attempt: PublishAttempt = await adapter.publish(draft, consumed.approval);
 
   if (!attempt.published || !attempt.publicationId || !attempt.publicationUrl) {
     const refused = attempt.status === 'NOT_AUTHORIZED';
@@ -315,7 +341,7 @@ export async function publishOfferToPolar(options: PublishOfferOptions): Promise
     kind: 'POLAR_PUBLICATION',
     surface,
     outcome: 'ok',
-    detail: `offer=${offerId.slice(0, 12)} product=${productId.slice(0, 12)} pub=${attempt.publicationId.slice(0, 12)} approved=${credentialFingerprint(token)}`.slice(0, 300),
+    detail: `offer=${offerId.slice(0, 12)} product=${productId.slice(0, 12)} pub=${attempt.publicationId.slice(0, 12)} approval=${consumed.approval.grantId.slice(0, 12)}`.slice(0, 300),
   });
 
   return {

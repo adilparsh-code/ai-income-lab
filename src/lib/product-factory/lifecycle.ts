@@ -21,6 +21,8 @@
 // States
 // ---------------------------------------------------------------------------
 
+import { isVerifiedApproval, type VerifiedApproval } from '@/lib/security/approvals-core';
+
 export const PRODUCT_LIFECYCLE_STATES = [
   'IDEA',
   'VALIDATED',
@@ -46,8 +48,12 @@ export interface TransitionEvidence {
   providerId?: string;
   /** Real external reference: deployment id, publication id, live URL. */
   externalRef?: string;
-  /** Explicit human approval token (required for DEPLOY / PUBLISH). */
-  humanApprovalToken?: string;
+  /**
+   * Server-verified, single-use approval capability (required for DEPLOY /
+   * PUBLISH). Minted only by consumeApproval(); a string can never satisfy it.
+   * The service binds it to the exact product before calling this guard.
+   */
+  approval?: VerifiedApproval;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +188,21 @@ export function normalizeStatus(status: string): ProductLifecycleState {
 }
 
 export function assertValidProductTransition(guard: LifecycleGuard): LifecycleDecision {
+  return evaluateTransition(guard, undefined);
+}
+
+/**
+ * Evaluate every gate EXCEPT the approval check (treated as satisfied). The
+ * lifecycle service uses this ONLY to learn whether spending a single-use
+ * approval is worthwhile; it is never an authorization on its own — the final
+ * decision always goes through assertValidProductTransition() with a real
+ * VerifiedApproval.
+ */
+export function precheckTransitionBeforeApproval(guard: LifecycleGuard): LifecycleDecision {
+  return evaluateTransition(guard, true);
+}
+
+function evaluateTransition(guard: LifecycleGuard, approvalAssumed: boolean | undefined): LifecycleDecision {
   const { currentStatus, transition } = guard;
   const halal = guard.halalStatus ?? 'HALAL';
   const evidence = guard.evidence ?? {};
@@ -215,9 +236,12 @@ export function assertValidProductTransition(guard: LifecycleGuard): LifecycleDe
   }
 
   // 4. Human approval gate for irreversible/external transitions.
-  if (APPROVAL_REQUIRED_TRANSITIONS.includes(transition) && !evidence.humanApprovalToken?.trim()) {
+  const approvalOk = approvalAssumed ?? (isVerifiedApproval(evidence.approval)
+    && evidence.approval.action === `LIFECYCLE_${transition}`
+    && evidence.approval.subjectType === 'product');
+  if (APPROVAL_REQUIRED_TRANSITIONS.includes(transition) && !approvalOk) {
     return decision(guard, false, from,
-      `${transition} is irreversible/external and requires an explicit human approval token.`);
+      `${transition} is irreversible/external and requires a verified, single-use human approval for this product.`);
   }
 
   // 5. State allow-list enforcement.

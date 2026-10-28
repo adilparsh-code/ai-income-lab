@@ -21,6 +21,7 @@
 // Human control: publish() on the boundary requires an authorized adapter AND
 // an explicit human approval token; the boundary itself never publishes.
 
+import { isVerifiedApproval, type VerifiedApproval } from '@/lib/security/approvals-core';
 import type { ProductResult } from '@/lib/agents/types';
 
 // ---------------------------------------------------------------------------
@@ -129,7 +130,7 @@ export interface PublishingProvider {
   validate(spec: PublishableProductSpec): PublishingValidationResult;
   draft(spec: PublishableProductSpec): PublishingDraft;
   /** NEVER callable without an authorized adapter; boundary refuses. */
-  publish(draft: PublishingDraft, humanApprovalToken: string): Promise<PublishAttempt>;
+  publish(draft: PublishingDraft, approval: VerifiedApproval): Promise<PublishAttempt>;
   status(reference: string): Promise<PublishingHealth & { reference: string }>;
 }
 
@@ -140,8 +141,11 @@ export interface PublishingProvider {
 export interface PublishingRequest {
   channel: PublishingChannel;
   spec: PublishableProductSpec;
-  /** Explicit human approval — required even for future authorized adapters. */
-  humanApprovalToken?: string;
+  /**
+   * Verified, single-use approval capability (from consumeApproval()). A
+   * string is never accepted: the old non-empty-string "token" was a rubber stamp.
+   */
+  approval?: VerifiedApproval;
 }
 
 export interface PublishingResponse {
@@ -196,7 +200,7 @@ export function requestPublishing(request: PublishingRequest): PublishingRespons
   const draft = provider.draft(request.spec);
 
   // Publication requires BOTH an authorized adapter and explicit human approval.
-  if (!request.humanApprovalToken || request.humanApprovalToken.trim().length === 0) {
+  if (!isVerifiedApproval(request.approval)) {
     return {
       status: 'NOT_AUTHORIZED',
       providerId: provider.id,

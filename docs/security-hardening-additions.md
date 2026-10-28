@@ -90,7 +90,8 @@ Unchanged from the Phase 9 review, and worth repeating:
 
 1. **End-user authentication for the dashboard is still absent.** Put the app
    behind platform authentication (SSO / access proxy) before exposing it.
-2. Set `OPERATOR_CONTROL_TOKEN` (and `OPERATOR_REVENUE_TOKEN`) and
+2. Set `OPERATOR_CONTROL_TOKEN` and, separately, `OPERATOR_REVENUE_TOKEN` (two different
+   values; there is no fallback between them) and
    `POLAR_WEBHOOK_SECRET` in the deployment environment, or the corresponding
    endpoints stay fail-closed.
 3. The CSP still permits inline script/style (App Router interim posture).
