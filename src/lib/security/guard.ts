@@ -131,23 +131,19 @@ export async function enforceRateLimit(options: RateLimitOptions): Promise<RateL
     }
     return { allowed: true, remaining: Math.max(0, options.max - row.count) };
   } catch {
-    // Unique-race or transient DB contention: fall back to a read-only check
-    // so concurrent first-hit requests cannot each add a count.
-    try {
-      const row = await db.rateLimitWindow.findUnique({
-        where: { bucketKey_windowKey: { bucketKey, windowKey } },
-      });
-      if (row && row.count >= options.max) {
-        return {
-          allowed: false,
-          retryAfterSeconds: Math.max(1, Math.ceil(row.expiresAt.getTime() / 1000) - nowSeconds),
-        };
-      }
-    } catch {
-      // If the DB itself is unavailable we still fail CLOSED for this check —
-      // but only when a limit is explicitly configured for the surface.
-    }
-    return { allowed: true, remaining: options.max };
+    // A failed write means this request was not reliably counted. A read-only
+    // fallback cannot safely authorize it: even a low existing count would
+    // let repeated write failures bypass the limit. Fail closed instead.
+    await auditSecurityEvent({
+      kind: 'RATE_LIMIT_STORAGE_FAILURE',
+      surface: options.surface,
+      outcome: 'error',
+      detail: 'counter-write-failed',
+    });
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, options.windowSeconds),
+    };
   }
 }
 
