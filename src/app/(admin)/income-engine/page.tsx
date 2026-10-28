@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/shared/page-header';
 import { IncomeEngineWorkspace } from '@/components/income-engine/income-engine-workspace';
 import { getIncomeLoopState, getLoopCandidates } from '@/lib/income-engine/engine';
 import type { Metadata } from 'next';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 export const metadata: Metadata = { title: 'Income Engine — AI Income Lab' };
 export const dynamic = 'force-dynamic';
@@ -15,6 +16,7 @@ export default async function IncomeEnginePage({
 }: {
   searchParams: Promise<{ opportunity?: string }>;
 }) {
+  await requireAdminPageAccess('/income-engine');
   const { opportunity: requested } = await searchParams;
   const candidates = await getLoopCandidates(20).catch(() => []);
 

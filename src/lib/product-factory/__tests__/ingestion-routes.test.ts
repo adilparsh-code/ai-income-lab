@@ -18,6 +18,7 @@ const tempDir = mkdtempSync(join(tmpdir(), 'aill-api-'));
 Object.assign(process.env, {
   DATABASE_URL: 'file:' + join(tempDir, 'test.db'),
   NODE_ENV: 'test',
+  OPERATOR_CONTROL_TOKEN: 'events-operator-token-for-tests-0001',
 });
 
 before(() => {
@@ -88,7 +89,7 @@ describe('POST /api/events', () => {
       source: 'test-suite',
       sessionId: `session-${i}`,
       amountUsd: i % 2 === 0 ? undefined : 25,
-    }));
+    }, { Authorization: 'Bearer events-operator-token-for-tests-0001' }));
     for (let i = 0; i < 6; i++) await post(i);
 
     const url = new URL(`http://localhost/api/events?productId=${product.id}&days=30`);
@@ -99,6 +100,54 @@ describe('POST /api/events', () => {
     assert.equal(body.funnel.productId, product.id);
     assert.ok(body.funnel.visitors >= 3);
     assert.ok(body.funnel.purchases >= 3);
+  });
+});
+
+describe('POST /api/events — anonymous trust boundary', () => {
+  it('refuses anonymous PURCHASE / REFUND with 403 and records nothing', async () => {
+    const { POST } = await import('@/app/api/events/route');
+    const { db } = await importDb();
+    const productId = await seedProduct();
+    for (const eventType of ['PURCHASE', 'REFUND']) {
+      const res = await POST(jsonRequest('http://localhost/api/events', {
+        eventType, productId, idempotencyKey: `anon-${eventType}-${productId}`, source: 'attacker', amountUsd: 9999,
+      }));
+      assert.equal(res.status, 403, eventType);
+    }
+    assert.equal(await db.productEvent.count({ where: { productId } }), 0);
+  });
+
+  it('refuses a wrong bearer token instead of falling back to anonymous', async () => {
+    const { POST } = await import('@/app/api/events/route');
+    const productId = await seedProduct();
+    const res = await POST(jsonRequest('http://localhost/api/events', {
+      eventType: 'PURCHASE', productId, idempotencyKey: `bad-${productId}`, source: 'x', amountUsd: 5,
+    }, { Authorization: 'Bearer wrong' }));
+    assert.equal(res.status, 401);
+  });
+
+  it('anonymous VISITOR is stored as USER_ENTERED with no amount and server-derived linkage', async () => {
+    const { POST } = await import('@/app/api/events/route');
+    const { db } = await importDb();
+    const productId = await seedProduct();
+    const res = await POST(jsonRequest('http://localhost/api/events', {
+      eventType: 'PRODUCT_VIEW', productId, idempotencyKey: `pv-${productId}`, source: 'storefront',
+      evidenceType: 'VERIFIED_DATA', amountUsd: 500, opportunityId: 'forged-opportunity', experimentId: 'forged-exp',
+    }));
+    assert.equal(res.status, 200);
+    const row = await db.productEvent.findFirst({ where: { productId } });
+    assert.equal(row?.evidenceType, 'USER_ENTERED');
+    assert.equal(row?.amountUsd, null);
+    assert.notEqual(row?.opportunityId, 'forged-opportunity');
+    assert.equal(row?.experimentId, null);
+  });
+
+  it('refuses anonymous events for unknown products', async () => {
+    const { POST } = await import('@/app/api/events/route');
+    const res = await POST(jsonRequest('http://localhost/api/events', {
+      eventType: 'PRODUCT_VIEW', productId: 'does-not-exist', idempotencyKey: 'ghost-1', source: 'storefront',
+    }));
+    assert.equal(res.status, 404);
   });
 });
 

@@ -4,10 +4,12 @@ import { PageHeader } from '@/components/shared/page-header';
 import { OperationsWorkspace } from '@/components/operations/operations-workspace';
 import { getPhase8OperationsView } from '@/lib/ops/dashboard';
 import type { Metadata } from 'next';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 export const metadata: Metadata = { title: 'Operations — AI Income Lab' };
 
 export default async function OperationsPage() {
+  await requireAdminPageAccess('/operations');
   const view = await getPhase8OperationsView().catch(() => null);
   return (
     <div className="p-6 lg:p-8 space-y-6">

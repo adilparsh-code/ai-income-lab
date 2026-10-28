@@ -4,6 +4,7 @@ import { db } from '@/lib/db';
 import { aggregateUsageForRange, isUsageTimeRange, type UsageTimeRange, type UsageLogRow } from '@/lib/ai/usage';
 import { getEfficiencyViews } from '@/lib/ai/usage-server';
 import type { Metadata } from 'next';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 export const metadata: Metadata = { title: 'AI Usage & Cost — AI Income Lab' };
 
@@ -15,6 +16,7 @@ interface AiUsagePageProps {
 }
 
 export default async function AiUsagePage({ searchParams }: AiUsagePageProps) {
+  await requireAdminPageAccess('/ai-usage');
   const params = await searchParams;
   const rawRange = params.range ?? '7d';
   const range: UsageTimeRange = isUsageTimeRange(rawRange) ? rawRange : '7d';

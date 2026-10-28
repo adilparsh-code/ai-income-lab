@@ -8,12 +8,14 @@ import Link from 'next/link';
 import { ArrowLeft, Edit, Clock, AlertTriangle, Target, Users, Coins, BarChart3 } from 'lucide-react';
 import { formatDate, formatCurrency } from '@/lib/utils';
 import { DeleteOpportunityButton } from '@/components/opportunities/delete-button';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 interface Props {
   params: Promise<{ id: string }>;
 }
 
 export default async function OpportunityDetailPage({ params }: Props) {
+  await requireAdminPageAccess('/opportunities');
   const { id } = await params;
   const opportunity = await getOpportunity(id);
 

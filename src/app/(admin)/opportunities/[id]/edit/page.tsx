@@ -4,12 +4,14 @@ import { OpportunityForm } from '@/components/opportunities/opportunity-form';
 import { PageHeader } from '@/components/shared/page-header';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 interface Props {
   params: Promise<{ id: string }>;
 }
 
 export default async function EditOpportunityPage({ params }: Props) {
+  await requireAdminPageAccess('/opportunities');
   const { id } = await params;
   const opportunity = await getOpportunity(id);
 

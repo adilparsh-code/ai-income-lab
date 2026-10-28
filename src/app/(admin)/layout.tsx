@@ -1,11 +1,15 @@
 // ============================================================================
 // (admin) ROUTE GROUP — SERVER-SIDE ADMIN GATE
 // ============================================================================
-// Every console page (dashboard, pipeline, agents, operations, …) renders
-// through this layout. Authorization is enforced HERE, on the server, before
-// any page renders: an unauthenticated or non-admin request never reaches
-// page code (no client-side-only security). Reuses the existing single-admin
-// session layer (src/lib/agency/session-guard.ts) — no second auth system.
+// This layout is UX ONLY (it shows the sign-in gate instead of the console
+// chrome). It is NOT an authorization boundary: Next renders route segments
+// independently of the layout, so a page still executes — and its output still
+// appears in the RSC payload — even when this layout swaps in the gate
+// (Next 16 docs: 01-app/02-guides/authentication.md, "Layouts and auth
+// checks"). Authorization is therefore enforced in EVERY page via
+// requireAdminPageAccess() (src/lib/agency/page-guard.ts) and in every server
+// action via requireAdminAction(); a static test fails the build if a page
+// omits the guard. Reuses the single-admin session layer (session-guard.ts).
 //
 // /login intentionally lives OUTSIDE this group: it must stay reachable when
 // unauthenticated. API authorization stays in each route's own guard.

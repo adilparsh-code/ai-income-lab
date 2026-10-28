@@ -9,8 +9,10 @@ import { RevenueForm } from '@/components/revenue/revenue-form';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import { DollarSign, TrendingUp, Receipt, Wallet, Trash2 } from 'lucide-react';
 import { deleteRevenue } from '@/actions/revenue';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 export default async function RevenuePage() {
+  await requireAdminPageAccess('/revenue');
   const [revenues, summary, opportunities] = await Promise.all([
     getRevenues(),
     getRevenueSummary(),

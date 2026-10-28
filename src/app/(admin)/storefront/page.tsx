@@ -19,6 +19,7 @@ import {
 } from '@/lib/storefront/store';
 import { offerTypeLabel } from '@/lib/storefront/labels';
 import { formatCurrency, formatDate } from '@/lib/utils';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,6 +38,7 @@ function parseBusinessInfo(json: string): Record<string, unknown> {
 }
 
 export default async function StorefrontPage() {
+  await requireAdminPageAccess('/storefront');
   // Operator surface: storage failures surface as an honest error page —
   // never as a silently empty console.
   const readiness: OfferReadiness[] = await listOfferListingReadiness(50);

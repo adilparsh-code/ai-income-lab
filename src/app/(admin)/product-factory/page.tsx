@@ -7,12 +7,14 @@ import {
   getFactoryOpportunities,
   getRecentFactoryRuns,
 } from '@/actions/product-factory';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 export const metadata = {
   title: 'Product Factory — AI Income Lab',
 };
 
 export default async function ProductFactoryPage() {
+  await requireAdminPageAccess('/product-factory');
   const [opportunities, recentRuns] = await Promise.all([
     getFactoryOpportunities(),
     getRecentFactoryRuns(),

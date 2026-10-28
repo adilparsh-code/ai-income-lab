@@ -7,13 +7,19 @@
 //                     from RECORDED events only, with honest
 //                     SUPPORTED / INSUFFICIENT_DATA labelling.
 //
+// TRUST MODEL: anonymous callers (the storefront) may record only top-of-funnel
+// events, always as USER_ENTERED with no amount; PURCHASE/REFUND and
+// VERIFIED_DATA require the operator credential. See event-policy.ts.
+//
 // SECURITY: no PII — sessionId must already be anonymized by the caller;
 // payloads are bounded; nothing is forwarded to AI providers.
 
 import { NextResponse } from 'next/server';
 import { logger } from '@/lib/server-log';
 import { recordProductEvent, computeProductFunnel, PRODUCT_EVENT_TYPES } from '@/lib/product-factory/events';
-import { enforceRateLimit, clientIpFrom, readJsonBody, auditSecurityEvent } from '@/lib/security/guard';
+import { enforceRateLimit, clientIpFrom, readJsonBody, auditSecurityEvent, requireOperator } from '@/lib/security/guard';
+import { isPublicEventType, sanitizePublicEvent } from '@/lib/product-factory/event-policy';
+import { db } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,6 +69,42 @@ export async function POST(request: Request) {
     }
   }
 
+  // TRUST BOUNDARY. A request presenting an Authorization header must be a
+  // valid operator (no silent fallback to anonymous). Anonymous callers may only
+  // record top-of-funnel events, always labelled USER_ENTERED, never with an
+  // amount, and never self-assigning opportunity/experiment linkage.
+  let trusted = false;
+  if (request.headers.get('authorization')) {
+    const auth = await requireOperator(request, 'api:events');
+    if (!auth.ok) {
+      return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status });
+    }
+    trusted = true;
+  }
+
+  let publicOverrides: ReturnType<typeof sanitizePublicEvent> | null = null;
+  if (!trusted) {
+    if (!isPublicEventType(raw.eventType)) {
+      await auditSecurityEvent({
+        kind: 'EVENT_TYPE_REFUSED',
+        surface: 'api:events',
+        outcome: 'refused',
+        detail: `anonymous ${String(raw.eventType).slice(0, 20)}`,
+      });
+      return NextResponse.json(
+        { ok: false, error: 'This event type can only be recorded by a trusted server-side caller (operator credential).' },
+        { status: 403 },
+      );
+    }
+    const product = await db.product
+      .findUnique({ where: { id: raw.productId.trim() }, select: { id: true, opportunityId: true } })
+      .catch(() => null);
+    if (!product) {
+      return NextResponse.json({ ok: false, error: 'Unknown product.' }, { status: 404 });
+    }
+    publicOverrides = sanitizePublicEvent(product);
+  }
+
   const result = await recordProductEvent({
     eventType: raw.eventType,
     productId: raw.productId,
@@ -70,10 +112,12 @@ export async function POST(request: Request) {
     source: raw.source,
     sessionId: (raw.sessionId as string | undefined) ?? null,
     campaignId: (raw.campaignId as string | undefined) ?? null,
-    opportunityId: (raw.opportunityId as string | undefined) ?? null,
-    experimentId: (raw.experimentId as string | undefined) ?? null,
-    evidenceType: raw.evidenceType === 'USER_ENTERED' ? 'USER_ENTERED' : 'VERIFIED_DATA',
-    amountUsd: typeof raw.amountUsd === 'number' ? raw.amountUsd : null,
+    opportunityId: publicOverrides ? publicOverrides.opportunityId : (raw.opportunityId as string | undefined) ?? null,
+    experimentId: publicOverrides ? publicOverrides.experimentId : (raw.experimentId as string | undefined) ?? null,
+    evidenceType: publicOverrides
+      ? publicOverrides.evidenceType
+      : raw.evidenceType === 'USER_ENTERED' ? 'USER_ENTERED' : 'VERIFIED_DATA',
+    amountUsd: publicOverrides ? publicOverrides.amountUsd : typeof raw.amountUsd === 'number' ? raw.amountUsd : null,
     utmSource: (raw.utmSource as string | undefined) ?? null,
     utmMedium: (raw.utmMedium as string | undefined) ?? null,
     utmCampaign: (raw.utmCampaign as string | undefined) ?? null,
