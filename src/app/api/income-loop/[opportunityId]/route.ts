@@ -5,7 +5,7 @@
 
 import { NextResponse } from 'next/server';
 import { getIncomeLoopState } from '@/lib/income-engine/engine';
-import { clientIpFrom, enforceRateLimit, auditSecurityEvent } from '@/lib/security/guard';
+import { guardBrowserOrOperator } from '@/lib/security/guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,14 +17,11 @@ export async function GET(
   if (!opportunityId || opportunityId.length > 128) {
     return NextResponse.json({ ok: false, error: 'opportunityId is required (max 128 chars)' }, { status: 400 });
   }
-  // SECURITY: business state is operator/same-origin data — public scanners
-  // and bots (already refused at the edge) that still hit this path are
-  // rate-limited here.
-  const ip = clientIpFrom(request);
-  const limit = await enforceRateLimit({ surface: 'api:income-loop:get', identity: ip, max: 60, windowSeconds: 60 });
-  if (!limit.allowed) {
-    await auditSecurityEvent({ kind: 'RATE_LIMITED', surface: 'api:income-loop:get', outcome: 'refused' });
-    return NextResponse.json({ ok: false, error: 'Rate limit exceeded. Retry later.' }, { status: 429 });
+  // SECURITY (N3): loop state exposes revenue, traffic and gate data — admin
+  // session or operator credential required, never anonymous.
+  const guard = await guardBrowserOrOperator(request, 'api:income-loop:get', { max: 60, windowSeconds: 60 });
+  if ('response' in guard) {
+    return NextResponse.json(guard.response, { status: guard.status });
   }
   try {
     const state = await getIncomeLoopState(opportunityId);

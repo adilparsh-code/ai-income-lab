@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { APP_ENV, APP_NAME, isDeployed } from '@/lib/config';
 import { logger } from '@/lib/server-log';
 
 // Lightweight health check. Verifies the app is up and, if possible, that the
@@ -24,9 +23,6 @@ export async function GET() {
 
   const payload = {
     status: databaseOk ? 'ok' : 'degraded',
-    app: APP_NAME,
-    environment: APP_ENV,
-    deployed: isDeployed,
     database: databaseOk ? 'ok' : 'unavailable',
     timestamp: new Date().toISOString(),
   };

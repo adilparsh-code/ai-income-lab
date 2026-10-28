@@ -103,13 +103,35 @@ export type RateLimitOptions = {
 
 export type RateLimitVerdict =
   | { allowed: true; remaining: number }
-  | { allowed: false; retryAfterSeconds: number };
+  | { allowed: false; retryAfterSeconds: number; unavailable?: true };
 
 /**
  * Atomically increment the counter for (bucket, window). The unique
  * (bucketKey, windowKey) constraint makes the upsert race-free across
  * processes and instances; contention falls back to a read-only check.
  */
+/** Narrow persistence seam so fail-closed behaviour is testable without a DB. */
+export interface RateLimitStore {
+  upsert(args: {
+    bucketKey: string; windowKey: string; expiresAt: Date;
+  }): Promise<{ count: number; expiresAt: Date }>;
+}
+
+const prismaRateLimitStore: RateLimitStore = {
+  upsert: ({ bucketKey, windowKey, expiresAt }) =>
+    db.rateLimitWindow.upsert({
+      where: { bucketKey_windowKey: { bucketKey, windowKey } },
+      create: { bucketKey, windowKey, count: 1, expiresAt },
+      update: { count: { increment: 1 } },
+    }),
+};
+
+let rateLimitStore: RateLimitStore = prismaRateLimitStore;
+/** TEST SEAM ONLY: swap the persistence layer (null restores the default). */
+export function __setRateLimitStoreForTests(store: RateLimitStore | null): void {
+  rateLimitStore = store ?? prismaRateLimitStore;
+}
+
 export async function enforceRateLimit(options: RateLimitOptions): Promise<RateLimitVerdict> {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const windowStart = nowSeconds - (nowSeconds % options.windowSeconds);
@@ -117,12 +139,12 @@ export async function enforceRateLimit(options: RateLimitOptions): Promise<RateL
   const bucketKey = `${options.surface}|${credentialFingerprint(options.identity)}`;
   const expiresAt = new Date((windowStart + options.windowSeconds) * 1000 + 5_000);
 
-  try {
-    const row = await db.rateLimitWindow.upsert({
-      where: { bucketKey_windowKey: { bucketKey, windowKey } },
-      create: { bucketKey, windowKey, count: 1, expiresAt },
-      update: { count: { increment: 1 } },
-    });
+  // SECURITY (N4): FAIL CLOSED. If the durable counter cannot be read or
+  // written, enforcement is impossible, so the protected operation is DENIED.
+  // There is intentionally no in-memory fallback: a per-instance map would be
+  // unbounded and trivially bypassed across instances/restarts.
+  const attempt = async (): Promise<RateLimitVerdict> => {
+    const row = await rateLimitStore.upsert({ bucketKey, windowKey, expiresAt });
     if (row.count > options.max) {
       return {
         allowed: false,
@@ -130,24 +152,18 @@ export async function enforceRateLimit(options: RateLimitOptions): Promise<RateL
       };
     }
     return { allowed: true, remaining: Math.max(0, options.max - row.count) };
+  };
+
+  try {
+    return await attempt();
   } catch {
-    // Unique-race or transient DB contention: fall back to a read-only check
-    // so concurrent first-hit requests cannot each add a count.
+    // A concurrent first-hit can lose the unique-constraint race; the row now
+    // exists, so exactly one retry of the atomic upsert counts this request.
     try {
-      const row = await db.rateLimitWindow.findUnique({
-        where: { bucketKey_windowKey: { bucketKey, windowKey } },
-      });
-      if (row && row.count >= options.max) {
-        return {
-          allowed: false,
-          retryAfterSeconds: Math.max(1, Math.ceil(row.expiresAt.getTime() / 1000) - nowSeconds),
-        };
-      }
+      return await attempt();
     } catch {
-      // If the DB itself is unavailable we still fail CLOSED for this check —
-      // but only when a limit is explicitly configured for the surface.
+      return { allowed: false, retryAfterSeconds: 5, unavailable: true };
     }
-    return { allowed: true, remaining: options.max };
   }
 }
 
@@ -396,7 +412,10 @@ export async function guardOperatorEndpoint(
   const ip = clientIpFrom(request);
   const limit = await enforceRateLimit({ surface, identity: ip, ...rateOptions });
   if (!limit.allowed) {
-    await auditSecurityEvent({ kind: 'RATE_LIMITED', surface, outcome: 'refused' });
+    await auditSecurityEvent({ kind: limit.unavailable ? 'RATE_LIMIT_UNAVAILABLE' : 'RATE_LIMITED', surface, outcome: 'refused' });
+    if (limit.unavailable) {
+      return { response: { ok: false, error: 'Protection is temporarily unavailable. Request refused.' }, status: 503 };
+    }
     return { response: { ok: false, error: 'Rate limit exceeded. Retry later.' }, status: 429 };
   }
 
@@ -447,7 +466,10 @@ export async function guardBrowserOrOperator(
   const ip = clientIpFrom(request);
   const limit = await enforceRateLimit({ surface, identity: ip, ...rateOptions });
   if (!limit.allowed) {
-    await auditSecurityEvent({ kind: 'RATE_LIMITED', surface, outcome: 'refused' });
+    await auditSecurityEvent({ kind: limit.unavailable ? 'RATE_LIMIT_UNAVAILABLE' : 'RATE_LIMITED', surface, outcome: 'refused' });
+    if (limit.unavailable) {
+      return { response: { ok: false, error: 'Protection is temporarily unavailable. Request refused.' }, status: 503 };
+    }
     return { response: { ok: false, error: 'Rate limit exceeded. Retry later.' }, status: 429 };
   }
 

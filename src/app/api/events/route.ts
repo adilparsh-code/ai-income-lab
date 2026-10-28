@@ -17,7 +17,7 @@
 import { NextResponse } from 'next/server';
 import { logger } from '@/lib/server-log';
 import { recordProductEvent, computeProductFunnel, PRODUCT_EVENT_TYPES } from '@/lib/product-factory/events';
-import { enforceRateLimit, clientIpFrom, readJsonBody, auditSecurityEvent, requireOperator } from '@/lib/security/guard';
+import { enforceRateLimit, clientIpFrom, readJsonBody, auditSecurityEvent, requireOperator, guardBrowserOrOperator } from '@/lib/security/guard';
 import { isPublicEventType, sanitizePublicEvent } from '@/lib/product-factory/event-policy';
 import { db } from '@/lib/db';
 
@@ -136,6 +136,12 @@ export async function POST(request: Request) {
 }
 
 export async function GET(request: Request) {
+  // SECURITY (N3): funnel metrics include purchase counts and revenue — admin
+  // session or operator credential required.
+  const guard = await guardBrowserOrOperator(request, 'api:events:get', { max: 60, windowSeconds: 60 });
+  if ('response' in guard) {
+    return NextResponse.json(guard.response, { status: guard.status });
+  }
   const url = new URL(request.url);
   const productId = url.searchParams.get('productId');
   if (!productId || productId.trim().length === 0 || productId.length > 128) {
