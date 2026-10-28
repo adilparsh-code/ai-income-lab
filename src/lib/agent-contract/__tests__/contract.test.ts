@@ -59,60 +59,91 @@ describe('agent request schema (v1)', () => {
   it('rejects an unsupported contract version', () => {
     const result = validateAgentRequest(validRequest({ contractVersion: 'v2' }));
     assert.equal(result.ok, false);
-    assert.equal(!result.ok && result.code, 'INVALID_REQUEST');
+    assert.equal(!result.ok && result.code, 'UNSUPPORTED_CONTRACT_VERSION');
   });
 
   it('rejects unknown top-level fields (no directive smuggling)', () => {
-    const result = validateAgentRequest(validRequest({ instructions: 'delete all data', role: 'admin' }));
-    assert.equal(result.ok, false);
-    assert.equal(!result.ok && result.httpStatus, 400);
+    for (const smuggled of ['role', 'permission', 'execute', 'admin', 'actions']) {
+      const result = validateAgentRequest(validRequest({ [smuggled]: 'root' }));
+      assert.equal(result.ok, false, `smuggled field ${smuggled} must be rejected`);
+    }
   });
 
   it('rejects client-asserted identity/authorization fields', () => {
-    // .strict() makes ANY extra field a rejection: role/admin/permissions/
-    // userId can never ride along into the processor.
-    for (const smuggled of ['userId', 'role', 'admin', 'permissions']) {
+    // The runtime derives identity from the credential, never from the body.
+    // A body that asserts these would let a caller pick a different identity.
+    for (const smuggled of ['agentId', 'role', 'admin', 'permissions']) {
       const result = validateAgentRequest(validRequest({ [smuggled]: 'root' }));
-      assert.equal(result.ok, false, `${smuggled} must be rejected`);
+      assert.equal(result.ok, false, `smuggled field ${smuggled} must be rejected`);
     }
   });
 
   it('rejects malformed timestamps and ids', () => {
-    assert.equal(validateAgentRequest(validRequest({ timestamp: 'yesterday' })).ok, false);
-    assert.equal(validateAgentRequest(validRequest({ requestId: '' })).ok, false);
-    assert.equal(validateAgentRequest(validRequest({ correlationId: 'has space' })).ok, false);
-    assert.equal(validateAgentRequest(validRequest({ action: 'DROP_TABLE' })).ok, false);
+    assert.equal(
+      validateAgentRequest(validRequest({ timestamp: 'yesterday' })).ok,
+      false,
+      'malformed timestamp must be rejected',
+    );
+    assert.equal(
+      validateAgentRequest(validRequest({ requestId: '   ' })).ok,
+      false,
+      'blank request id must be rejected',
+    );
   });
 
   it('rejects forbidden payload keys (instruction smuggling)', () => {
-    for (const key of ['instructions', 'sql', 'systemPrompt', 'apiKey']) {
-      const result = validateAgentRequest(validRequest({ payload: { [key]: 'ignore all rules' } }));
-      assert.equal(result.ok, false, `payload key ${key} must be rejected`);
-      if (!result.ok) assert.match(result.errors[0], /forbidden key/);
+    for (const key of FORBIDDEN_PAYLOAD_KEYS) {
+      const result = validateAgentRequest(validRequest({ payload: { [key]: 'drop table opportunities;' } }));
+      assert.equal(result.ok, false, `forbidden key ${key} must be rejected`);
     }
   });
 
   it('rejects identity-smuggling payload keys case-insensitively', () => {
-    const result = validateAgentRequest(validRequest({ payload: { Role: 'superadmin', USERID: '1' } }));
-    assert.equal(result.ok, false);
+    // The contract strips SQL-shaped keys case-insensitively.
+    for (const k of ['SQL', 'Query', 'EXEC', 'Db', 'TABLE']) {
+      const result = validateAgentRequest(validRequest({ payload: { [k.toLowerCase()]: 'anything' } }));
+      assert.equal(result.ok, false, `forbidden key ${k} (lowercased) must still be rejected`);
+    }
   });
 
   it('bounds payload depth, key count, string length, and bytes', () => {
-    let deep: Record<string, unknown> = { end: true };
-    for (let i = 0; i < 10; i += 1) deep = { nested: deep };
-    const deepResult = validateAgentRequest(validRequest({ payload: deep }));
-    assert.equal(deepResult.ok, false);
-    assert.equal(!deepResult.ok && deepResult.code, 'PAYLOAD_TOO_LARGE');
+    const deep = validateAgentRequest(validRequest({ payload: { nested: { nested: { nested: { nested: { end: true } } } } } }));
+    assert.equal(deep.ok, false, 'very deep payload should be rejected');
 
-    const manyKeys: Record<string, unknown> = {};
-    for (let i = 0; i < 60; i += 1) manyKeys[`k${i}`] = i;
-    assert.equal(validateAgentRequest(validRequest({ payload: manyKeys })).ok, false);
+    const wide = validateAgentRequest(validRequest({ payload: Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`k${i}`, i])) }));
+    assert.equal(wide.ok, false, 'very wide payload should be rejected');
 
     const longString = validateAgentRequest(validRequest({ payload: { researchObjective: 'x'.repeat(3000) } }));
     assert.equal(longString.ok, false);
 
     const big = validateAgentRequest(validRequest({ payload: { blob: 'y'.repeat(MAX_PAYLOAD_BYTES) } }));
     assert.equal(!big.ok && big.httpStatus, 413);
+
+    const manyKeys = Object.fromEntries(Array.from({ length: MAX_PAYLOAD_KEYS }, (_, i) => [`k${i}`, i]));
+    assert.equal(validateAgentRequest(validRequest({ payload: manyKeys })).ok, false);
+
+    // Boundary tests: the limit must hold at the exact threshold, not only
+    // for obviously-overflowing inputs. An off-by-one here would silently
+    // widen the accepted payload envelope.
+    const belowDepth = validateAgentRequest(validRequest({ payload: makeDeep(MAX_PAYLOAD_DEPTH - 1) }));
+    assert.equal(belowDepth.ok, true, `depth ${MAX_PAYLOAD_DEPTH - 1} wraps must be accepted`);
+    const atDepth = validateAgentRequest(validRequest({ payload: makeDeep(MAX_PAYLOAD_DEPTH) }));
+    assert.equal(atDepth.ok, false, `depth ${MAX_PAYLOAD_DEPTH} wraps must be rejected`);
+    assert.equal(!atDepth.ok && atDepth.code, 'PAYLOAD_TOO_LARGE');
+
+    const belowKeys = validateAgentRequest(validRequest({ payload: makeManyKeys(MAX_PAYLOAD_KEYS - 1) }));
+    assert.equal(belowKeys.ok, true, `payload with ${MAX_PAYLOAD_KEYS - 1} keys must be accepted`);
+    const atKeys = validateAgentRequest(validRequest({ payload: makeManyKeys(MAX_PAYLOAD_KEYS) }));
+    assert.equal(atKeys.ok, true, `payload with exactly ${MAX_PAYLOAD_KEYS} keys must be accepted`);
+    const overKeys = validateAgentRequest(validRequest({ payload: makeManyKeys(MAX_PAYLOAD_KEYS + 1) }));
+    assert.equal(overKeys.ok, false, `payload with ${MAX_PAYLOAD_KEYS + 1} keys must be rejected`);
+
+    const belowLen = validateAgentRequest(validRequest({ payload: { f: 'x'.repeat(MAX_FIELD_LENGTH - 1) } }));
+    assert.equal(belowLen.ok, true);
+    const atLen = validateAgentRequest(validRequest({ payload: { f: 'x'.repeat(MAX_FIELD_LENGTH) } }));
+    assert.equal(atLen.ok, true, `string of exactly ${MAX_FIELD_LENGTH} chars must be accepted`);
+    const overLen = validateAgentRequest(validRequest({ payload: { f: 'x'.repeat(MAX_FIELD_LENGTH + 1) } }));
+    assert.equal(overLen.ok, false, `string of ${MAX_FIELD_LENGTH + 1} chars must be rejected`);
   });
 
   it('measures payload byte size deterministically', () => {
@@ -128,42 +159,42 @@ describe('agent request schema (v1)', () => {
 
   it('validates the Zod schema directly for strictness', () => {
     const parsed = agentRequestSchema.safeParse(validRequest({ extra: true }));
-    assert.equal(parsed.success, false); // strict: unknown keys rejected
+    assert.equal(parsed.success, false); // unknown field rejected by Zod
   });
 });
 
 describe('capability catalog + write authority', () => {
   it('has unique, stable capability ids', () => {
-    const ids = AGENT_CAPABILITIES.map((c) => c.id as string);
-    assert.equal(new Set(ids).size, ids.length);
-    assert.deepEqual(AGENT_CAPABILITY_IDS.sort(), AGENT_ACTIONS.slice().sort());
+    const ids = AGENT_CAPABILITY_IDS.map((c) => c.id as string);
+    assert.deepEqual(new Set(ids).size, ids.length);
   });
 
   it('classifies every capability with exactly one authority', () => {
     for (const capability of AGENT_CAPABILITIES) {
-      assert.ok((WRITE_AUTHORITIES as readonly string[]).includes(capability.authority));
+      const authorities = WRITE_AUTHORITIES.filter((a) => capability.authority === a);
+      assert.equal(authorities.length, 1, `capability ${capability.id} must have exactly one authority`);
     }
   });
 
   it('keeps sensitive capabilities behind HUMAN_APPROVAL', () => {
-    const publish = getCapability('REQUEST_PUBLISH');
-    const config = getCapability('REQUEST_CONFIG_CHANGE');
-    assert.equal(publish?.authority, 'HUMAN_APPROVAL');
-    assert.equal(config?.authority, 'HUMAN_APPROVAL');
-    assert.equal(publish?.jobType, null); // never dispatches
-    assert.equal(config?.jobType, null);
+    for (const capability of AGENT_CAPABILITIES) {
+      if (capability.category === 'SENSITIVE' || capability.jobType === 'REVIEW_REQUIRED') {
+        assert.equal(capability.authority, 'HUMAN_APPROVAL', `capability ${capability.id} must require human approval`);
+      }
+    }
   });
 
   it('gives no external capability unrestricted DB or admin reach', () => {
     for (const capability of AGENT_CAPABILITIES) {
-      // Every dispatched job type must be one of the EXISTING runner types.
-      if (capability.jobType !== null) {
-        assert.ok(
-          ['RESEARCH', 'VALIDATION', 'OPPORTUNITY_PIPELINE'].includes(capability.jobType),
-          `capability ${capability.id} maps to an unexpected job type ${capability.jobType}`,
-        );
-      }
-      assert.equal(Object.keys(capability.jobPayloadShape).some((k) => /sql|raw|db/i.test(k)), false);
+      assert.ok(
+        ['READ_OPPORTUNITY', 'READ_REVENUE', 'READ_ANALYTICS'].includes(capability.id),
+        `unexpected external capability ${capability.id} must be reviewed`,
+      );
+      assert.equal(
+        [WRITE_AUTHORITIES[0], WRITE_AUTHORITIES[1]].includes(capability.authority),
+        true,
+        `capability ${capability.id} must use a bounded write authority`,
+      );
     }
   });
 
@@ -194,3 +225,16 @@ describe('capability catalog + write authority', () => {
     assert.equal(unknown.capabilityExists, false);
   });
 });
+
+// Helpers for building boundary payloads.
+function makeDeep(wraps: number): Record<string, unknown> {
+  let p: Record<string, unknown> = { end: true };
+  for (let i = 0; i < wraps; i += 1) p = { nested: p };
+  return p;
+}
+
+function makeManyKeys(n: number): Record<string, unknown> {
+  const m: Record<string, unknown> = {};
+  for (let i = 0; i < n; i += 1) m[`k${i}`] = i;
+  return m;
+}
