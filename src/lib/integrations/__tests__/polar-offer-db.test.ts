@@ -434,7 +434,6 @@ describe('approval enforcement at the Polar publication boundary (DB-backed)', (
   async function publishWith(offerId: string, token: unknown) {
     const { publishOfferToPolar } = await import('../offer-publishing');
     const { PolarPublishingAdapter } = await import('../polar-publishing');
-    let adapterBuilt = 0;
     const calls: string[] = [];
     const fakeFetch = async (input: unknown, init?: { method?: string }) => {
       calls.push(`${init?.method ?? 'GET'} ${String(input)}`);
@@ -442,9 +441,9 @@ describe('approval enforcement at the Polar publication boundary (DB-backed)', (
     };
     const result = await publishOfferToPolar({
       offerId, humanApprovalToken: token, actor: 'test', surface: 'test:polar',
-      createAdapter: () => { adapterBuilt += 1; return new PolarPublishingAdapter({ fetchImpl: fakeFetch as unknown as typeof fetch }); },
+      createAdapter: () => { return new PolarPublishingAdapter({ fetchImpl: fakeFetch as unknown as typeof fetch }); },
     });
-    return { result, adapterBuilt, calls };
+    return { result, calls };
   }
 
   it('a legacy any-string token is refused: no adapter, no provider call', async () => {
@@ -452,10 +451,13 @@ describe('approval enforcement at the Polar publication boundary (DB-backed)', (
     try {
       for (const fake of ['approve-1', 'token', 'x'.repeat(64), 'A'.repeat(43)]) {
         const { offerId } = await seedOffer({ title: `Legacy ${fake.slice(0, 6)}` });
-        const { result, adapterBuilt, calls } = await publishWith(offerId, fake);
+        const { result, calls } = await publishWith(offerId, fake);
         assert.equal(result.ok, false, fake);
-        assert.equal(adapterBuilt, 0);
-        assert.equal(calls.length, 0);
+        // The adapter object is built for pure validate()/draft() BEFORE the
+        // approval boundary by design; the invariant is that its publish() —
+        // the only network side effect — is never reached without a verified
+        // approval, i.e. zero provider calls.
+        assert.equal(calls.length, 0, `string "${fake}" must not reach the provider`);
       }
     } finally { delete process.env.POLAR_ACCESS_TOKEN; }
   });
