@@ -93,7 +93,10 @@ describe('POST /api/events', () => {
     for (let i = 0; i < 6; i++) await post(i);
 
     const url = new URL(`http://localhost/api/events?productId=${product.id}&days=30`);
-    const res = await events.GET(new Request(url));
+    // N3: funnel metrics are operator/admin data — anonymous reads are refused.
+    const anonymous = await events.GET(new Request(url));
+    assert.equal(anonymous.status, 401);
+    const res = await events.GET(new Request(url, { headers: { Authorization: 'Bearer events-operator-token-for-tests-0001' } }));
     assert.equal(res.status, 200);
     const body = (await res.json()) as { ok: boolean; funnel: { productId: string; purchases: number; visitors: number } };
     assert.equal(body.ok, true);
