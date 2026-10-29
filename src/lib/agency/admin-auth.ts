@@ -10,6 +10,8 @@
 //                          by scripts/hash-admin-password.mjs (preferred).
 //   ADMIN_PASSWORD       — bootstrap plaintext fallback (dev/bootstrap only).
 //                          NEVER committed; fail-closed when neither is set.
+//                          Ignored when ADMIN_PASSWORD_HASH is set, and ignored
+//                          entirely when ADMIN_REQUIRE_PASSWORD_HASH is truthy.
 //
 // Sessions are durable rows in AdminSession. The cookie carries an opaque
 // random token; only a keyed HMAC fingerprint of the token is stored, so a
@@ -56,6 +58,25 @@ function verifyScryptHash(password: string, stored: string): boolean {
 }
 
 export type AdminCredentialStatus = 'CONFIGURED' | 'NOT_CONFIGURED';
+export type AdminCredentialMode = 'hash' | 'plaintext' | 'none';
+
+function truthyEnv(name: string): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+/**
+ * Which credential material is actually in force. The hash always wins. The
+ * plaintext fallback is honoured only until the operator opts into strict mode
+ * with ADMIN_REQUIRE_PASSWORD_HASH=true (migration switch: it can only REMOVE
+ * a weaker path, never add one, and it never changes the password itself).
+ */
+export function adminCredentialMode(): AdminCredentialMode {
+  if (process.env.ADMIN_PASSWORD_HASH?.trim()) return 'hash';
+  if (truthyEnv('ADMIN_REQUIRE_PASSWORD_HASH')) return 'none';
+  if (process.env.ADMIN_PASSWORD?.trim()) return 'plaintext';
+  return 'none';
+}
 
 /**
  * Kill-switch: when ADMIN_DISABLED is set to a truthy value, the single
@@ -71,11 +92,7 @@ export function adminDisabled(): boolean {
 
 /** Truthful readiness of the admin credential configuration. */
 export function adminCredentialStatus(): AdminCredentialStatus {
-  const hash = process.env.ADMIN_PASSWORD_HASH?.trim();
-  if (hash) return 'CONFIGURED';
-  const plain = process.env.ADMIN_PASSWORD?.trim();
-  if (plain) return 'CONFIGURED';
-  return 'NOT_CONFIGURED';
+  return adminCredentialMode() === 'none' ? 'NOT_CONFIGURED' : 'CONFIGURED';
 }
 
 /**
@@ -89,13 +106,11 @@ export function verifyAdminCredentials(email: string | null, password: string | 
   if (expectedEmail.length === 0) return false;
   if (!constantTimeTextEquals(email.trim().toLowerCase(), expectedEmail.toLowerCase())) return false;
 
-  const hash = process.env.ADMIN_PASSWORD_HASH?.trim();
-  if (hash) return verifyScryptHash(password, hash);
+  const mode = adminCredentialMode();
+  if (mode === 'hash') return verifyScryptHash(password, process.env.ADMIN_PASSWORD_HASH!.trim());
+  if (mode === 'plaintext') return constantTimeTextEquals(password, process.env.ADMIN_PASSWORD!.trim());
 
-  const plain = process.env.ADMIN_PASSWORD?.trim();
-  if (plain) return constantTimeTextEquals(password, plain);
-
-  return false; // nothing configured → fail closed
+  return false; // nothing configured (or plaintext disallowed) → fail closed
 }
 
 function constantTimeTextEquals(a: string, b: string): boolean {
@@ -195,6 +210,82 @@ export async function revokeAdminSession(token: string): Promise<boolean> {
 
 /** Login rate limiting: 10 attempts / 5 min per IP (DB-backed, shared). */
 export const LOGIN_RATE_LIMIT = { max: 10, windowSeconds: 300 } as const;
+
+// ---------------------------------------------------------------------------
+// Per-ACCOUNT lockout (N4). The per-IP throttle alone lets a distributed
+// attacker make unlimited guesses; this caps total FAILED guesses against the
+// single admin account regardless of source IP. Only failures count, the check
+// runs before any credential work (so no scrypt cost while locked), and a
+// storage error DENIES login (fail closed — no in-memory fallback).
+// Trade-off (documented): an attacker can deliberately keep the account locked
+// for the window; the kill-switch/recovery path is the env, not this counter.
+// ---------------------------------------------------------------------------
+
+export const ACCOUNT_LOCKOUT = { maxFailures: 8, windowSeconds: 15 * 60 } as const;
+
+export interface AccountLockStore {
+  read(args: { bucketKey: string; windowKey: string }): Promise<{ count: number; expiresAt: Date } | null>;
+  increment(args: { bucketKey: string; windowKey: string; expiresAt: Date }): Promise<void>;
+}
+
+const prismaAccountLockStore: AccountLockStore = {
+  read: ({ bucketKey, windowKey }) =>
+    db.rateLimitWindow.findUnique({ where: { bucketKey_windowKey: { bucketKey, windowKey } } }),
+  increment: async ({ bucketKey, windowKey, expiresAt }) => {
+    await db.rateLimitWindow.upsert({
+      where: { bucketKey_windowKey: { bucketKey, windowKey } },
+      create: { bucketKey, windowKey, count: 1, expiresAt },
+      update: { count: { increment: 1 } },
+    });
+  },
+};
+
+let accountLockStore: AccountLockStore = prismaAccountLockStore;
+/** TEST SEAM ONLY (null restores the default). */
+export function __setAccountLockStoreForTests(store: AccountLockStore | null): void {
+  accountLockStore = store ?? prismaAccountLockStore;
+}
+
+function lockWindow(): { bucketKey: string; windowKey: string; expiresAt: Date; retryAfterSeconds: number } {
+  const now = Math.floor(Date.now() / 1000);
+  const { windowSeconds } = ACCOUNT_LOCKOUT;
+  const start = now - (now % windowSeconds);
+  return {
+    // One account → one bucket, independent of the (attacker-chosen) email string.
+    bucketKey: 'admin-account-lockout|' + credentialFingerprint('admin-account'),
+    windowKey: `${start}-${windowSeconds}`,
+    expiresAt: new Date((start + windowSeconds) * 1000 + 5_000),
+    retryAfterSeconds: Math.max(1, start + windowSeconds - now),
+  };
+}
+
+export type AccountLockVerdict =
+  | { locked: false }
+  | { locked: true; retryAfterSeconds: number; unavailable?: true };
+
+/** Read-only: does NOT consume an attempt. */
+export async function accountLockState(): Promise<AccountLockVerdict> {
+  const w = lockWindow();
+  try {
+    const row = await accountLockStore.read({ bucketKey: w.bucketKey, windowKey: w.windowKey });
+    if (row && row.count >= ACCOUNT_LOCKOUT.maxFailures) {
+      return { locked: true, retryAfterSeconds: w.retryAfterSeconds };
+    }
+    return { locked: false };
+  } catch {
+    return { locked: true, retryAfterSeconds: 5, unavailable: true };
+  }
+}
+
+/** Count one FAILED login against the account. Never throws. */
+export async function recordAccountLoginFailure(): Promise<void> {
+  const w = lockWindow();
+  try {
+    await accountLockStore.increment({ bucketKey: w.bucketKey, windowKey: w.windowKey, expiresAt: w.expiresAt });
+  } catch {
+    /* the next accountLockState() will fail closed if storage is down */
+  }
+}
 
 export async function auditAdminEvent(kind: string, outcome: 'ok' | 'refused' | 'error', detail?: string): Promise<void> {
   await auditSecurityEvent({ kind, surface: 'admin', outcome, detail: detail?.slice(0, 200) });

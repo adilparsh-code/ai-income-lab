@@ -18,11 +18,14 @@ import { NextResponse } from 'next/server';
 import {
   ADMIN_SESSION_COOKIE,
   ADMIN_SESSION_TTL_MS,
+  accountLockState,
+  adminCredentialMode,
   adminCredentialStatus,
   adminDisabled,
   auditAdminEvent,
   createAdminSession,
   LOGIN_RATE_LIMIT,
+  recordAccountLoginFailure,
   resolveAdminSession,
   revokeAdminSession,
   verifyAdminCredentials,
@@ -107,7 +110,18 @@ export async function POST(request: Request) {
     );
   }
 
+  // Per-account lockout BEFORE any credential work (also skips scrypt while locked).
+  const lock = await accountLockState();
+  if (lock.locked) {
+    await auditAdminEvent('ADMIN_LOGIN', 'refused', lock.unavailable ? 'lockout-store-unavailable' : 'account-locked');
+    return NextResponse.json(
+      { ok: false, error: lock.unavailable ? 'Login is temporarily unavailable.' : 'Too many failed attempts. Try again later.' },
+      { status: lock.unavailable ? 503 : 429, headers: { 'Retry-After': String(lock.retryAfterSeconds) } },
+    );
+  }
+
   if (!verifyAdminCredentials(email, password)) {
+    await recordAccountLoginFailure();
     // Non-secret reason code (fixed set) → SecurityEvent.detail only; response unchanged.
     await auditAdminEvent('ADMIN_LOGIN', 'refused', classifyAdminLoginFailure(email, password));
     return NextResponse.json({ ok: false, error: 'Invalid credentials.' }, { status: 401 });
@@ -123,7 +137,9 @@ export async function POST(request: Request) {
       returnTo,
     });
     response.cookies.set(ADMIN_SESSION_COOKIE, token, cookieOptions());
-    await auditAdminEvent('ADMIN_LOGIN', 'ok');
+    // Plaintext fallback still in use → leave a non-secret audit breadcrumb so
+    // the operator can see the migration to ADMIN_PASSWORD_HASH is pending.
+    await auditAdminEvent('ADMIN_LOGIN', 'ok', adminCredentialMode() === 'plaintext' ? 'plaintext-credential-in-use' : undefined);
     return response;
   } catch {
     await auditAdminEvent('ADMIN_LOGIN', 'error', 'session-storage-unavailable');

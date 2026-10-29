@@ -207,6 +207,63 @@ describe('single-admin login (hermetic DB)', () => {
   });
 });
 
+describe('per-account lockout at the route (N4)', () => {
+  const lockedStore = (count: number) => ({
+    read: async () => ({ count, expiresAt: new Date(Date.now() + 60_000) }),
+    increment: async () => undefined,
+  });
+
+  it('a locked account refuses even the CORRECT password: 429, Retry-After, no cookie', async () => {
+    setAdminEnv();
+    adminAuth.__setAccountLockStoreForTests(lockedStore(adminAuth.ACCOUNT_LOCKOUT.maxFailures));
+    try {
+      const res = await sessionRoute.POST(loginRequest({ email: 'admin@aiincome.lab', password: 'correct-horse-battery-staple' }, { 'x-forwarded-for': '203.0.113.50' }));
+      assert.equal(res.status, 429);
+      assert.ok(Number(res.headers.get('retry-after')) >= 1);
+      assert.equal(res.headers.get('set-cookie'), null);
+    } finally {
+      adminAuth.__setAccountLockStoreForTests(null);
+      restoreAdminEnv();
+    }
+  });
+
+  it('lockout storage failure DENIES login (fail closed, 503, no cookie)', async () => {
+    setAdminEnv();
+    adminAuth.__setAccountLockStoreForTests({
+      read: async () => { throw new Error('db down'); },
+      increment: async () => { throw new Error('db down'); },
+    });
+    try {
+      const res = await sessionRoute.POST(loginRequest({ email: 'admin@aiincome.lab', password: 'correct-horse-battery-staple' }, { 'x-forwarded-for': '203.0.113.51' }));
+      assert.equal(res.status, 503);
+      assert.equal(res.headers.get('set-cookie'), null);
+    } finally {
+      adminAuth.__setAccountLockStoreForTests(null);
+      restoreAdminEnv();
+    }
+  });
+
+  it('a failed login is counted against the account; a successful one is not', async () => {
+    setAdminEnv();
+    let increments = 0;
+    adminAuth.__setAccountLockStoreForTests({
+      read: async () => null,
+      increment: async () => { increments += 1; },
+    });
+    try {
+      const bad = await sessionRoute.POST(loginRequest({ email: 'admin@aiincome.lab', password: 'wrong-password-value' }, { 'x-forwarded-for': '203.0.113.52' }));
+      assert.equal(bad.status, 401);
+      assert.equal(increments, 1);
+      const good = await sessionRoute.POST(loginRequest({ email: 'admin@aiincome.lab', password: 'correct-horse-battery-staple' }, { 'x-forwarded-for': '203.0.113.53' }));
+      assert.equal(good.status, 200);
+      assert.equal(increments, 1);
+    } finally {
+      adminAuth.__setAccountLockStoreForTests(null);
+      restoreAdminEnv();
+    }
+  });
+});
+
 describe('session lifecycle (hermetic DB)', () => {
   it('login → status shows authenticated → logout invalidates → status unauthenticated', async () => {
     setAdminEnv();
