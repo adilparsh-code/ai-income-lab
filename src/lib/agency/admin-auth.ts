@@ -212,16 +212,35 @@ export async function revokeAdminSession(token: string): Promise<boolean> {
 export const LOGIN_RATE_LIMIT = { max: 10, windowSeconds: 300 } as const;
 
 // ---------------------------------------------------------------------------
-// Per-ACCOUNT lockout (N4). The per-IP throttle alone lets a distributed
-// attacker make unlimited guesses; this caps total FAILED guesses against the
-// single admin account regardless of source IP. Only failures count, the check
+// Failed-login LOCKOUT (N4). The generic per-IP throttle alone lets a
+// distributed attacker make unlimited guesses; this adds a strict per-IP
+// failure lock plus an account-wide ceiling on total FAILED guesses. Only failures count, the check
 // runs before any credential work (so no scrypt cost while locked), and a
 // storage error DENIES login (fail closed — no in-memory fallback).
-// Trade-off (documented): an attacker can deliberately keep the account locked
-// for the window; the kill-switch/recovery path is the env, not this counter.
+// Trade-off (documented): only a distributed attacker can hit the account-wide
+// ceiling; a single attacker IP is locked out long before it can lock the owner.
 // ---------------------------------------------------------------------------
 
-export const ACCOUNT_LOCKOUT = { maxFailures: 8, windowSeconds: 15 * 60 } as const;
+function boundedInt(name: string, fallback: number, min: number, max: number): number {
+  const n = Number(process.env[name]);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+/**
+ * Two layers, both counting FAILED logins only:
+ *  - per source IP (strict): an attacker's IP is locked out, not the owner's;
+ *  - account-wide ceiling (higher): caps a distributed / spoofed-IP attack.
+ * Owner-tunable via env, but BOUNDED so a bad value can never disable the
+ * protection (ipMaxFailures 3..20, accountMaxFailures 10..100, window 5..60 min).
+ */
+export function accountLockout(): { ipMaxFailures: number; accountMaxFailures: number; windowSeconds: number } {
+  return {
+    ipMaxFailures: boundedInt('LOGIN_LOCKOUT_IP_MAX_FAILURES', 5, 3, 20),
+    accountMaxFailures: boundedInt('LOGIN_LOCKOUT_ACCOUNT_MAX_FAILURES', 20, 10, 100),
+    windowSeconds: boundedInt('LOGIN_LOCKOUT_WINDOW_SECONDS', 15 * 60, 5 * 60, 60 * 60),
+  };
+}
 
 export interface AccountLockStore {
   read(args: { bucketKey: string; windowKey: string }): Promise<{ count: number; expiresAt: Date } | null>;
@@ -246,16 +265,19 @@ export function __setAccountLockStoreForTests(store: AccountLockStore | null): v
   accountLockStore = store ?? prismaAccountLockStore;
 }
 
-function lockWindow(): { bucketKey: string; windowKey: string; expiresAt: Date; retryAfterSeconds: number } {
+function lockBuckets(ip: string) {
   const now = Math.floor(Date.now() / 1000);
-  const { windowSeconds } = ACCOUNT_LOCKOUT;
+  const { windowSeconds, ipMaxFailures, accountMaxFailures } = accountLockout();
   const start = now - (now % windowSeconds);
+  const windowKey = `${start}-${windowSeconds}`;
+  const expiresAt = new Date((start + windowSeconds) * 1000 + 5_000);
   return {
-    // One account → one bucket, independent of the (attacker-chosen) email string.
-    bucketKey: 'admin-account-lockout|' + credentialFingerprint('admin-account'),
-    windowKey: `${start}-${windowSeconds}`,
-    expiresAt: new Date((start + windowSeconds) * 1000 + 5_000),
+    windowKey,
+    expiresAt,
     retryAfterSeconds: Math.max(1, start + windowSeconds - now),
+    // One account → one bucket, independent of the (attacker-chosen) email string.
+    account: { bucketKey: 'admin-lockout-account|' + credentialFingerprint('admin-account'), max: accountMaxFailures },
+    ip: { bucketKey: 'admin-lockout-ip|' + credentialFingerprint(`ip:${ip}`), max: ipMaxFailures },
   };
 }
 
@@ -263,13 +285,13 @@ export type AccountLockVerdict =
   | { locked: false }
   | { locked: true; retryAfterSeconds: number; unavailable?: true };
 
-/** Read-only: does NOT consume an attempt. */
-export async function accountLockState(): Promise<AccountLockVerdict> {
-  const w = lockWindow();
+/** Read-only: does NOT consume an attempt. Fails closed if storage is down. */
+export async function accountLockState(ip: string): Promise<AccountLockVerdict> {
+  const w = lockBuckets(ip);
   try {
-    const row = await accountLockStore.read({ bucketKey: w.bucketKey, windowKey: w.windowKey });
-    if (row && row.count >= ACCOUNT_LOCKOUT.maxFailures) {
-      return { locked: true, retryAfterSeconds: w.retryAfterSeconds };
+    for (const layer of [w.ip, w.account]) {
+      const row = await accountLockStore.read({ bucketKey: layer.bucketKey, windowKey: w.windowKey });
+      if (row && row.count >= layer.max) return { locked: true, retryAfterSeconds: w.retryAfterSeconds };
     }
     return { locked: false };
   } catch {
@@ -277,13 +299,15 @@ export async function accountLockState(): Promise<AccountLockVerdict> {
   }
 }
 
-/** Count one FAILED login against the account. Never throws. */
-export async function recordAccountLoginFailure(): Promise<void> {
-  const w = lockWindow();
-  try {
-    await accountLockStore.increment({ bucketKey: w.bucketKey, windowKey: w.windowKey, expiresAt: w.expiresAt });
-  } catch {
-    /* the next accountLockState() will fail closed if storage is down */
+/** Count one FAILED login against the IP and the account. Never throws. */
+export async function recordAccountLoginFailure(ip: string): Promise<void> {
+  const w = lockBuckets(ip);
+  for (const layer of [w.ip, w.account]) {
+    try {
+      await accountLockStore.increment({ bucketKey: layer.bucketKey, windowKey: w.windowKey, expiresAt: w.expiresAt });
+    } catch {
+      /* the next accountLockState() fails closed if storage is down */
+    }
   }
 }
 

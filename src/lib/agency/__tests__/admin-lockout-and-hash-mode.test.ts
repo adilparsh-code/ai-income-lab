@@ -18,8 +18,8 @@ Object.assign(process.env, {
 });
 
 import {
-  ACCOUNT_LOCKOUT,
   __setAccountLockStoreForTests,
+  accountLockout,
   accountLockState,
   adminCredentialMode,
   adminCredentialStatus,
@@ -104,23 +104,56 @@ describe('credential mode — the password itself never has to change', () => {
   });
 });
 
-describe('per-account lockout', () => {
-  it('is not locked until maxFailures failures are recorded, then locks', async () => {
+describe('failed-login lockout (per IP + account-wide)', () => {
+  const IP = '198.51.100.7';
+  const OTHER_IP = '198.51.100.8';
+  const { ipMaxFailures, accountMaxFailures } = accountLockout();
+
+  it('locks the attacking IP after ipMaxFailures, but NOT a different IP (owner stays in)', async () => {
     __setAccountLockStoreForTests(memoryStore());
-    for (let i = 0; i < ACCOUNT_LOCKOUT.maxFailures - 1; i += 1) {
-      await recordAccountLoginFailure();
-      assert.equal((await accountLockState()).locked, false);
+    for (let i = 0; i < ipMaxFailures - 1; i += 1) {
+      await recordAccountLoginFailure(IP);
+      assert.equal((await accountLockState(IP)).locked, false);
     }
-    await recordAccountLoginFailure();
-    const verdict = await accountLockState();
-    assert.equal(verdict.locked, true);
-    assert.ok(verdict.locked && verdict.retryAfterSeconds >= 1);
+    await recordAccountLoginFailure(IP);
+    const attacker = await accountLockState(IP);
+    assert.equal(attacker.locked, true);
+    assert.ok(attacker.locked && attacker.retryAfterSeconds >= 1);
+    assert.equal((await accountLockState(OTHER_IP)).locked, false);
+  });
+
+  it('account-wide ceiling locks everyone when many different IPs fail', async () => {
+    __setAccountLockStoreForTests(memoryStore());
+    for (let i = 0; i < accountMaxFailures; i += 1) await recordAccountLoginFailure(`203.0.113.${i}`);
+    assert.equal((await accountLockState('192.0.2.200')).locked, true);
+  });
+
+  it('env tuning is bounded: absurd values cannot disable the protection', () => {
+    const saved = { ...process.env };
+    try {
+      process.env.LOGIN_LOCKOUT_IP_MAX_FAILURES = '100000';
+      process.env.LOGIN_LOCKOUT_ACCOUNT_MAX_FAILURES = '999999';
+      process.env.LOGIN_LOCKOUT_WINDOW_SECONDS = '1';
+      const c = accountLockout();
+      assert.equal(c.ipMaxFailures, 20);
+      assert.equal(c.accountMaxFailures, 100);
+      assert.equal(c.windowSeconds, 300);
+      process.env.LOGIN_LOCKOUT_IP_MAX_FAILURES = '0';
+      process.env.LOGIN_LOCKOUT_ACCOUNT_MAX_FAILURES = 'abc';
+      assert.equal(accountLockout().ipMaxFailures, 5);
+      assert.equal(accountLockout().accountMaxFailures, 20);
+    } finally {
+      for (const k of ['LOGIN_LOCKOUT_IP_MAX_FAILURES', 'LOGIN_LOCKOUT_ACCOUNT_MAX_FAILURES', 'LOGIN_LOCKOUT_WINDOW_SECONDS']) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
   });
 
   it('checking the state does not consume attempts (read-only)', async () => {
     const store = memoryStore();
     __setAccountLockStoreForTests(store);
-    for (let i = 0; i < 50; i += 1) await accountLockState();
+    for (let i = 0; i < 50; i += 1) await accountLockState(IP);
     assert.equal(store.counts.size, 0);
   });
 
@@ -129,7 +162,7 @@ describe('per-account lockout', () => {
       read: async () => { throw new Error('db down'); },
       increment: async () => { throw new Error('db down'); },
     });
-    const verdict = await accountLockState();
+    const verdict = await accountLockState(IP);
     assert.equal(verdict.locked, true);
     assert.ok(verdict.locked && verdict.unavailable === true);
   });
@@ -139,6 +172,6 @@ describe('per-account lockout', () => {
       read: async () => null,
       increment: async () => { throw new Error('db down'); },
     });
-    await assert.doesNotReject(() => recordAccountLoginFailure());
+    await assert.doesNotReject(() => recordAccountLoginFailure(IP));
   });
 });

@@ -111,7 +111,7 @@ export async function POST(request: Request) {
   }
 
   // Per-account lockout BEFORE any credential work (also skips scrypt while locked).
-  const lock = await accountLockState();
+  const lock = await accountLockState(ip);
   if (lock.locked) {
     await auditAdminEvent('ADMIN_LOGIN', 'refused', lock.unavailable ? 'lockout-store-unavailable' : 'account-locked');
     return NextResponse.json(
@@ -121,7 +121,7 @@ export async function POST(request: Request) {
   }
 
   if (!verifyAdminCredentials(email, password)) {
-    await recordAccountLoginFailure();
+    await recordAccountLoginFailure(ip);
     // Non-secret reason code (fixed set) → SecurityEvent.detail only; response unchanged.
     await auditAdminEvent('ADMIN_LOGIN', 'refused', classifyAdminLoginFailure(email, password));
     return NextResponse.json({ ok: false, error: 'Invalid credentials.' }, { status: 401 });
