@@ -103,13 +103,35 @@ export type RateLimitOptions = {
 
 export type RateLimitVerdict =
   | { allowed: true; remaining: number }
-  | { allowed: false; retryAfterSeconds: number };
+  | { allowed: false; retryAfterSeconds: number; unavailable?: true };
 
 /**
  * Atomically increment the counter for (bucket, window). The unique
  * (bucketKey, windowKey) constraint makes the upsert race-free across
  * processes and instances; contention falls back to a read-only check.
  */
+/** Narrow persistence seam so fail-closed behaviour is testable without a DB. */
+export interface RateLimitStore {
+  upsert(args: {
+    bucketKey: string; windowKey: string; expiresAt: Date;
+  }): Promise<{ count: number; expiresAt: Date }>;
+}
+
+const prismaRateLimitStore: RateLimitStore = {
+  upsert: ({ bucketKey, windowKey, expiresAt }) =>
+    db.rateLimitWindow.upsert({
+      where: { bucketKey_windowKey: { bucketKey, windowKey } },
+      create: { bucketKey, windowKey, count: 1, expiresAt },
+      update: { count: { increment: 1 } },
+    }),
+};
+
+let rateLimitStore: RateLimitStore = prismaRateLimitStore;
+/** TEST SEAM ONLY: swap the persistence layer (null restores the default). */
+export function __setRateLimitStoreForTests(store: RateLimitStore | null): void {
+  rateLimitStore = store ?? prismaRateLimitStore;
+}
+
 export async function enforceRateLimit(options: RateLimitOptions): Promise<RateLimitVerdict> {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const windowStart = nowSeconds - (nowSeconds % options.windowSeconds);
@@ -117,12 +139,12 @@ export async function enforceRateLimit(options: RateLimitOptions): Promise<RateL
   const bucketKey = `${options.surface}|${credentialFingerprint(options.identity)}`;
   const expiresAt = new Date((windowStart + options.windowSeconds) * 1000 + 5_000);
 
-  try {
-    const row = await db.rateLimitWindow.upsert({
-      where: { bucketKey_windowKey: { bucketKey, windowKey } },
-      create: { bucketKey, windowKey, count: 1, expiresAt },
-      update: { count: { increment: 1 } },
-    });
+  // SECURITY (N4): FAIL CLOSED. If the durable counter cannot be read or
+  // written, enforcement is impossible, so the protected operation is DENIED.
+  // There is intentionally no in-memory fallback: a per-instance map would be
+  // unbounded and trivially bypassed across instances/restarts.
+  const attempt = async (): Promise<RateLimitVerdict> => {
+    const row = await rateLimitStore.upsert({ bucketKey, windowKey, expiresAt });
     if (row.count > options.max) {
       return {
         allowed: false,
@@ -130,24 +152,18 @@ export async function enforceRateLimit(options: RateLimitOptions): Promise<RateL
       };
     }
     return { allowed: true, remaining: Math.max(0, options.max - row.count) };
+  };
+
+  try {
+    return await attempt();
   } catch {
-    // Unique-race or transient DB contention: fall back to a read-only check
-    // so concurrent first-hit requests cannot each add a count.
+    // A concurrent first-hit can lose the unique-constraint race; the row now
+    // exists, so exactly one retry of the atomic upsert counts this request.
     try {
-      const row = await db.rateLimitWindow.findUnique({
-        where: { bucketKey_windowKey: { bucketKey, windowKey } },
-      });
-      if (row && row.count >= options.max) {
-        return {
-          allowed: false,
-          retryAfterSeconds: Math.max(1, Math.ceil(row.expiresAt.getTime() / 1000) - nowSeconds),
-        };
-      }
+      return await attempt();
     } catch {
-      // If the DB itself is unavailable we still fail CLOSED for this check —
-      // but only when a limit is explicitly configured for the surface.
+      return { allowed: false, retryAfterSeconds: 5, unavailable: true };
     }
-    return { allowed: true, remaining: options.max };
   }
 }
 
@@ -160,15 +176,25 @@ export type AuthVerdict =
   | { ok: false; status: 401 | 503; error: string; configured: boolean };
 
 /**
- * The server-side credential that guards control endpoints. Falls back to the
- * legacy revenue token when the dedicated control token is absent so existing
- * deployments keep working.
+ * The server-side credential that guards control endpoints. It is ONLY
+ * OPERATOR_CONTROL_TOKEN. There is deliberately no fallback to
+ * OPERATOR_REVENUE_TOKEN: the revenue-ingestion credential is handed to
+ * automation/webhook senders and must never grant control-plane access.
  */
 export function operatorControlToken(): string | null {
   const dedicated = process.env.OPERATOR_CONTROL_TOKEN?.trim();
-  if (dedicated) return dedicated;
-  const legacy = process.env.OPERATOR_REVENUE_TOKEN?.trim();
-  return legacy ? legacy : null;
+  return dedicated ? dedicated : null;
+}
+
+/**
+ * True when both operator credentials are configured with the SAME value.
+ * That would collapse the two privileges into one secret, so every endpoint
+ * guarded by either token refuses (503) until the values are made distinct.
+ */
+export function operatorTokensConflict(): boolean {
+  const control = process.env.OPERATOR_CONTROL_TOKEN?.trim();
+  const revenue = process.env.OPERATOR_REVENUE_TOKEN?.trim();
+  return Boolean(control && revenue && constantTimeEquals(control, revenue));
 }
 
 function bearerFrom(request: Request): string | null {
@@ -187,6 +213,15 @@ export async function requireOperator(request: Request, surface: string): Promis
   const expected = operatorControlToken();
   const presented = bearerFrom(request);
 
+  if (operatorTokensConflict()) {
+    await auditSecurityEvent({ kind: 'AUTH_FAILURE', surface, outcome: 'refused', detail: 'operator-tokens-not-distinct' });
+    return {
+      ok: false,
+      status: 503,
+      configured: false,
+      error: 'Control endpoint is MISCONFIGURED: OPERATOR_CONTROL_TOKEN and OPERATOR_REVENUE_TOKEN must be different values.',
+    };
+  }
   if (!expected) {
     await auditSecurityEvent({ kind: 'AUTH_FAILURE', surface, outcome: 'refused', detail: 'not-configured' });
     return {
@@ -258,12 +293,11 @@ export async function requireSameOriginIfBrowser(request: Request, surface: stri
       allowed = false;
     }
   }
-  // Localhost dev servers are explicitly trusted for local tooling only.
   if (!allowed) {
     try {
-      const port = new URL(presented).port;
-      const local = /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(presented);
-      allowed = local && (port === '' || port !== '');
+      const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(presented);
+      // Localhost is trusted for local tooling ONLY outside production.
+      allowed = local && process.env.NODE_ENV !== 'production';
     } catch {
       allowed = false;
     }
@@ -378,7 +412,10 @@ export async function guardOperatorEndpoint(
   const ip = clientIpFrom(request);
   const limit = await enforceRateLimit({ surface, identity: ip, ...rateOptions });
   if (!limit.allowed) {
-    await auditSecurityEvent({ kind: 'RATE_LIMITED', surface, outcome: 'refused' });
+    await auditSecurityEvent({ kind: limit.unavailable ? 'RATE_LIMIT_UNAVAILABLE' : 'RATE_LIMITED', surface, outcome: 'refused' });
+    if (limit.unavailable) {
+      return { response: { ok: false, error: 'Protection is temporarily unavailable. Request refused.' }, status: 503 };
+    }
     return { response: { ok: false, error: 'Rate limit exceeded. Retry later.' }, status: 429 };
   }
 
@@ -429,7 +466,10 @@ export async function guardBrowserOrOperator(
   const ip = clientIpFrom(request);
   const limit = await enforceRateLimit({ surface, identity: ip, ...rateOptions });
   if (!limit.allowed) {
-    await auditSecurityEvent({ kind: 'RATE_LIMITED', surface, outcome: 'refused' });
+    await auditSecurityEvent({ kind: limit.unavailable ? 'RATE_LIMIT_UNAVAILABLE' : 'RATE_LIMITED', surface, outcome: 'refused' });
+    if (limit.unavailable) {
+      return { response: { ok: false, error: 'Protection is temporarily unavailable. Request refused.' }, status: 503 };
+    }
     return { response: { ok: false, error: 'Rate limit exceeded. Retry later.' }, status: 429 };
   }
 
@@ -442,12 +482,17 @@ export async function guardBrowserOrOperator(
     return { response: { ok: false, error: 'Cross-origin requests are not allowed on this endpoint.' }, status: 403 };
   }
 
-  if (sameOriginEvidence(request)) {
-    // Same-origin browser call from the app's own UI.
-    return { identity: `browser:${credentialFingerprint(ip)}`, ip };
+  // SECURITY: Origin/Referer/Host are attacker-controlled headers, so same-origin
+  // evidence is a CSRF check only and NEVER grants access. A browser caller must
+  // present a valid admin session cookie. Imported lazily to avoid the
+  // guard -> session-guard -> admin-auth -> guard import cycle.
+  const { currentAdminSession } = await import('@/lib/agency/session-guard');
+  const session = await currentAdminSession(request);
+  if (session) {
+    return { identity: `admin:${credentialFingerprint(session.sessionId)}`, ip };
   }
 
-  // No browser evidence: server-to-server caller → operator credential.
+  // No admin session: server-to-server caller → operator credential.
   const auth = await requireOperator(request, surface);
   if (!auth.ok) {
     return { response: { ok: false, error: auth.error }, status: auth.status };

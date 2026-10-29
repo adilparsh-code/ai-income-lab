@@ -34,8 +34,10 @@ import { PageHeader } from '@/components/shared/page-header';
 import { db } from '@/lib/db';
 import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 export default async function DashboardPage() {
+  await requireAdminPageAccess('/');
   const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary, operationsSummary, controlCenter, incomeEngineSummary] =
     await Promise.all([
       // Core sections load independently: one failing query renders that

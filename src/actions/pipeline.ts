@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { runPipeline } from '@/lib/ruflo/orchestrator';
 import type { PipelineRequest, PipelineRunResult } from '@/lib/ruflo/orchestrator';
 import { logger } from '@/lib/server-log';
+import { requireAdminAction } from '@/lib/agency/action-guard';
 
 /** Lean opportunity list for the pipeline selector. */
 export interface PipelineOpportunityOption {
@@ -16,6 +17,7 @@ export interface PipelineOpportunityOption {
 }
 
 export async function getPipelineOpportunities(): Promise<PipelineOpportunityOption[]> {
+  await requireAdminAction();
   const opportunities = await db.opportunity.findMany({
     select: {
       id: true,
@@ -42,6 +44,7 @@ export interface PipelineRunSummary {
 }
 
 export async function getRecentPipelineRuns(limit = 5): Promise<PipelineRunSummary[]> {
+  await requireAdminAction();
   const runs = await db.pipelineRun.findMany({
     orderBy: { startedAt: 'desc' },
     take: limit,
@@ -71,6 +74,7 @@ export type ExecutePipelineResult =
 export async function executePipelineRun(
   input: PipelineRequest,
 ): Promise<ExecutePipelineResult> {
+  await requireAdminAction();
   if (typeof input?.objective !== 'string' || (typeof input.opportunityId !== 'string' && input.objective.trim().length === 0)) {
     return { ok: false, error: 'Select an opportunity or provide an objective to run the pipeline.' };
   }

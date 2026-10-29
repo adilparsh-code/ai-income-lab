@@ -17,6 +17,7 @@
 // ratings/testimonials/customer counts/revenue — the deterministic claim
 // guard from listing-factory runs on every text field.
 
+import { isVerifiedApproval, type VerifiedApproval } from '@/lib/security/approvals-core';
 import {
   findUnsupportedClaims,
   type ListingDraft,
@@ -56,7 +57,8 @@ export interface ListingOperationInput {
   assets: AssetRightsSummary[];
   /** Halal status carried from the opportunity/product (AI cannot change it). */
   halalStatus: 'HALAL' | 'REVIEW_REQUIRED' | 'NOT_ALLOWED';
-  humanApprovalToken?: string;
+  /** Verified single-use approval capability (never a raw string). */
+  approval?: VerifiedApproval;
 }
 
 export type ListingOperationStatus =
@@ -271,12 +273,12 @@ export async function publishListing(input: ListingOperationInput): Promise<List
   // Approval gate FIRST: without explicit human approval the request is
   // NOT_AUTHORIZED regardless of provider state — nothing is ever published
   // without a human decision.
-  if (!input.humanApprovalToken || input.humanApprovalToken.trim().length === 0) {
+  if (!isVerifiedApproval(input.approval)) {
     return {
       status: 'NOT_AUTHORIZED',
       providerId: null,
       listingId: null,
-      errors: ['Publication requires an explicit human approval token; nothing was published.'],
+      errors: ['Publication requires a verified, single-use human approval; nothing was published.'],
       warnings: [],
       draft: null,
       claimFindings: validation.claimFindings,
@@ -286,7 +288,7 @@ export async function publishListing(input: ListingOperationInput): Promise<List
   const response = requestPublishing({
     channel: input.channel,
     spec: input.spec,
-    humanApprovalToken: input.humanApprovalToken,
+    approval: input.approval,
   });
 
   if (response.publication) {

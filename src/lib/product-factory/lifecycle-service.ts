@@ -10,10 +10,11 @@
 // Dependency injection: DB access goes through a narrow structural interface;
 // tests inject fakes (hermetic, no DB).
 
-import { createHash } from 'node:crypto';
 import { db } from '@/lib/db';
 import { logger } from '@/lib/server-log';
 import {
+  APPROVAL_REQUIRED_TRANSITIONS,
+  precheckTransitionBeforeApproval,
   assertValidProductTransition,
   normalizeStatus,
   type LifecycleDecision,
@@ -21,6 +22,8 @@ import {
   type TransitionEvidence,
 } from './lifecycle';
 import type { BuildResult } from './build-contract';
+import { consumeApproval, approvalScopeHash, productApprovalScope } from '@/lib/security/approvals';
+import { isVerifiedApproval, type VerifiedApproval } from '@/lib/security/approvals-core';
 
 // ---------------------------------------------------------------------------
 // Injectable DB surface
@@ -59,7 +62,13 @@ const defaultDb = db as unknown as LifecycleDb;
 export interface ApplyTransitionInput {
   productId: string;
   transition: ProductTransition;
-  evidence?: TransitionEvidence;
+  evidence?: Omit<TransitionEvidence, 'approval'>;
+  /**
+   * Opaque, server-issued, single-use approval token (POST /api/approvals).
+   * Consumed here — bound to this exact product and its current status — only
+   * AFTER every non-approval gate has passed, so refused transitions never burn it.
+   */
+  approvalToken?: string;
   /** Test seam: override halal status (otherwise read from the opportunity). */
   halalStatus?: 'HALAL' | 'REVIEW_REQUIRED' | 'NOT_ALLOWED';
 }
@@ -70,7 +79,7 @@ export interface ApplyTransitionResult extends LifecycleDecision {
 
 export async function applyProductTransition(
   input: ApplyTransitionInput,
-  inject?: { db?: LifecycleDb },
+  inject?: { db?: LifecycleDb; consume?: typeof consumeApproval },
 ): Promise<ApplyTransitionResult> {
   const store = inject?.db ?? defaultDb;
   const product = await store.product.findUnique({
@@ -95,11 +104,26 @@ export async function applyProductTransition(
     ?? (product.opportunity?.halalStatus as LifecycleGuardHalal | undefined)
     ?? 'HALAL';
 
-  const decision = assertValidProductTransition({
+  const guardBase = {
     halalStatus,
     currentStatus: normalizeStatus(product.status),
     transition: input.transition,
-    evidence: input.evidence,
+  };
+  let approval: VerifiedApproval | undefined;
+  if (APPROVAL_REQUIRED_TRANSITIONS.includes(input.transition)
+    && precheckTransitionBeforeApproval({ ...guardBase, evidence: input.evidence }).ok) {
+    const consumed = await (inject?.consume ?? consumeApproval)(input.approvalToken, {
+      action: input.transition === 'DEPLOY' ? 'LIFECYCLE_DEPLOY' : 'LIFECYCLE_PUBLISH',
+      subjectId: input.productId,
+      scopeHash: approvalScopeHash(productApprovalScope({ id: input.productId, status: product.status })),
+      surface: 'lifecycle:applyProductTransition',
+    });
+    if (consumed.ok) approval = consumed.approval;
+  }
+
+  const decision = assertValidProductTransition({
+    ...guardBase,
+    evidence: { ...input.evidence, ...(approval ? { approval } : {}) },
   });
 
   if (decision.ok) {
@@ -145,10 +169,6 @@ function parseHistory(raw: string | undefined): unknown[] {
 // Build / deployment / asset recording
 // ---------------------------------------------------------------------------
 
-function approvalTokenHash(token: string): string {
-  return createHash('sha256').update(token).digest('hex').slice(0, 32);
-}
-
 export async function recordProductBuild(
   productId: string,
   result: BuildResult,
@@ -188,7 +208,7 @@ export async function recordProductDeployment(
     errors: string[];
     timestamp: string;
   },
-  options: { humanApprovalToken?: string; correlationId?: string },
+  options: { approval?: VerifiedApproval; correlationId?: string },
   inject?: { db?: LifecycleDb },
 ): Promise<string | null> {
   const store = inject?.db ?? defaultDb;
@@ -202,10 +222,10 @@ export async function recordProductDeployment(
         url: record.url,
         version: record.version,
         errors: JSON.stringify(record.errors.slice(0, 10)),
-        approved: Boolean(options.humanApprovalToken?.trim()),
-        approvalTokenHash: options.humanApprovalToken?.trim()
-          ? approvalTokenHash(options.humanApprovalToken)
-          : '',
+        approved: isVerifiedApproval(options.approval),
+        // Column kept for compatibility: now stores the consumed ApprovalGrant id
+        // (an audit link), never any token material.
+        approvalTokenHash: isVerifiedApproval(options.approval) ? options.approval.grantId : '',
         correlationId: options.correlationId ?? null,
       },
     });

@@ -22,7 +22,7 @@
 import { NextResponse } from 'next/server';
 import { logger } from '@/lib/server-log';
 import { recordRevenueWithAttribution } from '@/lib/product-factory/economics';
-import { enforceRateLimit, clientIpFrom, readJsonBody, auditSecurityEvent } from '@/lib/security/guard';
+import { enforceRateLimit, clientIpFrom, readJsonBody, auditSecurityEvent, operatorTokensConflict } from '@/lib/security/guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -66,6 +66,14 @@ export async function POST(request: Request) {
       await auditSecurityEvent({ kind: 'AUTH_FLOOD', surface: 'api:revenue', outcome: 'refused' });
       return NextResponse.json({ ok: false, error: 'Too many attempts. Retry later.' }, { status: 429 });
     }
+  }
+
+  if (operatorTokensConflict()) {
+    await auditSecurityEvent({ kind: 'AUTH_FAILURE', surface: 'api:revenue', outcome: 'refused', detail: 'operator-tokens-not-distinct' });
+    return NextResponse.json(
+      { ok: false, error: 'Revenue ingestion is MISCONFIGURED: OPERATOR_REVENUE_TOKEN must differ from OPERATOR_CONTROL_TOKEN. Nothing was recorded.' },
+      { status: 503 },
+    );
   }
 
   if (!verifyOperatorToken(presented)) {

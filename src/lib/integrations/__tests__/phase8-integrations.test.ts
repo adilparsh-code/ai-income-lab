@@ -218,12 +218,21 @@ describe('publishing configuration honesty', () => {
     delete process.env.POLAR_ACCESS_TOKEN;
     const { PolarPublishingAdapter } = await import('../polar-publishing');
     const adapter = new PolarPublishingAdapter({ fetchImpl: (async () => { throw new Error('network must not be touched'); }) as typeof fetch });
-    const attempt = await adapter.publish(
-      { providerId: 'polar', channel: 'DIGITAL_PRODUCT', isLive: false, createdAt: new Date().toISOString(), payload: { name: 'x', prices: [] } },
-      'human-token',
-    );
+    const { mintVerifiedApproval } = await import('@/test-utils/approvals');
+    const draft = { providerId: 'polar', channel: 'DIGITAL_PRODUCT', isLive: false, createdAt: new Date().toISOString(), payload: { name: 'x', prices: [] } } as never;
+    // Verified approval but adapter unconfigured: refuses without any call.
+    const { approval } = await mintVerifiedApproval({ action: 'PUBLISH_PRODUCT', subjectId: 'prod-1' });
+    const attempt = await adapter.publish(draft, approval);
     assert.equal(attempt.published, false);
-    assert.equal(attempt.status, 'NOT_AUTHORIZED');
+    // The legacy string token is never an approval, configured or not.
+    for (const fake of ['human-token', '', null]) {
+      const refused = await adapter.publish(draft, fake as never);
+      assert.equal(refused.published, false);
+      assert.equal(refused.status, 'NOT_AUTHORIZED');
+    }
+    // An approval for an unrelated action is refused too.
+    const wrong = (await mintVerifiedApproval({ action: 'DEPLOY_PRODUCT', subjectId: 'prod-1' })).approval;
+    assert.equal((await adapter.publish(draft, wrong)).status, 'NOT_AUTHORIZED');
     if (previous !== undefined) process.env.POLAR_ACCESS_TOKEN = previous;
   });
 });

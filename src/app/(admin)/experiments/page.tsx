@@ -8,8 +8,10 @@ import { EmptyState } from '@/components/shared/empty-state';
 import { ExperimentCard } from '@/components/experiments/experiment-card';
 import { ExperimentForm } from '@/components/experiments/experiment-form';
 import { FlaskConical } from 'lucide-react';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 export default async function ExperimentsPage() {
+  await requireAdminPageAccess('/experiments');
   const [experiments, opportunities] = await Promise.all([
     getExperiments(),
     getOpportunities(),

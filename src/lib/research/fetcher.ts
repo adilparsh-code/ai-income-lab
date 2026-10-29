@@ -12,7 +12,8 @@
 //   and secrets are never included in errors.
 
 import { isAllowedResearchUrl } from './core';
-import { validatePublicUrl, systemDnsLookup, type DnsLookup } from '@/lib/security/ssrf';
+import { validatePublicUrl, checkHostSyntax, systemDnsLookup, type DnsLookup } from '@/lib/security/ssrf';
+import { pinnedFetch, isSsrfBlockedError, type PinnedLookupOptions } from '@/lib/security/pinned-fetch';
 
 export type FetchErrorCategory =
   | 'blocked_url'
@@ -60,6 +61,8 @@ export interface FetchPageOptions {
    * resolver for deterministic tests.
    */
   dnsLookup?: DnsLookup;
+  /** TEST ONLY: forwarded to the pinned transport (address policy override). */
+  pinned?: PinnedLookupOptions;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -141,7 +144,13 @@ export async function fetchPage(rawUrl: string, options: FetchPageOptions = {}):
   const timeoutMs = Math.min(30_000, Math.max(1_000, options.timeoutMs ?? DEFAULT_TIMEOUT_MS));
   const maxBytes = Math.min(2 * 1024 * 1024, Math.max(1024, options.maxBytes ?? DEFAULT_MAX_BYTES));
   const maxRetries = Math.min(5, Math.max(0, options.maxRetries ?? DEFAULT_MAX_RETRIES));
-  const doFetch = options.fetchImpl ?? fetch;
+  // N6: in production this module owns the transport, and the default is the
+  // PINNED transport — the address validated at connect time is the address
+  // the socket uses, so DNS rebinding between check and connect is impossible.
+  // A caller-injected fetchImpl (tests) owns its own transport.
+  const pinnedOptions: PinnedLookupOptions = { ...options.pinned, resolver: options.pinned?.resolver ?? options.dnsLookup };
+  const doFetch: typeof fetch = options.fetchImpl
+    ?? ((input, init) => pinnedFetch(String(input), { ...init, pinned: { ...pinnedOptions, timeoutMs } }));
   // Phase 9: the resolver guard runs whenever this module owns the transport
   // (production). A caller that injects `fetchImpl` owns the transport and may
   // inject an explicit resolver; otherwise the guard is skipped for that hop.
@@ -225,6 +234,20 @@ async function attemptOnce(
       };
     }
 
+    // N6: the stricter syntactic guard (CGNAT, reserved IPv6, credentials in
+    // URL) runs on EVERY hop, independent of the resolver guard below.
+    const syntax = checkHostSyntax(currentUrl);
+    if (!syntax.allowed) {
+      return {
+        ok: false,
+        url: rawUrl,
+        category: 'blocked_url',
+        error: `URL is not allowed: ${syntax.detail ?? 'refused by SSRF syntax guard'}`,
+        durationMs: Date.now() - ctx.started,
+        attempts: 1,
+      };
+    }
+
     // Phase 9 - DNS-level SSRF guard: a syntactically public hostname that
     // resolves into private/reserved space is still refused, before any
     // request is issued.
@@ -255,6 +278,16 @@ async function attemptOnce(
         signal: AbortSignal.timeout(ctx.timeoutMs),
       });
     } catch (error) {
+      if (isSsrfBlockedError(error)) {
+        return {
+          ok: false,
+          url: rawUrl,
+          category: 'blocked_dns',
+          error: 'Host is not allowed: the connection target resolved into private/reserved space.',
+          durationMs: Date.now() - ctx.started,
+          attempts: 1,
+        };
+      }
       const message = describe(error);
       const isTimeout = /(?:timed?\s?out|abort)/i.test(message) || (error instanceof Error && error.name === 'TimeoutError');
       return {
@@ -282,7 +315,19 @@ async function attemptOnce(
         };
       }
       try {
-        currentUrl = new URL(location, currentUrl).toString();
+        const next = new URL(location, currentUrl);
+        // Never follow an https -> http downgrade.
+        if (new URL(currentUrl).protocol === 'https:' && next.protocol !== 'https:') {
+          return {
+            ok: false,
+            url: rawUrl,
+            category: 'blocked_url',
+            error: 'Redirect from https to http is refused (downgrade).',
+            durationMs: Date.now() - ctx.started,
+            attempts: 1,
+          };
+        }
+        currentUrl = next.toString();
       } catch {
         return {
           ok: false,

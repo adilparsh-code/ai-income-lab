@@ -405,6 +405,27 @@ describe('guard chain: fail-closed auth, durable rate limits, body caps', () => 
     assert.equal(found?.kind, "SQLI_DROP', surface: 'x");
     await db.securityEvent.delete({ where: { id: row.id } });
   });
+
+  it('guardBrowserOrOperator: spoofed same-origin headers with NO credential are refused', async () => {
+    const guard = await importGuard();
+    const rate = { max: 1000, windowSeconds: 60 };
+    const spoofedOrigin = await guard.guardBrowserOrOperator(
+      makeRequest({ origin: 'http://app.local', host: 'app.local', ip: '198.51.100.21' }), 'test:browser-or-op', rate);
+    assert.ok('response' in spoofedOrigin, 'Origin == Host must not authenticate');
+    if ('response' in spoofedOrigin) assert.equal(spoofedOrigin.status, 401);
+
+    const noHeaders = await guard.guardBrowserOrOperator(
+      makeRequest({ ip: '198.51.100.22' }), 'test:browser-or-op', rate);
+    assert.ok('response' in noHeaders);
+  });
+
+  it('guardBrowserOrOperator: a valid operator bearer token is still accepted', async () => {
+    const guard = await importGuard();
+    const ok = await guard.guardBrowserOrOperator(
+      makeRequest({ auth: `Bearer ${process.env.OPERATOR_CONTROL_TOKEN}`, ip: '198.51.100.23' }),
+      'test:browser-or-op', { max: 1000, windowSeconds: 60 });
+    assert.ok(!('response' in ok));
+  });
 });
 
 // ---------------------------------------------------------------------------

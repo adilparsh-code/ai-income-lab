@@ -13,6 +13,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { isAllowedResearchUrl } from '@/lib/research/core';
+import { pinnedFetch } from '@/lib/security/pinned-fetch';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_TIMEOUT_MS = 30_000;
@@ -120,8 +121,17 @@ async function requestJson(
   init: RequestInit,
   timeoutMs: number,
 ): Promise<{ status: number; body: unknown }> {
-  const response = await fetch(url, {
+  // N6: the runtime URL carries a bearer token, so the connection is
+  // address-pinned (DNS rebinding cannot redirect the token to an internal
+  // host) and redirects are never followed. The CI-only loopback smoke test
+  // keeps the plain transport because it targets 127.0.0.1 on purpose.
+  const loopbackSmokeTest = ALLOW_LOOPBACK && isLoopbackUrl(new URL(url));
+  const transport = loopbackSmokeTest
+    ? fetch
+    : (input: string, options: RequestInit) => pinnedFetch(input, { ...options, pinned: { timeoutMs } });
+  const response = await transport(url, {
     ...init,
+    redirect: loopbackSmokeTest ? init.redirect : 'manual',
     signal: timeoutSignal(timeoutMs),
     headers: {
       Accept: 'application/json',

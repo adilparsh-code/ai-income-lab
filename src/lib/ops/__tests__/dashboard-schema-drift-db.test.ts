@@ -18,9 +18,9 @@ import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 
 import { db } from '@/lib/db';
-import { getDashboardStats, getRevenueChartData } from '@/actions/dashboard';
-import { getLifecycleOverview } from '@/actions/lifecycle';
-import { getBusinessIntelligenceSummary } from '@/actions/business-intelligence';
+import { getDashboardStats, getRevenueChartData } from '@/lib/loaders/dashboard';
+import { getLifecycleOverview } from '@/lib/loaders/lifecycle';
+import { getBusinessIntelligenceSummary } from '@/lib/loaders/business-intelligence';
 
 // The Prisma client is constructed lazily on first query, so pointing
 // DATABASE_URL at the temporary database here (after imports) is sufficient.

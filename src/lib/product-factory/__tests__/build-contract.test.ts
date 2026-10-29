@@ -12,6 +12,7 @@ import {
   validateSpecForBuild,
 } from '../build-contract';
 import type { PublishableProductSpec } from '@/lib/publishing/contract';
+import { mintVerifiedApproval } from '@/test-utils/approvals';
 
 function specFixture(overrides: Partial<PublishableProductSpec> = {}): PublishableProductSpec {
   return {
@@ -103,9 +104,10 @@ describe('deployment provider: not-connected truthfulness', () => {
     assert.equal(result.sandboxed, true);
   });
 
-  it('deploy() never fakes success — even with a human approval token', async () => {
+  it('deploy() never fakes success — even with a VERIFIED human approval', async () => {
     const provider = createUnavailableDeploymentProvider();
-    const record = await provider.deploy({ target: 'NEXTJS', artifactRef: 'prod-1' }, 'token-abc');
+    const { approval } = await mintVerifiedApproval({ action: 'DEPLOY_PRODUCT', subjectId: 'prod-1' });
+    const record = await provider.deploy({ target: 'NEXTJS', artifactRef: 'prod-1' }, approval);
     assert.equal(record.status, 'DEPLOYMENT_NOT_CONNECTED');
     assert.equal(record.deploymentId, null);
     assert.equal(record.url, null);
@@ -118,7 +120,8 @@ describe('deployment provider: not-connected truthfulness', () => {
     assert.equal(status.status, 'DEPLOYMENT_NOT_CONNECTED');
     assert.equal(status.deploymentId, null);
 
-    const rollback = await provider.rollback('dep-123', 'token-abc');
+    const { approval } = await mintVerifiedApproval({ action: 'ROLLBACK_DEPLOYMENT', subjectId: 'dep-123' });
+    const rollback = await provider.rollback('dep-123', approval);
     assert.equal(rollback.status, 'DEPLOYMENT_NOT_CONNECTED');
   });
 
@@ -156,7 +159,8 @@ describe('deployment provider: authorized adapter contract shape', () => {
       }),
     };
     const provider = fakeVercel as unknown as ReturnType<typeof createUnavailableDeploymentProvider>;
-    const record = await provider.deploy({ target: 'NEXTJS', artifactRef: 'p1' }, 'token');
+    const { approval } = await mintVerifiedApproval({ action: 'DEPLOY_PRODUCT', subjectId: 'p1' });
+    const record = await provider.deploy({ target: 'NEXTJS', artifactRef: 'p1' }, approval);
     assert.equal(record.status, 'DEPLOYED');
     assert.equal(record.deploymentId, 'dpl-123456');
   });

@@ -19,6 +19,7 @@
 // Build contract
 // ---------------------------------------------------------------------------
 
+import type { VerifiedApproval } from '@/lib/security/approvals-core';
 import type { PublishableProductSpec } from '@/lib/publishing/contract';
 
 export type BuildStatus = 'NOT_BUILT' | 'SUCCEEDED' | 'FAILED' | 'UNAVAILABLE';
@@ -137,9 +138,10 @@ export interface DeploymentProvider {
   readonly id: string;
   validate(target: DeploymentTarget): { valid: boolean; errors: string[] };
   build(target: DeploymentTarget): Promise<BuildResult>;
-  deploy(target: DeploymentTarget, humanApprovalToken: string): Promise<DeploymentRecord>;
+  /** Requires a server-verified, single-use approval capability (never a string). */
+  deploy(target: DeploymentTarget, approval: VerifiedApproval | null): Promise<DeploymentRecord>;
   status(deploymentId: string): Promise<DeploymentRecord>;
-  rollback(deploymentId: string, humanApprovalToken: string): Promise<DeploymentRecord>;
+  rollback(deploymentId: string, approval: VerifiedApproval | null): Promise<DeploymentRecord>;
 }
 
 /**

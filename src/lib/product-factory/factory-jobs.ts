@@ -31,6 +31,26 @@ import { classifyEvidence, recommendGrowthAction, type PerformanceEvidence } fro
 import { computeProductFunnel } from './events';
 import { getProductAiCostAttribution } from '@/lib/ai/attribution';
 import { logger } from '@/lib/server-log';
+import {
+  consumeApproval,
+  peekApproval,
+  approvalScopeHash,
+  productApprovalScope,
+  APPROVAL_DENIAL_MESSAGE,
+} from '@/lib/security/approvals';
+
+/** Test seam: inject approval operations (hermetic tests, no database). */
+let approvalOps: { consume: typeof consumeApproval; peek: typeof peekApproval } = {
+  consume: consumeApproval,
+  peek: peekApproval,
+};
+export function __setApprovalOpsForTests(ops: typeof approvalOps | null): void {
+  approvalOps = ops ?? { consume: consumeApproval, peek: peekApproval };
+}
+
+function productScopeHash(product: { id: string; status: string }): string {
+  return approvalScopeHash(productApprovalScope(product));
+}
 
 // ---------------------------------------------------------------------------
 // Outcome mapping
@@ -191,7 +211,7 @@ export async function executeFactoryJob(
 
   switch (jobType) {
     case 'PRODUCT_CREATE':
-      return productCreate(product, token);
+      return productCreate(product);
     case 'PRODUCT_BUILD':
       return productBuild(product);
     case 'PRODUCT_TEST':
@@ -210,11 +230,10 @@ export async function executeFactoryJob(
 }
 
 /** PRODUCT_CREATE: mark spec ready through the guarded lifecycle. */
-async function productCreate(product: ProductRecord, token?: string): Promise<FactoryJobOutcome> {
+async function productCreate(product: ProductRecord): Promise<FactoryJobOutcome> {
   const decision = await applyProductTransition({
     productId: product.id,
     transition: 'SPEC_READY',
-    evidence: token ? { humanApprovalToken: token } : undefined,
     halalStatus: (product.opportunity?.halalStatus as 'HALAL' | 'REVIEW_REQUIRED' | 'NOT_ALLOWED') ?? 'HALAL',
   });
   return {
@@ -280,9 +299,16 @@ async function productDeploy(product: ProductRecord, token?: string): Promise<Fa
   // The unavailable sentinel provider short-circuits to deploy(): its record
   // (DEPLOYMENT_NOT_CONNECTED, no ids) is the honest outcome. Structural
   // validation only applies to real adapters.
+  const deployScope = productScopeHash(product);
   let record: DeploymentRecord;
   if (provider.id === 'unavailable') {
-    record = await provider.deploy({ target: 'NEXTJS', artifactRef: product.id }, token);
+    // Nothing real can happen, so do NOT spend the approval; just require that
+    // a currently-valid approval for this exact product was presented.
+    const valid = await approvalOps.peek(token, { action: 'DEPLOY_PRODUCT', subjectId: product.id, scopeHash: deployScope });
+    if (!valid) {
+      return { status: 'HUMAN_REVIEW', summary: { message: APPROVAL_DENIAL_MESSAGE } };
+    }
+    record = await provider.deploy({ target: 'NEXTJS', artifactRef: product.id }, null);
   } else {
     const validation = provider.validate({ target: 'NEXTJS', artifactRef: product.id });
     if (!validation.valid) {
@@ -292,7 +318,14 @@ async function productDeploy(product: ProductRecord, token?: string): Promise<Fa
         error: 'Deployment target failed provider validation; nothing was deployed.',
       };
     }
-    record = await provider.deploy({ target: 'NEXTJS', artifactRef: product.id }, token);
+    // Real provider: spend the single-use approval immediately before the call.
+    const consumed = await approvalOps.consume(token, {
+      action: 'DEPLOY_PRODUCT', subjectId: product.id, scopeHash: deployScope, surface: 'factory:PRODUCT_DEPLOY',
+    });
+    if (!consumed.ok) {
+      return { status: 'HUMAN_REVIEW', summary: { message: APPROVAL_DENIAL_MESSAGE, denial: consumed.reason } };
+    }
+    record = await provider.deploy({ target: 'NEXTJS', artifactRef: product.id }, consumed.approval);
   }
   return {
     status: record.status === 'DEPLOYED' ? 'SUCCEEDED' : record.status === 'DEPLOYMENT_NOT_CONNECTED' ? 'DEGRADED' : 'FAILED',
@@ -322,7 +355,16 @@ async function productPublish(product: ProductRecord, token?: string): Promise<F
     };
   }
 
-  const response = requestPublishing({ channel: 'DIGITAL_PRODUCT', spec, humanApprovalToken: token });
+  // requestPublishing() is a boundary that never performs a real publication,
+  // so the approval is only PEEKED (not spent). A real product-publish sink
+  // must call consumeApproval() for PUBLISH_PRODUCT immediately before acting.
+  const approvalValid = await approvalOps.peek(token, {
+    action: 'PUBLISH_PRODUCT', subjectId: product.id, scopeHash: productScopeHash(product),
+  });
+  if (!approvalValid) {
+    return { status: 'HUMAN_REVIEW', summary: { message: APPROVAL_DENIAL_MESSAGE } };
+  }
+  const response = requestPublishing({ channel: 'DIGITAL_PRODUCT', spec });
   return {
     status: response.status === 'PUBLISHING_UNAVAILABLE' ? 'DEGRADED' : response.publication?.published ? 'SUCCEEDED' : 'FAILED',
     summary: {

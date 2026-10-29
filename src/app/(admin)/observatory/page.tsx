@@ -4,10 +4,12 @@ import { PageHeader } from '@/components/shared/page-header';
 import { ObservatoryWorkspace } from '@/components/observatory/observatory-workspace';
 import { getObservatoryView } from '@/lib/observatory';
 import type { Metadata } from 'next';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 export const metadata: Metadata = { title: 'Observatory — AI Income Lab' };
 
 export default async function ObservatoryPage() {
+  await requireAdminPageAccess('/observatory');
   const view = await getObservatoryView().catch(() => null);
   return (
     <div className="p-6 lg:p-8 space-y-6">

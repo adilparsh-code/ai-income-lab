@@ -3,7 +3,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { executeFactoryJob, mapFactoryOutcomeToStatus, __setFactoryDbForTests } from '../factory-jobs';
+import { executeFactoryJob, mapFactoryOutcomeToStatus, __setFactoryDbForTests, __setApprovalOpsForTests } from '../factory-jobs';
+import { productApprovalScope } from '@/lib/security/approvals-core';
+import { InMemoryApprovalStore, approvalOpsFor, issueTestToken } from '@/test-utils/approvals';
 import type { PublishableProductSpec } from '@/lib/publishing/contract';
 import type { FactoryDbSurface, ProductRecord } from '../factory-jobs';
 
@@ -53,7 +55,12 @@ function withFakeDb(product: ProductRecord | null, revenueRows: unknown[] = []):
 }
 
 // Every test sets the seam; reset after the suite.
-process.on('exit', () => __setFactoryDbForTests(null));
+process.on('exit', () => { __setFactoryDbForTests(null); __setApprovalOpsForTests(null); });
+
+// Approvals run through the REAL issue/peek/consume logic over an in-memory store.
+const approvalStore = new InMemoryApprovalStore();
+__setApprovalOpsForTests(approvalOpsFor(approvalStore) as never);
+const PRODUCT_SCOPE = () => productApprovalScope({ id: 'prod-1', status: 'VALIDATED' });
 
 // Default seam for all tests in this file.
 withFakeDb(fakeProduct());
@@ -77,7 +84,8 @@ describe('factory jobs: input validation and gates', () => {
     withFakeDb(fakeProduct({ opportunity: { halalStatus: 'NOT_ALLOWED' } }));
     const outcome = await executeFactoryJob('PRODUCT_PUBLISH', {
       productId: 'prod-1',
-      humanApprovalToken: 'token',
+      // A real approval does not override the halal gate.
+      humanApprovalToken: await issueTestToken(approvalStore, 'PUBLISH_PRODUCT', 'prod-1', PRODUCT_SCOPE()),
     });
     assert.equal(outcome.status, 'BLOCKED');
     assert.match(outcome.error ?? '', /NOT_ALLOWED/);
@@ -117,7 +125,7 @@ describe('factory jobs: approval gates for high-impact actions', () => {
     const outcome = await executeFactoryJob('PRODUCT_DEPLOY', { productId: 'prod-1' });
     assert.equal(outcome.status, 'HUMAN_REVIEW');
     const summary = outcome.summary as { message: string };
-    assert.match(summary.message, /human approval token/i);
+    assert.match(summary.message, /human approval/i);
   });
 
   it('PRODUCT_PUBLISH without a token returns HUMAN_REVIEW and publishes nothing', async () => {
@@ -125,10 +133,10 @@ describe('factory jobs: approval gates for high-impact actions', () => {
     assert.equal(outcome.status, 'HUMAN_REVIEW');
   });
 
-  it('PRODUCT_DEPLOY with a token but no provider stays DEGRADED (NOT_CONNECTED)', async () => {
+  it('PRODUCT_DEPLOY with a valid approval but no provider stays DEGRADED (NOT_CONNECTED)', async () => {
     const outcome = await executeFactoryJob('PRODUCT_DEPLOY', {
       productId: 'prod-1',
-      humanApprovalToken: 'token-abc',
+      humanApprovalToken: await issueTestToken(approvalStore, 'DEPLOY_PRODUCT', 'prod-1', PRODUCT_SCOPE()),
     });
     assert.equal(outcome.status, 'DEGRADED');
     const summary = outcome.summary as { deployment: { status: string; deploymentId: string | null } };
@@ -136,15 +144,43 @@ describe('factory jobs: approval gates for high-impact actions', () => {
     assert.equal(summary.deployment.deploymentId, null);
   });
 
-  it('PRODUCT_PUBLISH with a token but no provider stays DEGRADED (PUBLISHING_UNAVAILABLE)', async () => {
+  it('PRODUCT_PUBLISH with a valid approval but no provider stays DEGRADED (PUBLISHING_UNAVAILABLE)', async () => {
     const outcome = await executeFactoryJob('PRODUCT_PUBLISH', {
       productId: 'prod-1',
-      humanApprovalToken: 'token-abc',
+      humanApprovalToken: await issueTestToken(approvalStore, 'PUBLISH_PRODUCT', 'prod-1', PRODUCT_SCOPE()),
     });
     assert.equal(outcome.status, 'DEGRADED');
     const summary = outcome.summary as { publishing: { status: string; published: boolean } };
     assert.equal(summary.publishing.status, 'PUBLISHING_UNAVAILABLE');
     assert.equal(summary.publishing.published, false);
+  });
+
+  it('the legacy any-string token is refused (HUMAN_REVIEW) for deploy and publish', async () => {
+    for (const jobType of ['PRODUCT_DEPLOY', 'PRODUCT_PUBLISH']) {
+      for (const fake of ['token', 'token-abc', 'approve-1', 'x'.repeat(64)]) {
+        const outcome = await executeFactoryJob(jobType, { productId: 'prod-1', humanApprovalToken: fake });
+        assert.equal(outcome.status, 'HUMAN_REVIEW', `${jobType} must refuse string "${fake}"`);
+      }
+    }
+  });
+
+  it('a token issued for another product, another action, or a changed product state is refused', async () => {
+    const otherProduct = await issueTestToken(approvalStore, 'DEPLOY_PRODUCT', 'prod-2', productApprovalScope({ id: 'prod-2', status: 'VALIDATED' }));
+    assert.equal((await executeFactoryJob('PRODUCT_DEPLOY', { productId: 'prod-1', humanApprovalToken: otherProduct })).status, 'HUMAN_REVIEW');
+
+    const wrongAction = await issueTestToken(approvalStore, 'PUBLISH_PRODUCT', 'prod-1', PRODUCT_SCOPE());
+    assert.equal((await executeFactoryJob('PRODUCT_DEPLOY', { productId: 'prod-1', humanApprovalToken: wrongAction })).status, 'HUMAN_REVIEW');
+
+    const staleScope = await issueTestToken(approvalStore, 'DEPLOY_PRODUCT', 'prod-1', productApprovalScope({ id: 'prod-1', status: 'DRAFT' }));
+    assert.equal((await executeFactoryJob('PRODUCT_DEPLOY', { productId: 'prod-1', humanApprovalToken: staleScope })).status, 'HUMAN_REVIEW');
+  });
+
+  it('an expired token, or one whose approver session ended, is refused', async () => {
+    const expired = await issueTestToken(approvalStore, 'DEPLOY_PRODUCT', 'prod-1', PRODUCT_SCOPE(), { now: new Date(Date.now() - 3_600_000) });
+    assert.equal((await executeFactoryJob('PRODUCT_DEPLOY', { productId: 'prod-1', humanApprovalToken: expired })).status, 'HUMAN_REVIEW');
+
+    const ended = await issueTestToken(approvalStore, 'DEPLOY_PRODUCT', 'prod-1', PRODUCT_SCOPE(), { sessionId: 'ended-session' });
+    assert.equal((await executeFactoryJob('PRODUCT_DEPLOY', { productId: 'prod-1', humanApprovalToken: ended })).status, 'HUMAN_REVIEW');
   });
 
   it('PRODUCT_BUILD with no builder is honest DEGRADED (UNAVAILABLE)', async () => {

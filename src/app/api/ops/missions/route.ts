@@ -4,17 +4,16 @@
 
 import { NextResponse } from 'next/server';
 import { createMission, listMissions } from '@/lib/ops/missions';
-import { clientIpFrom, enforceRateLimit, auditSecurityEvent, guardBrowserOrOperator, readJsonBody } from '@/lib/security/guard';
+import { guardBrowserOrOperator, readJsonBody } from '@/lib/security/guard';
 import { logger } from '@/lib/server-log';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
-  const ip = clientIpFrom(request);
-  const limit = await enforceRateLimit({ surface: 'api:ops/missions:get', identity: ip, max: 60, windowSeconds: 60 });
-  if (!limit.allowed) {
-    await auditSecurityEvent({ kind: 'RATE_LIMITED', surface: 'api:ops/missions:get', outcome: 'refused' });
-    return NextResponse.json({ ok: false, error: 'Rate limit exceeded. Retry later.' }, { status: 429 });
+  // SECURITY (N3): mission objectives, budgets and criteria are business data.
+  const guard = await guardBrowserOrOperator(request, 'api:ops/missions:get', { max: 60, windowSeconds: 60 });
+  if ('response' in guard) {
+    return NextResponse.json(guard.response, { status: guard.status });
   }
   try {
     const missions = await listMissions(40);

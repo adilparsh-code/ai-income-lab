@@ -19,6 +19,7 @@
 //   which short-circuit NOT_ALLOWED/REVIEW_REQUIRED before any provider call.
 //   Defense in depth: deploy() re-refuses NOT_ALLOWED products itself.
 
+import { approvalCovers, type VerifiedApproval } from '@/lib/security/approvals-core';
 import { createHash } from 'node:crypto';
 import { screenForHalalCompliance } from '@/lib/halal-filter';
 import {
@@ -248,16 +249,17 @@ export class VercelDeploymentAdapter implements DeploymentProvider {
     };
   }
 
-  async deploy(target: DeploymentTarget, humanApprovalToken: string): Promise<DeploymentRecord> {
-    // 1. Human approval gate (Phase 5.3 rule, re-checked here).
-    if (!humanApprovalToken?.trim()) {
+  async deploy(target: DeploymentTarget, approval: VerifiedApproval | null): Promise<DeploymentRecord> {
+    // 1. Human approval gate: a server-verified, single-use capability bound to
+    //    THIS product (artifactRef). A string / mismatched subject is refused.
+    if (!approvalCovers(approval, { action: 'DEPLOY_PRODUCT', subjectId: target.artifactRef })) {
       return {
         status: 'DEPLOYMENT_NOT_CONNECTED',
         providerId: null,
         deploymentId: null,
         url: null,
         version: null,
-        errors: ['Deployment requires an explicit human approval token; none was supplied. Nothing was deployed.'],
+        errors: ['Deployment requires a verified, single-use human approval for this exact product. Nothing was deployed.'],
         timestamp: new Date().toISOString(),
       };
     }
@@ -310,10 +312,10 @@ export class VercelDeploymentAdapter implements DeploymentProvider {
     return record;
   }
 
-  async rollback(deploymentId: string, humanApprovalToken: string): Promise<DeploymentRecord> {
-    if (!humanApprovalToken?.trim()) {
+  async rollback(deploymentId: string, approval: VerifiedApproval | null): Promise<DeploymentRecord> {
+    if (!approvalCovers(approval, { action: 'ROLLBACK_DEPLOYMENT', subjectId: deploymentId })) {
       return {
-        ...unavailableRecord(['Rollback requires an explicit human approval token; nothing was rolled back.']),
+        ...unavailableRecord(['Rollback requires a verified, single-use human approval for this exact deployment; nothing was rolled back.']),
       };
     }
     const notConnected = this.connectionErrors();

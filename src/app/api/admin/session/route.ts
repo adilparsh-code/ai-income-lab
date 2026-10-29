@@ -44,14 +44,16 @@ function cookieOptions() {
 }
 
 export async function GET(request: Request) {
+  // SECURITY (N3): an unauthenticated caller learns nothing about server
+  // credential configuration — only that it is not authenticated.
   const token = await presentedSessionToken(request);
   const status = adminCredentialStatus();
   if (!token) {
-    return NextResponse.json({ ok: true, authenticated: false, credentialStatus: status });
+    return NextResponse.json({ ok: true, authenticated: false });
   }
   const session = await resolveAdminSession(token);
   if (!session) {
-    return NextResponse.json({ ok: true, authenticated: false, credentialStatus: status });
+    return NextResponse.json({ ok: true, authenticated: false });
   }
   return NextResponse.json({
     ok: true,

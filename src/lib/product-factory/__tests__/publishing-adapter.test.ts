@@ -15,6 +15,7 @@ import {
   type ListingContent,
 } from '../publishing-adapter';
 import type { PublishableProductSpec } from '@/lib/publishing/contract';
+import { mintVerifiedApproval } from '@/test-utils/approvals';
 
 function spec(): PublishableProductSpec {
   return {
@@ -103,7 +104,8 @@ describe('halal gates', () => {
     const validation = validateListing(input({ halalStatus: 'NOT_ALLOWED' }));
     assert.equal(validation.status, 'BLOCKED_HALAL');
 
-    const published = await publishListing(input({ halalStatus: 'NOT_ALLOWED', humanApprovalToken: 'tok' }));
+    const published = await publishListing(input({ halalStatus: 'NOT_ALLOWED', approval: (await mintVerifiedApproval({ action: 'PUBLISH_PRODUCT', subjectId: 'prod-1' })).approval }));
+    // A real, verified approval still cannot override the halal gate.
     assert.equal(published.status, 'BLOCKED_HALAL');
   });
 
@@ -136,10 +138,20 @@ describe('draft + publish boundary', () => {
     assert.match(result.errors.join(' '), /approval/i);
   });
 
-  it('publishListing with approval still cannot publish without an adapter', async () => {
-    const result = await publishListing(input({ humanApprovalToken: 'human-decision-token' }));
+  it('publishListing with a verified approval still cannot publish without an adapter', async () => {
+    const { approval } = await mintVerifiedApproval({ action: 'PUBLISH_PRODUCT', subjectId: 'prod-1' });
+    const result = await publishListing(input({ approval }));
     assert.equal(result.status, 'PUBLISHING_UNAVAILABLE');
     assert.equal(result.listingId, null);
+  });
+
+  it('publishListing refuses the legacy string token and forged capability objects (NOT_AUTHORIZED)', async () => {
+    const forged = { grantId: 'g', action: 'PUBLISH_PRODUCT', subjectType: 'product', subjectId: 'prod-1', approverEmail: 'a@b.c' };
+    for (const fake of ['human-decision-token', 'tok', forged]) {
+      const result = await publishListing(input({ approval: fake as never }));
+      assert.equal(result.status, 'NOT_AUTHORIZED');
+      assert.equal(result.listingId, null);
+    }
   });
 
   it('getListingStatus honestly reports NOT_CONNECTED', async () => {

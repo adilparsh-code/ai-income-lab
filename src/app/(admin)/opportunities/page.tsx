@@ -10,6 +10,7 @@ import { PageHeader } from '@/components/shared/page-header';
 import { EmptyState } from '@/components/shared/empty-state';
 import Link from 'next/link';
 import { Plus, Lightbulb } from 'lucide-react';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
 interface Props {
   searchParams: Promise<{
@@ -23,6 +24,7 @@ interface Props {
 }
 
 export default async function OpportunitiesPage({ searchParams }: Props) {
+  await requireAdminPageAccess('/opportunities');
   const params = await searchParams;
   
   const toArray = (val?: string | string[]) => {

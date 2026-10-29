@@ -24,6 +24,7 @@ import type {
   PublishableProductSpec,
 } from '@/lib/publishing/contract';
 import { validateSpecLocally } from '@/lib/publishing/contract';
+import { isVerifiedApproval, type VerifiedApproval } from '@/lib/security/approvals-core';
 
 // ---------------------------------------------------------------------------
 // Configuration (server-side only)
@@ -171,9 +172,11 @@ export class PolarPublishingAdapter implements PublishingProvider {
    * created product. "published" is claimed only when both succeed and the id
    * matches. Any failure is reported honestly with nothing fabricated.
    */
-  async publish(draft: PublishingDraft, humanApprovalToken: string): Promise<PublishAttempt> {
-    if (!humanApprovalToken || humanApprovalToken.trim().length === 0) {
-      return { published: false, status: 'NOT_AUTHORIZED', reason: 'Explicit human approval token is required. Nothing was published.' };
+  async publish(draft: PublishingDraft, approval: VerifiedApproval): Promise<PublishAttempt> {
+    // Only a server-verified, single-use approval capability is accepted — never
+    // a string. The orchestrator binds it to the exact offer/product.
+    if (!isVerifiedApproval(approval) || (approval.action !== 'PUBLISH_OFFER' && approval.action !== 'PUBLISH_PRODUCT')) {
+      return { published: false, status: 'NOT_AUTHORIZED', reason: 'A verified, single-use human approval for this publication is required. Nothing was published.' };
     }
     if (!PolarPublishingAdapter.isConfigured()) {
       return {

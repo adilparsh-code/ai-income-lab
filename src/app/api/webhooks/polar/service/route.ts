@@ -28,7 +28,7 @@ import { logger } from '@/lib/server-log';
 import { verifyProviderWebhook } from '@/lib/integrations/webhook-verification';
 import { parseVerifiedEventBody } from '@/lib/integrations/webhook-events';
 import { readBoundedText } from '@/lib/security/body';
-import { auditSecurityEvent } from '@/lib/security/guard';
+import { auditSecurityEvent, guardBrowserOrOperator } from '@/lib/security/guard';
 import { applyVerifiedPaymentEvent } from '@/lib/commercial/payment-service';
 
 export const dynamic = 'force-dynamic';
@@ -154,7 +154,13 @@ export async function POST(request: Request) {
  * the verification secret is present, which is the only thing this repository
  * can honestly observe about its own configuration.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  // SECURITY (N3): whether the webhook secret is configured is deployment
+  // intelligence — not for anonymous callers.
+  const guard = await guardBrowserOrOperator(request, 'api:webhooks:polar-service:get', { max: 30, windowSeconds: 60 });
+  if ('response' in guard) {
+    return NextResponse.json(guard.response, { status: guard.status });
+  }
   const configured = Boolean(process.env.POLAR_WEBHOOK_SECRET?.trim());
   return NextResponse.json({
     ok: true,

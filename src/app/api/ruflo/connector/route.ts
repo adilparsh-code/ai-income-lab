@@ -13,10 +13,16 @@
 
 import { NextResponse } from 'next/server';
 import { describeRufloIntegration } from '@/lib/ruflo/capability';
+import { guardBrowserOrOperator } from '@/lib/security/guard';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(request: Request) {
+  // SECURITY (N3): integration status reveals deployment configuration.
+  const guard = await guardBrowserOrOperator(request, 'api:ruflo:connector:get', { max: 60, windowSeconds: 60 });
+  if ('response' in guard) {
+    return NextResponse.json(guard.response, { status: guard.status });
+  }
   const status = describeRufloIntegration();
   return NextResponse.json({ ok: true, ruflo: status });
 }

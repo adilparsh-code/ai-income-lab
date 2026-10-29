@@ -247,13 +247,16 @@ describe('income loop advance', () => {
     const product = await db.product.create({
       data: { opportunityId: opp.id, name: 'Unfinished', type: 'DIGITAL_PRODUCT', status: 'DRAFT', price: 10, cost: 1 },
     });
-    void product;
+    // 'token' is the legacy any-string approval: it must now be worthless.
     const outcome = await advanceIncomeLoop(opp.id, { humanApprovalToken: 'token' });
     // Stage is PUBLISH (product exists, not published). Product exists so the
     // job dispatches; the factory layer reports the honest failure/hold for a
-    // draft product without approved build state.
+    // draft product without approved build state. A string can never publish.
     assert.equal(outcome.stage, 'PUBLISH');
     assert.ok(['FAILED', 'HUMAN_REVIEW', 'BLOCKED', 'DEGRADED'].includes(outcome.status));
+    assert.notEqual(outcome.status, 'SUCCEEDED');
+    const after = await db.product.findUnique({ where: { id: product.id } });
+    assert.notEqual(after?.status, 'PUBLISHED', 'a legacy string token must never publish a product');
     await cleanupOpp(opp.id);
   });
 });

@@ -1,7 +1,9 @@
 import { PageHeader } from '@/components/shared/page-header';
 import { Key, Database, Palette, Bell } from 'lucide-react';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  await requireAdminPageAccess('/settings');
   return (
     <div className="p-6 lg:p-8 space-y-6">
       <PageHeader

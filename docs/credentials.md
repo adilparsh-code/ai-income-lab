@@ -86,8 +86,8 @@ Publication claims `PUBLISHED` only after a verified provider round-trip
 
 | Variable | Purpose | Behavior when missing |
 | --- | --- | --- |
-| `OPERATOR_REVENUE_TOKEN` | Bearer token for `POST /api/revenue`. | Endpoint refuses all writes (503). |
-| `OPERATOR_CONTROL_TOKEN` | Bearer token for control endpoints (jobs, workflows, ruflo/pipeline, operations POST, ai/usage). Falls back to `OPERATOR_REVENUE_TOKEN` when unset. | Control endpoints refuse (401/503). |
+| `OPERATOR_REVENUE_TOKEN` | Bearer token for `POST /api/revenue` ONLY. Hand this to revenue-ingestion automation; it grants no control-plane access. | Endpoint refuses all writes (503). |
+| `OPERATOR_CONTROL_TOKEN` | Bearer token for control endpoints (jobs, workflows, ruflo/pipeline, operations POST, ai/usage). **No fallback**: it is never derived from `OPERATOR_REVENUE_TOKEN`. Must be a different value from `OPERATOR_REVENUE_TOKEN` — if both are set to the same value, both endpoints refuse (503). Generate each with e.g. `openssl rand -base64 48`. | Control endpoints refuse (503). |
 | `SECURITY_FINGERPRINT_SALT` | Salt for keyed HMAC credential fingerprints (audit correlation only). | Stable default salt. |
 | `RUFLO_RUNTIME_TOKEN` | Bearer token for the Ruflo runtime API (`/api/ruflo/runtime/*`). See `docs/ruflo-runtime.md`. | Runtime API refuses (503); capability stays NOT_CONFIGURED. |
 | `RUFLO_RUNTIME_ENABLED` | Must be `true` to register the runtime handle at startup (kill switch). | Handle not registered; posture AUTH_REQUIRED. |
@@ -126,3 +126,10 @@ new token value (effective on the next request).
 - [x] Authorization ledger never returns token material; expired grants are
       never silently reused.
 - [x] Provider round-trip verification before any LIVE claim (Rule 2).
+
+## Deployment configuration changes required by the security remediation
+
+1. **Set `OPERATOR_CONTROL_TOKEN`** (distinct from `OPERATOR_REVENUE_TOKEN`) in the Production environment *before* deploying. Deployments that relied on the revenue-token fallback will otherwise get 503 on control endpoints.
+2. Existing callers of control endpoints must switch to the new control token.
+3. Apply migration `0013_approval_grants_and_halal_reviews` (production build runs `prisma migrate deploy` when `VERCEL_ENV=production`). Preview deployments no longer migrate; give previews their own database.
+4. Rotate any credential that was ever committed or pasted elsewhere. Never commit token values.

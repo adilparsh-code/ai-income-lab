@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getResearchEngineStatus } from '@/actions/research';
+import { getResearchEngineStatus } from '@/lib/loaders/research';
 import { guardBrowserOrOperator } from '@/lib/security/guard';
 
 /**

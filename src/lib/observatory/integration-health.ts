@@ -14,7 +14,7 @@ import { describeRufloRuntime } from '@/lib/ruflo/runtime';
 import { describePublishingStatus } from '@/lib/publishing/contract';
 import { describeVercelConfig } from '@/lib/product-factory/deployment-vercel';
 import { describeCommunicationHealth } from '@/lib/commercial/communication-provider';
-import { operatorControlToken } from '@/lib/security/guard';
+import { operatorControlToken, operatorTokensConflict } from '@/lib/security/guard';
 import type { GitHubWatcherView, IntegrationHealth } from './types';
 
 function mapState(status: string): IntegrationHealth['state'] {
@@ -141,10 +141,14 @@ export async function getIntegrationHealth(): Promise<IntegrationHealth[]> {
     {
       name: 'Operator Control API',
       state: 'NOT_CONFIGURED',
-      detail: operatorControlToken()
-        ? 'Operator credential is configured server-side; control endpoints active for admin/operator callers.'
-        : 'No operator credential configured; control endpoints fail closed (503).',
-      requiredForConnected: operatorControlToken() ? [] : ['OPERATOR_CONTROL_TOKEN (server-side)'],
+      detail: operatorTokensConflict()
+        ? 'MISCONFIGURED: OPERATOR_CONTROL_TOKEN equals OPERATOR_REVENUE_TOKEN; control and revenue endpoints refuse (503).'
+        : operatorControlToken()
+          ? 'Operator credential is configured server-side; control endpoints active for admin/operator callers.'
+          : 'No operator credential configured; control endpoints fail closed (503).',
+      requiredForConnected: operatorTokensConflict()
+        ? ['Use different values for OPERATOR_CONTROL_TOKEN and OPERATOR_REVENUE_TOKEN']
+        : operatorControlToken() ? [] : ['OPERATOR_CONTROL_TOKEN (server-side)'],
     },
     // Phase 11.3 — one row per communication channel, derived from the
     // providers' OWN health descriptors. No channel is connected: the

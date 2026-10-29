@@ -2,8 +2,10 @@ import { OpportunityForm } from '@/components/opportunities/opportunity-form';
 import { PageHeader } from '@/components/shared/page-header';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
+import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
-export default function NewOpportunityPage() {
+export default async function NewOpportunityPage() {
+  await requireAdminPageAccess('/opportunities/new');
   return (
     <div className="p-6 lg:p-8 space-y-6">
       <div className="flex items-center gap-2 text-sm text-muted-foreground">

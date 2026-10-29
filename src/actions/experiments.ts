@@ -2,6 +2,7 @@
 
 import { db } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
+import { requireAdminAction } from '@/lib/agency/action-guard';
 
 export interface CreateExperimentInput {
   hypothesis: string;
@@ -37,6 +38,7 @@ export interface UpdateExperimentInput {
  * GET all experiments
  */
 export async function getExperiments() {
+  await requireAdminAction();
   const experiments = await db.experiment.findMany({
     include: {
       opportunity: {
@@ -57,6 +59,7 @@ export async function getExperiments() {
  * GET single experiment by ID
  */
 export async function getExperiment(id: string) {
+  await requireAdminAction();
   const experiment = await db.experiment.findUnique({
     where: { id },
     include: {
@@ -71,6 +74,7 @@ export async function getExperiment(id: string) {
  * Create a new experiment linked to an opportunity
  */
 export async function createExperiment(input: CreateExperimentInput) {
+  await requireAdminAction();
   if (!input.hypothesis || input.hypothesis.trim().length === 0) {
     throw new Error('Hypothesis is required');
   }
@@ -100,6 +104,7 @@ export async function createExperiment(input: CreateExperimentInput) {
  * Update an experiment
  */
 export async function updateExperiment(input: UpdateExperimentInput) {
+  await requireAdminAction();
   const { id, ...data } = input;
 
   const existing = await db.experiment.findUnique({ where: { id } });
@@ -135,6 +140,7 @@ export async function updateExperiment(input: UpdateExperimentInput) {
  * Delete an experiment
  */
 export async function deleteExperiment(id: string) {
+  await requireAdminAction();
   const existing = await db.experiment.findUnique({ where: { id } });
   if (!existing) throw new Error('Experiment not found');
 
