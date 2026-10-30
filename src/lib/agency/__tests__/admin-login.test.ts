@@ -72,10 +72,24 @@ function restoreAdminEnv() {
   }
 }
 
+// Every request gets its OWN deterministic source IP by default. The login
+// route keeps per-IP lockout counters in the real database, so requests that
+// carry no x-forwarded-for all land in one shared "unknown" bucket; after five
+// intentional failures in earlier tests, a later legitimate login in the same
+// file would be (correctly) locked out with 429. Per-request IPs keep each test
+// independent. 198.18.0.0/15 is the RFC 2544 benchmarking range, disjoint from
+// the 203.0.113.x addresses that the lockout tests pass explicitly (those
+// explicit x-forwarded-for overrides always win).
+let nextTestIp = 0;
+function uniqueTestIp(): string {
+  const n = nextTestIp++;
+  return `198.18.${Math.floor(n / 250) % 250}.${(n % 250) + 1}`;
+}
+
 function loginRequest(body: unknown, extraHeaders: Record<string, string> = {}): Request {
   return new Request('http://localhost/api/admin/session', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...extraHeaders },
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': uniqueTestIp(), ...extraHeaders },
     body: JSON.stringify(body),
   });
 }
