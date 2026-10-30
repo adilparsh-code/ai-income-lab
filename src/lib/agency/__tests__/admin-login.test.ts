@@ -72,10 +72,24 @@ function restoreAdminEnv() {
   }
 }
 
+// Every request gets its OWN deterministic source IP by default. The login
+// route keeps per-IP lockout counters in the real database, so requests that
+// carry no x-forwarded-for all land in one shared "unknown" bucket; after five
+// intentional failures in earlier tests, a later legitimate login in the same
+// file would be (correctly) locked out with 429. Per-request IPs keep each test
+// independent. 198.18.0.0/15 is the RFC 2544 benchmarking range, disjoint from
+// the 203.0.113.x addresses that the lockout tests pass explicitly (those
+// explicit x-forwarded-for overrides always win).
+let nextTestIp = 0;
+function uniqueTestIp(): string {
+  const n = nextTestIp++;
+  return `198.18.${Math.floor(n / 250) % 250}.${(n % 250) + 1}`;
+}
+
 function loginRequest(body: unknown, extraHeaders: Record<string, string> = {}): Request {
   return new Request('http://localhost/api/admin/session', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...extraHeaders },
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': uniqueTestIp(), ...extraHeaders },
     body: JSON.stringify(body),
   });
 }
@@ -202,6 +216,86 @@ describe('single-admin login (hermetic DB)', () => {
       assert.equal(json.error.includes('prisma'), false);
       assert.equal(json.error.toLowerCase().includes('sql'), false);
     } finally {
+      restoreAdminEnv();
+    }
+  });
+});
+
+describe('login lockout at the route (N4)', () => {
+  const CREDS = { email: 'admin@aiincome.lab', password: 'correct-horse-battery-staple' };
+  const overLimitStore = () => ({
+    increment: async () => ({ count: 1_000_000 }),
+    decrement: async () => undefined,
+  });
+
+  it('a locked IP is refused even with the CORRECT password: 429, Retry-After, no cookie', async () => {
+    setAdminEnv();
+    adminAuth.__setAccountLockStoreForTests(overLimitStore());
+    try {
+      const res = await sessionRoute.POST(loginRequest(CREDS, { 'x-forwarded-for': '203.0.113.50' }));
+      assert.equal(res.status, 429);
+      assert.ok(Number(res.headers.get('retry-after')) >= 1);
+      assert.equal(res.headers.get('set-cookie'), null);
+    } finally {
+      adminAuth.__setAccountLockStoreForTests(null);
+      restoreAdminEnv();
+    }
+  });
+
+  it('lockout storage failure DENIES login (fail closed, 503, no cookie)', async () => {
+    setAdminEnv();
+    adminAuth.__setAccountLockStoreForTests({
+      increment: async () => { throw new Error('db down'); },
+      decrement: async () => { throw new Error('db down'); },
+    });
+    try {
+      const res = await sessionRoute.POST(loginRequest(CREDS, { 'x-forwarded-for': '203.0.113.51' }));
+      assert.equal(res.status, 503);
+      assert.equal(res.headers.get('set-cookie'), null);
+    } finally {
+      adminAuth.__setAccountLockStoreForTests(null);
+      restoreAdminEnv();
+    }
+  });
+
+  it('a failed login stays counted (no refund); a successful one is refunded', async () => {
+    setAdminEnv();
+    let increments = 0;
+    let decrements = 0;
+    adminAuth.__setAccountLockStoreForTests({
+      increment: async () => { increments += 1; return { count: 1 }; },
+      decrement: async () => { decrements += 1; },
+    });
+    try {
+      const bad = await sessionRoute.POST(loginRequest({ ...CREDS, password: 'wrong-password-value' }, { 'x-forwarded-for': '203.0.113.52' }));
+      assert.equal(bad.status, 401);
+      assert.equal(increments, 2); // one reservation per layer: source IP + account-wide
+      assert.equal(decrements, 0);
+      const good = await sessionRoute.POST(loginRequest(CREDS, { 'x-forwarded-for': '203.0.113.53' }));
+      assert.equal(good.status, 200);
+      assert.equal(increments, 4);
+      assert.equal(decrements, 2); // success refunds both reservations
+    } finally {
+      adminAuth.__setAccountLockStoreForTests(null);
+      restoreAdminEnv();
+    }
+  });
+
+  it('email case/whitespace/unknown-email variants all hit the same account counter', async () => {
+    setAdminEnv();
+    const seen = new Set<string>();
+    adminAuth.__setAccountLockStoreForTests({
+      increment: async ({ bucketKey }) => { seen.add(bucketKey); return { count: 1 }; },
+      decrement: async () => undefined,
+    });
+    try {
+      for (const email of ['admin@aiincome.lab', ' ADMIN@AIINCOME.LAB ', 'nobody@else.where']) {
+        await sessionRoute.POST(loginRequest({ email, password: 'wrong-password-value' }, { 'x-forwarded-for': '203.0.113.60' }));
+      }
+      const accountBuckets = [...seen].filter((k) => k.startsWith('admin-lockout-account|'));
+      assert.equal(accountBuckets.length, 1);
+    } finally {
+      adminAuth.__setAccountLockStoreForTests(null);
       restoreAdminEnv();
     }
   });

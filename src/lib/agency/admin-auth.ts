@@ -10,6 +10,8 @@
 //                          by scripts/hash-admin-password.mjs (preferred).
 //   ADMIN_PASSWORD       — bootstrap plaintext fallback (dev/bootstrap only).
 //                          NEVER committed; fail-closed when neither is set.
+//                          Ignored when ADMIN_PASSWORD_HASH is set, and ignored
+//                          entirely when ADMIN_REQUIRE_PASSWORD_HASH is truthy.
 //
 // Sessions are durable rows in AdminSession. The cookie carries an opaque
 // random token; only a keyed HMAC fingerprint of the token is stored, so a
@@ -41,13 +43,24 @@ function boundedTtl(value: number): number {
 // Credential verification (server-side only, constant time)
 // ---------------------------------------------------------------------------
 
+// Minimum shapes accepted for a stored hash. scripts/hash-admin-password.mjs
+// emits a 16-byte salt and a 64-byte key; anything weaker than these floors is
+// treated as MALFORMED and fails closed. Without the floors an empty or
+// non-hex hash decodes to a zero-length key, and timingSafeEqual() of two empty
+// buffers is TRUE — i.e. any password would be accepted.
+const MIN_SALT_BYTES = 16;
+const MIN_KEY_BYTES = 32;
+const STRICT_HEX = /^(?:[0-9a-f]{2})+$/i;
+
 function verifyScryptHash(password: string, stored: string): boolean {
   const parts = stored.split(':');
   if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
   const [, saltHex, hashHex] = parts;
+  if (!STRICT_HEX.test(saltHex) || !STRICT_HEX.test(hashHex)) return false;
   try {
     const salt = Buffer.from(saltHex, 'hex');
     const expected = Buffer.from(hashHex, 'hex');
+    if (salt.length < MIN_SALT_BYTES || expected.length < MIN_KEY_BYTES) return false;
     const actual = scryptSync(password, salt, expected.length);
     return timingSafeEqual(actual, expected);
   } catch {
@@ -56,6 +69,25 @@ function verifyScryptHash(password: string, stored: string): boolean {
 }
 
 export type AdminCredentialStatus = 'CONFIGURED' | 'NOT_CONFIGURED';
+export type AdminCredentialMode = 'hash' | 'plaintext' | 'none';
+
+function truthyEnv(name: string): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+/**
+ * Which credential material is actually in force. The hash always wins. The
+ * plaintext fallback is honoured only until the operator opts into strict mode
+ * with ADMIN_REQUIRE_PASSWORD_HASH=true (migration switch: it can only REMOVE
+ * a weaker path, never add one, and it never changes the password itself).
+ */
+export function adminCredentialMode(): AdminCredentialMode {
+  if (process.env.ADMIN_PASSWORD_HASH?.trim()) return 'hash';
+  if (truthyEnv('ADMIN_REQUIRE_PASSWORD_HASH')) return 'none';
+  if (process.env.ADMIN_PASSWORD?.trim()) return 'plaintext';
+  return 'none';
+}
 
 /**
  * Kill-switch: when ADMIN_DISABLED is set to a truthy value, the single
@@ -71,11 +103,7 @@ export function adminDisabled(): boolean {
 
 /** Truthful readiness of the admin credential configuration. */
 export function adminCredentialStatus(): AdminCredentialStatus {
-  const hash = process.env.ADMIN_PASSWORD_HASH?.trim();
-  if (hash) return 'CONFIGURED';
-  const plain = process.env.ADMIN_PASSWORD?.trim();
-  if (plain) return 'CONFIGURED';
-  return 'NOT_CONFIGURED';
+  return adminCredentialMode() === 'none' ? 'NOT_CONFIGURED' : 'CONFIGURED';
 }
 
 /**
@@ -89,13 +117,11 @@ export function verifyAdminCredentials(email: string | null, password: string | 
   if (expectedEmail.length === 0) return false;
   if (!constantTimeTextEquals(email.trim().toLowerCase(), expectedEmail.toLowerCase())) return false;
 
-  const hash = process.env.ADMIN_PASSWORD_HASH?.trim();
-  if (hash) return verifyScryptHash(password, hash);
+  const mode = adminCredentialMode();
+  if (mode === 'hash') return verifyScryptHash(password, process.env.ADMIN_PASSWORD_HASH!.trim());
+  if (mode === 'plaintext') return constantTimeTextEquals(password, process.env.ADMIN_PASSWORD!.trim());
 
-  const plain = process.env.ADMIN_PASSWORD?.trim();
-  if (plain) return constantTimeTextEquals(password, plain);
-
-  return false; // nothing configured → fail closed
+  return false; // nothing configured (or plaintext disallowed) → fail closed
 }
 
 function constantTimeTextEquals(a: string, b: string): boolean {
@@ -195,6 +221,134 @@ export async function revokeAdminSession(token: string): Promise<boolean> {
 
 /** Login rate limiting: 10 attempts / 5 min per IP (DB-backed, shared). */
 export const LOGIN_RATE_LIMIT = { max: 10, windowSeconds: 300 } as const;
+
+// ---------------------------------------------------------------------------
+// Failed-login LOCKOUT (N4). The generic per-IP throttle alone lets a
+// distributed attacker make unlimited guesses; this adds a strict per-IP
+// failure lock plus an account-wide ceiling on total FAILED guesses.
+// Attempts are RESERVED atomically before any credential work (no scrypt cost
+// while locked) and refunded on success, so only failures count. A storage
+// error DENIES login (fail closed — no in-memory fallback).
+// Trade-off (documented): only a distributed attacker can hit the account-wide
+// ceiling; a single attacker IP is locked out long before it can lock the owner.
+// ---------------------------------------------------------------------------
+
+function boundedInt(name: string, fallback: number, min: number, max: number): number {
+  const n = Number(process.env[name]);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+/**
+ * Two layers, both counting FAILED logins only:
+ *  - per source IP (strict): an attacker's IP is locked out, not the owner's;
+ *  - account-wide ceiling (higher): caps a distributed / spoofed-IP attack.
+ * Owner-tunable via env, but BOUNDED so a bad value can never disable the
+ * protection (ipMaxFailures 3..20, accountMaxFailures 10..100, window 5..60 min).
+ */
+export function accountLockout(): { ipMaxFailures: number; accountMaxFailures: number; windowSeconds: number } {
+  return {
+    ipMaxFailures: boundedInt('LOGIN_LOCKOUT_IP_MAX_FAILURES', 5, 3, 20),
+    accountMaxFailures: boundedInt('LOGIN_LOCKOUT_ACCOUNT_MAX_FAILURES', 20, 10, 100),
+    windowSeconds: boundedInt('LOGIN_LOCKOUT_WINDOW_SECONDS', 15 * 60, 5 * 60, 60 * 60),
+  };
+}
+
+/** Atomic persistence seam. `increment` MUST be a single atomic add returning the new count. */
+export interface AccountLockStore {
+  increment(args: { bucketKey: string; windowKey: string; expiresAt: Date }): Promise<{ count: number }>;
+  decrement(args: { bucketKey: string; windowKey: string }): Promise<void>;
+}
+
+const prismaAccountLockStore: AccountLockStore = {
+  increment: async ({ bucketKey, windowKey, expiresAt }) => {
+    const run = () =>
+      db.rateLimitWindow.upsert({
+        where: { bucketKey_windowKey: { bucketKey, windowKey } },
+        create: { bucketKey, windowKey, count: 1, expiresAt },
+        update: { count: { increment: 1 } },
+      });
+    try {
+      return await run();
+    } catch {
+      // A concurrent first-hit can lose the unique-constraint race; the row
+      // now exists, so exactly one retry of the atomic upsert counts us.
+      return await run();
+    }
+  },
+  decrement: async ({ bucketKey, windowKey }) => {
+    await db.rateLimitWindow.updateMany({
+      where: { bucketKey, windowKey, count: { gt: 0 } },
+      data: { count: { decrement: 1 } },
+    });
+  },
+};
+
+let accountLockStore: AccountLockStore = prismaAccountLockStore;
+/** TEST SEAM ONLY (null restores the default). */
+export function __setAccountLockStoreForTests(store: AccountLockStore | null): void {
+  accountLockStore = store ?? prismaAccountLockStore;
+}
+
+function lockBuckets(ip: string) {
+  const now = Math.floor(Date.now() / 1000);
+  const { windowSeconds, ipMaxFailures, accountMaxFailures } = accountLockout();
+  const start = now - (now % windowSeconds);
+  const windowKey = `${start}-${windowSeconds}`;
+  const expiresAt = new Date((start + windowSeconds) * 1000 + 5_000);
+  return {
+    windowKey,
+    expiresAt,
+    retryAfterSeconds: Math.max(1, start + windowSeconds - now),
+    // One account → one bucket, independent of the (attacker-chosen) email string,
+    // so case/whitespace/unknown-email variations cannot dodge the counter.
+    account: { bucketKey: 'admin-lockout-account|' + credentialFingerprint('admin-account'), max: accountMaxFailures },
+    ip: { bucketKey: 'admin-lockout-ip|' + credentialFingerprint(`ip:${ip}`), max: ipMaxFailures },
+  };
+}
+
+export type LoginAttemptVerdict =
+  | { allowed: true }
+  | { allowed: false; retryAfterSeconds: number; unavailable?: true };
+
+/**
+ * RESERVE one login attempt BEFORE any credential work. The reservation is an
+ * atomic increment that returns the new count, so concurrent requests cannot
+ * all slip past a stale read (no check-then-act race): at most `max` attempts
+ * per bucket ever reach the verifier. Order matters: an IP that is already
+ * over its limit is refused WITHOUT touching the account bucket, so a locked
+ * attacker IP cannot burn the account-wide budget and lock the owner out.
+ * Storage failure → denied (fail closed).
+ */
+export async function reserveLoginAttempt(ip: string): Promise<LoginAttemptVerdict> {
+  const w = lockBuckets(ip);
+  try {
+    const ipRow = await accountLockStore.increment({ bucketKey: w.ip.bucketKey, windowKey: w.windowKey, expiresAt: w.expiresAt });
+    if (ipRow.count > w.ip.max) return { allowed: false, retryAfterSeconds: w.retryAfterSeconds };
+    const acctRow = await accountLockStore.increment({ bucketKey: w.account.bucketKey, windowKey: w.windowKey, expiresAt: w.expiresAt });
+    if (acctRow.count > w.account.max) return { allowed: false, retryAfterSeconds: w.retryAfterSeconds };
+    return { allowed: true };
+  } catch {
+    return { allowed: false, retryAfterSeconds: 5, unavailable: true };
+  }
+}
+
+/**
+ * Give the reservation back after a SUCCESSFUL login so only failures count.
+ * This refunds exactly this request's own reservation; it never clears the
+ * bucket, so a legitimate login cannot erase an attacker's recorded failures.
+ * Best-effort: if it fails the owner merely keeps one extra counted attempt.
+ */
+export async function refundLoginAttempt(ip: string): Promise<void> {
+  const w = lockBuckets(ip);
+  for (const layer of [w.ip, w.account]) {
+    try {
+      await accountLockStore.decrement({ bucketKey: layer.bucketKey, windowKey: w.windowKey });
+    } catch {
+      /* best-effort */
+    }
+  }
+}
 
 export async function auditAdminEvent(kind: string, outcome: 'ok' | 'refused' | 'error', detail?: string): Promise<void> {
   await auditSecurityEvent({ kind, surface: 'admin', outcome, detail: detail?.slice(0, 200) });

@@ -18,11 +18,14 @@ import { NextResponse } from 'next/server';
 import {
   ADMIN_SESSION_COOKIE,
   ADMIN_SESSION_TTL_MS,
+  adminCredentialMode,
   adminCredentialStatus,
   adminDisabled,
   auditAdminEvent,
   createAdminSession,
   LOGIN_RATE_LIMIT,
+  refundLoginAttempt,
+  reserveLoginAttempt,
   resolveAdminSession,
   revokeAdminSession,
   verifyAdminCredentials,
@@ -107,12 +110,24 @@ export async function POST(request: Request) {
     );
   }
 
+  // Reserve an attempt atomically BEFORE any credential work (per-IP + account
+  // ceiling). Denied or storage failure → no verification happens at all.
+  const reservation = await reserveLoginAttempt(ip);
+  if (!reservation.allowed) {
+    await auditAdminEvent('ADMIN_LOGIN', 'refused', reservation.unavailable ? 'lockout-store-unavailable' : 'locked-out');
+    return NextResponse.json(
+      { ok: false, error: reservation.unavailable ? 'Login is temporarily unavailable.' : 'Too many failed attempts. Try again later.' },
+      { status: reservation.unavailable ? 503 : 429, headers: { 'Retry-After': String(reservation.retryAfterSeconds) } },
+    );
+  }
+
   if (!verifyAdminCredentials(email, password)) {
     // Non-secret reason code (fixed set) → SecurityEvent.detail only; response unchanged.
     await auditAdminEvent('ADMIN_LOGIN', 'refused', classifyAdminLoginFailure(email, password));
     return NextResponse.json({ ok: false, error: 'Invalid credentials.' }, { status: 401 });
   }
 
+  await refundLoginAttempt(ip); // success: only failures count toward the lockout
   try {
     const { token, session } = await createAdminSession(email as string, `ip:${clientIpFrom(request)}`);
     const response = NextResponse.json({
@@ -123,7 +138,9 @@ export async function POST(request: Request) {
       returnTo,
     });
     response.cookies.set(ADMIN_SESSION_COOKIE, token, cookieOptions());
-    await auditAdminEvent('ADMIN_LOGIN', 'ok');
+    // Plaintext fallback still in use → leave a non-secret audit breadcrumb so
+    // the operator can see the migration to ADMIN_PASSWORD_HASH is pending.
+    await auditAdminEvent('ADMIN_LOGIN', 'ok', adminCredentialMode() === 'plaintext' ? 'plaintext-credential-in-use' : undefined);
     return response;
   } catch {
     await auditAdminEvent('ADMIN_LOGIN', 'error', 'session-storage-unavailable');
