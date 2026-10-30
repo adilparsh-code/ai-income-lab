@@ -21,10 +21,10 @@ Object.assign(process.env, {
 import {
   __setAccountLockStoreForTests,
   accountLockout,
-  accountLockState,
   adminCredentialMode,
   adminCredentialStatus,
-  recordAccountLoginFailure,
+  refundLoginAttempt,
+  reserveLoginAttempt,
   verifyAdminCredentials,
   type AccountLockStore,
 } from '@/lib/agency/admin-auth';
@@ -39,16 +39,19 @@ function makeHash(password: string): string {
   return `scrypt:${salt.toString('hex')}:${scryptSync(password, salt, 64).toString('hex')}`;
 }
 
+/** Atomic in-memory store (single-threaded JS: each call is one indivisible step). */
 function memoryStore(): AccountLockStore & { counts: Map<string, number> } {
   const counts = new Map<string, number>();
   return {
     counts,
-    async read({ bucketKey, windowKey }) {
-      const c = counts.get(bucketKey + windowKey);
-      return c === undefined ? null : { count: c, expiresAt: new Date(Date.now() + 60_000) };
-    },
     async increment({ bucketKey, windowKey }) {
-      counts.set(bucketKey + windowKey, (counts.get(bucketKey + windowKey) ?? 0) + 1);
+      const next = (counts.get(bucketKey + windowKey) ?? 0) + 1;
+      counts.set(bucketKey + windowKey, next);
+      return { count: next };
+    },
+    async decrement({ bucketKey, windowKey }) {
+      const cur = counts.get(bucketKey + windowKey) ?? 0;
+      if (cur > 0) counts.set(bucketKey + windowKey, cur - 1);
     },
   };
 }
@@ -139,28 +142,49 @@ describe('hash verification fails CLOSED on malformed hashes', () => {
   });
 });
 
-describe('failed-login lockout (per IP + account-wide)', () => {
+describe('login lockout — atomic reservation (per IP + account-wide)', () => {
   const IP = '198.51.100.7';
   const OTHER_IP = '198.51.100.8';
   const { ipMaxFailures, accountMaxFailures } = accountLockout();
 
-  it('locks the attacking IP after ipMaxFailures, but NOT a different IP (owner stays in)', async () => {
+  it('admits exactly ipMaxFailures attempts from one IP, then locks that IP only', async () => {
     __setAccountLockStoreForTests(memoryStore());
-    for (let i = 0; i < ipMaxFailures - 1; i += 1) {
-      await recordAccountLoginFailure(IP);
-      assert.equal((await accountLockState(IP)).locked, false);
-    }
-    await recordAccountLoginFailure(IP);
-    const attacker = await accountLockState(IP);
-    assert.equal(attacker.locked, true);
-    assert.ok(attacker.locked && attacker.retryAfterSeconds >= 1);
-    assert.equal((await accountLockState(OTHER_IP)).locked, false);
+    for (let i = 0; i < ipMaxFailures; i += 1) assert.equal((await reserveLoginAttempt(IP)).allowed, true);
+    const over = await reserveLoginAttempt(IP);
+    assert.equal(over.allowed, false);
+    assert.ok(!over.allowed && over.retryAfterSeconds >= 1);
+    assert.equal((await reserveLoginAttempt(OTHER_IP)).allowed, true, 'owner on another IP stays in');
   });
 
-  it('account-wide ceiling locks everyone when many different IPs fail', async () => {
+  it('CONCURRENCY: 200 parallel attempts from one IP admit at most ipMaxFailures (no check-then-act race)', async () => {
     __setAccountLockStoreForTests(memoryStore());
-    for (let i = 0; i < accountMaxFailures; i += 1) await recordAccountLoginFailure(`203.0.113.${i}`);
-    assert.equal((await accountLockState('192.0.2.200')).locked, true);
+    const verdicts = await Promise.all(Array.from({ length: 200 }, () => reserveLoginAttempt(IP)));
+    assert.equal(verdicts.filter((v) => v.allowed).length, ipMaxFailures);
+  });
+
+  it('CONCURRENCY: parallel attempts from many IPs admit at most accountMaxFailures', async () => {
+    __setAccountLockStoreForTests(memoryStore());
+    const verdicts = await Promise.all(Array.from({ length: 300 }, (_, i) => reserveLoginAttempt(`192.0.2.${i % 250}.${i}`)));
+    assert.ok(verdicts.filter((v) => v.allowed).length <= accountMaxFailures);
+  });
+
+  it('a locked IP does NOT burn the account-wide budget (cannot lock the owner out alone)', async () => {
+    const store = memoryStore();
+    __setAccountLockStoreForTests(store);
+    for (let i = 0; i < 500; i += 1) await reserveLoginAttempt(IP);
+    const acct = [...store.counts.entries()].find(([k]) => k.startsWith('admin-lockout-account|'));
+    assert.equal(acct?.[1], ipMaxFailures, 'only the admitted attempts reached the account bucket');
+    assert.equal((await reserveLoginAttempt(OTHER_IP)).allowed, true);
+  });
+
+  it('refund after SUCCESS gives back exactly this request\'s reservation (only failures count)', async () => {
+    const store = memoryStore();
+    __setAccountLockStoreForTests(store);
+    for (let i = 0; i < ipMaxFailures - 1; i += 1) await reserveLoginAttempt(IP); // prior failures
+    assert.equal((await reserveLoginAttempt(IP)).allowed, true); // this attempt succeeds...
+    await refundLoginAttempt(IP); // ...and is refunded
+    assert.equal((await reserveLoginAttempt(IP)).allowed, true, 'success did not consume the last slot');
+    assert.equal((await reserveLoginAttempt(IP)).allowed, false, 'but prior failures were NOT erased by the refund');
   });
 
   it('env tuning is bounded: absurd values cannot disable the protection', () => {
@@ -185,28 +209,21 @@ describe('failed-login lockout (per IP + account-wide)', () => {
     }
   });
 
-  it('checking the state does not consume attempts (read-only)', async () => {
-    const store = memoryStore();
-    __setAccountLockStoreForTests(store);
-    for (let i = 0; i < 50; i += 1) await accountLockState(IP);
-    assert.equal(store.counts.size, 0);
-  });
-
   it('fails CLOSED when the counter store is unavailable', async () => {
     __setAccountLockStoreForTests({
-      read: async () => { throw new Error('db down'); },
       increment: async () => { throw new Error('db down'); },
+      decrement: async () => { throw new Error('db down'); },
     });
-    const verdict = await accountLockState(IP);
-    assert.equal(verdict.locked, true);
-    assert.ok(verdict.locked && verdict.unavailable === true);
+    const verdict = await reserveLoginAttempt(IP);
+    assert.equal(verdict.allowed, false);
+    assert.ok(!verdict.allowed && verdict.unavailable === true);
   });
 
-  it('recording a failure never throws even if storage is down', async () => {
+  it('refund never throws even if storage is down', async () => {
     __setAccountLockStoreForTests({
-      read: async () => null,
-      increment: async () => { throw new Error('db down'); },
+      increment: async () => ({ count: 1 }),
+      decrement: async () => { throw new Error('db down'); },
     });
-    await assert.doesNotReject(() => recordAccountLoginFailure(IP));
+    await assert.doesNotReject(() => refundLoginAttempt(IP));
   });
 });

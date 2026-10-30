@@ -18,14 +18,14 @@ import { NextResponse } from 'next/server';
 import {
   ADMIN_SESSION_COOKIE,
   ADMIN_SESSION_TTL_MS,
-  accountLockState,
   adminCredentialMode,
   adminCredentialStatus,
   adminDisabled,
   auditAdminEvent,
   createAdminSession,
   LOGIN_RATE_LIMIT,
-  recordAccountLoginFailure,
+  refundLoginAttempt,
+  reserveLoginAttempt,
   resolveAdminSession,
   revokeAdminSession,
   verifyAdminCredentials,
@@ -110,23 +110,24 @@ export async function POST(request: Request) {
     );
   }
 
-  // Per-account lockout BEFORE any credential work (also skips scrypt while locked).
-  const lock = await accountLockState(ip);
-  if (lock.locked) {
-    await auditAdminEvent('ADMIN_LOGIN', 'refused', lock.unavailable ? 'lockout-store-unavailable' : 'account-locked');
+  // Reserve an attempt atomically BEFORE any credential work (per-IP + account
+  // ceiling). Denied or storage failure → no verification happens at all.
+  const reservation = await reserveLoginAttempt(ip);
+  if (!reservation.allowed) {
+    await auditAdminEvent('ADMIN_LOGIN', 'refused', reservation.unavailable ? 'lockout-store-unavailable' : 'locked-out');
     return NextResponse.json(
-      { ok: false, error: lock.unavailable ? 'Login is temporarily unavailable.' : 'Too many failed attempts. Try again later.' },
-      { status: lock.unavailable ? 503 : 429, headers: { 'Retry-After': String(lock.retryAfterSeconds) } },
+      { ok: false, error: reservation.unavailable ? 'Login is temporarily unavailable.' : 'Too many failed attempts. Try again later.' },
+      { status: reservation.unavailable ? 503 : 429, headers: { 'Retry-After': String(reservation.retryAfterSeconds) } },
     );
   }
 
   if (!verifyAdminCredentials(email, password)) {
-    await recordAccountLoginFailure(ip);
     // Non-secret reason code (fixed set) → SecurityEvent.detail only; response unchanged.
     await auditAdminEvent('ADMIN_LOGIN', 'refused', classifyAdminLoginFailure(email, password));
     return NextResponse.json({ ok: false, error: 'Invalid credentials.' }, { status: 401 });
   }
 
+  await refundLoginAttempt(ip); // success: only failures count toward the lockout
   try {
     const { token, session } = await createAdminSession(email as string, `ip:${clientIpFrom(request)}`);
     const response = NextResponse.json({

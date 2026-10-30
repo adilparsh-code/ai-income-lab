@@ -225,9 +225,10 @@ export const LOGIN_RATE_LIMIT = { max: 10, windowSeconds: 300 } as const;
 // ---------------------------------------------------------------------------
 // Failed-login LOCKOUT (N4). The generic per-IP throttle alone lets a
 // distributed attacker make unlimited guesses; this adds a strict per-IP
-// failure lock plus an account-wide ceiling on total FAILED guesses. Only failures count, the check
-// runs before any credential work (so no scrypt cost while locked), and a
-// storage error DENIES login (fail closed — no in-memory fallback).
+// failure lock plus an account-wide ceiling on total FAILED guesses.
+// Attempts are RESERVED atomically before any credential work (no scrypt cost
+// while locked) and refunded on success, so only failures count. A storage
+// error DENIES login (fail closed — no in-memory fallback).
 // Trade-off (documented): only a distributed attacker can hit the account-wide
 // ceiling; a single attacker IP is locked out long before it can lock the owner.
 // ---------------------------------------------------------------------------
@@ -253,19 +254,32 @@ export function accountLockout(): { ipMaxFailures: number; accountMaxFailures: n
   };
 }
 
+/** Atomic persistence seam. `increment` MUST be a single atomic add returning the new count. */
 export interface AccountLockStore {
-  read(args: { bucketKey: string; windowKey: string }): Promise<{ count: number; expiresAt: Date } | null>;
-  increment(args: { bucketKey: string; windowKey: string; expiresAt: Date }): Promise<void>;
+  increment(args: { bucketKey: string; windowKey: string; expiresAt: Date }): Promise<{ count: number }>;
+  decrement(args: { bucketKey: string; windowKey: string }): Promise<void>;
 }
 
 const prismaAccountLockStore: AccountLockStore = {
-  read: ({ bucketKey, windowKey }) =>
-    db.rateLimitWindow.findUnique({ where: { bucketKey_windowKey: { bucketKey, windowKey } } }),
   increment: async ({ bucketKey, windowKey, expiresAt }) => {
-    await db.rateLimitWindow.upsert({
-      where: { bucketKey_windowKey: { bucketKey, windowKey } },
-      create: { bucketKey, windowKey, count: 1, expiresAt },
-      update: { count: { increment: 1 } },
+    const run = () =>
+      db.rateLimitWindow.upsert({
+        where: { bucketKey_windowKey: { bucketKey, windowKey } },
+        create: { bucketKey, windowKey, count: 1, expiresAt },
+        update: { count: { increment: 1 } },
+      });
+    try {
+      return await run();
+    } catch {
+      // A concurrent first-hit can lose the unique-constraint race; the row
+      // now exists, so exactly one retry of the atomic upsert counts us.
+      return await run();
+    }
+  },
+  decrement: async ({ bucketKey, windowKey }) => {
+    await db.rateLimitWindow.updateMany({
+      where: { bucketKey, windowKey, count: { gt: 0 } },
+      data: { count: { decrement: 1 } },
     });
   },
 };
@@ -286,38 +300,52 @@ function lockBuckets(ip: string) {
     windowKey,
     expiresAt,
     retryAfterSeconds: Math.max(1, start + windowSeconds - now),
-    // One account → one bucket, independent of the (attacker-chosen) email string.
+    // One account → one bucket, independent of the (attacker-chosen) email string,
+    // so case/whitespace/unknown-email variations cannot dodge the counter.
     account: { bucketKey: 'admin-lockout-account|' + credentialFingerprint('admin-account'), max: accountMaxFailures },
     ip: { bucketKey: 'admin-lockout-ip|' + credentialFingerprint(`ip:${ip}`), max: ipMaxFailures },
   };
 }
 
-export type AccountLockVerdict =
-  | { locked: false }
-  | { locked: true; retryAfterSeconds: number; unavailable?: true };
+export type LoginAttemptVerdict =
+  | { allowed: true }
+  | { allowed: false; retryAfterSeconds: number; unavailable?: true };
 
-/** Read-only: does NOT consume an attempt. Fails closed if storage is down. */
-export async function accountLockState(ip: string): Promise<AccountLockVerdict> {
+/**
+ * RESERVE one login attempt BEFORE any credential work. The reservation is an
+ * atomic increment that returns the new count, so concurrent requests cannot
+ * all slip past a stale read (no check-then-act race): at most `max` attempts
+ * per bucket ever reach the verifier. Order matters: an IP that is already
+ * over its limit is refused WITHOUT touching the account bucket, so a locked
+ * attacker IP cannot burn the account-wide budget and lock the owner out.
+ * Storage failure → denied (fail closed).
+ */
+export async function reserveLoginAttempt(ip: string): Promise<LoginAttemptVerdict> {
   const w = lockBuckets(ip);
   try {
-    for (const layer of [w.ip, w.account]) {
-      const row = await accountLockStore.read({ bucketKey: layer.bucketKey, windowKey: w.windowKey });
-      if (row && row.count >= layer.max) return { locked: true, retryAfterSeconds: w.retryAfterSeconds };
-    }
-    return { locked: false };
+    const ipRow = await accountLockStore.increment({ bucketKey: w.ip.bucketKey, windowKey: w.windowKey, expiresAt: w.expiresAt });
+    if (ipRow.count > w.ip.max) return { allowed: false, retryAfterSeconds: w.retryAfterSeconds };
+    const acctRow = await accountLockStore.increment({ bucketKey: w.account.bucketKey, windowKey: w.windowKey, expiresAt: w.expiresAt });
+    if (acctRow.count > w.account.max) return { allowed: false, retryAfterSeconds: w.retryAfterSeconds };
+    return { allowed: true };
   } catch {
-    return { locked: true, retryAfterSeconds: 5, unavailable: true };
+    return { allowed: false, retryAfterSeconds: 5, unavailable: true };
   }
 }
 
-/** Count one FAILED login against the IP and the account. Never throws. */
-export async function recordAccountLoginFailure(ip: string): Promise<void> {
+/**
+ * Give the reservation back after a SUCCESSFUL login so only failures count.
+ * This refunds exactly this request's own reservation; it never clears the
+ * bucket, so a legitimate login cannot erase an attacker's recorded failures.
+ * Best-effort: if it fails the owner merely keeps one extra counted attempt.
+ */
+export async function refundLoginAttempt(ip: string): Promise<void> {
   const w = lockBuckets(ip);
   for (const layer of [w.ip, w.account]) {
     try {
-      await accountLockStore.increment({ bucketKey: layer.bucketKey, windowKey: w.windowKey, expiresAt: w.expiresAt });
+      await accountLockStore.decrement({ bucketKey: layer.bucketKey, windowKey: w.windowKey });
     } catch {
-      /* the next accountLockState() fails closed if storage is down */
+      /* best-effort */
     }
   }
 }
