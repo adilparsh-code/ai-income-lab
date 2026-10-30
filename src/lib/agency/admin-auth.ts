@@ -43,13 +43,24 @@ function boundedTtl(value: number): number {
 // Credential verification (server-side only, constant time)
 // ---------------------------------------------------------------------------
 
+// Minimum shapes accepted for a stored hash. scripts/hash-admin-password.mjs
+// emits a 16-byte salt and a 64-byte key; anything weaker than these floors is
+// treated as MALFORMED and fails closed. Without the floors an empty or
+// non-hex hash decodes to a zero-length key, and timingSafeEqual() of two empty
+// buffers is TRUE — i.e. any password would be accepted.
+const MIN_SALT_BYTES = 16;
+const MIN_KEY_BYTES = 32;
+const STRICT_HEX = /^(?:[0-9a-f]{2})+$/i;
+
 function verifyScryptHash(password: string, stored: string): boolean {
   const parts = stored.split(':');
   if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
   const [, saltHex, hashHex] = parts;
+  if (!STRICT_HEX.test(saltHex) || !STRICT_HEX.test(hashHex)) return false;
   try {
     const salt = Buffer.from(saltHex, 'hex');
     const expected = Buffer.from(hashHex, 'hex');
+    if (salt.length < MIN_SALT_BYTES || expected.length < MIN_KEY_BYTES) return false;
     const actual = scryptSync(password, salt, expected.length);
     return timingSafeEqual(actual, expected);
   } catch {
