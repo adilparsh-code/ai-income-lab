@@ -97,7 +97,10 @@ export interface RufloIntegrationInfo {
 /**
  * @deprecated Static legacy descriptor — always reports RUFLO_READY and never
  * reflects a registered Ruflo handle. Status surfaces must use
- * `describeRufloIntegration` from '@/lib/ruflo/capability' (real handle state).
+ * `describeRufloRuntime()` from '@/lib/ruflo/runtime' (the runtime status
+ * machine incl. health verification; the dashboard maps it via
+ * `describeRufloDashboardStatus`). `describeRufloIntegration` in
+ * '@/lib/ruflo/capability' only reports handle registration.
  * Kept only for its existing test; slated for removal in a later phase.
  *
  * Ruflo integration boundary status. The contract (runJob/executeWorkflow over

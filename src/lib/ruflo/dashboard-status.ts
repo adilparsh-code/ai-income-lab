@@ -63,7 +63,7 @@ export function describeRufloDashboardStatus(status: string | null | undefined):
         label: 'RUFLO CONNECTED · LAST HEALTH CHECK PASSED',
         tone: 'good',
         healthVerified: true,
-        note: 'A runtime handle is registered and the last runtime health check passed. All gates stay enforced by AI Income Lab.',
+        note: 'A runtime handle is registered and a runtime health check passed within the last 10 minutes. All gates stay enforced by AI Income Lab.',
       };
     case 'CONNECTING':
       return {
@@ -71,7 +71,7 @@ export function describeRufloDashboardStatus(status: string | null | undefined):
         label: 'HANDLE REGISTERED · NOT VERIFIED',
         tone: 'warn',
         healthVerified: false,
-        note: 'A runtime handle is registered but no successful health check is recorded yet. Run the authenticated health check (POST /api/ruflo/runtime).',
+        note: 'A runtime handle is registered but there is no successful health check within the last 10 minutes (none recorded yet, or the last one is stale). Run the authenticated health check (POST /api/ruflo/runtime).',
       };
     case 'ERROR':
       return {
@@ -84,10 +84,10 @@ export function describeRufloDashboardStatus(status: string | null | undefined):
     case 'AUTH_REQUIRED':
       return {
         state: status,
-        label: 'CONFIGURED · NOT ENABLED',
+        label: 'TOKEN SET · NO HANDLE REGISTERED',
         tone: 'muted',
         healthVerified: false,
-        note: 'A runtime token is configured but no handle is registered (RUFLO_RUNTIME_ENABLED is not true). Dispatch is refused.',
+        note: 'A runtime token is configured but no handle is registered in this process (RUFLO_RUNTIME_ENABLED is not true, or registration failed). Dispatch is refused.',
       };
     case 'NOT_CONFIGURED':
       return {

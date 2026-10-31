@@ -103,6 +103,11 @@ fresh clone or CI. It never writes to a database.
 
 ## 5. Operator runbook — verify the migrations against the real database
 
+> Note: the scripts and examples in this runbook (and `scripts/db-connection-doctor.mjs`,
+> `scripts/apply-baseline.mjs`) assume Supabase. The application itself only needs
+> PostgreSQL (`@prisma/adapter-pg`). Which provider production uses is not recorded in this
+> repository (operator to confirm).
+
 Everything repository-side is ready. `.env.local` already carries the wired
 connection strings for Supabase project `lzzvsprmczgdgirtpmca`. The steps below
 need the authorized database password — that single substitution is the **only**

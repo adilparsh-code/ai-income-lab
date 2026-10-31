@@ -27,14 +27,25 @@ describe('ruflo dashboard status mapping', () => {
     assert.doesNotMatch(view.label, /CONNECTED/);
   });
 
+  it('a stale health check is shown via CONNECTING: amber, not verified, never green/connected', () => {
+    // describeRufloRuntime() returns CONNECTING for a success older than the
+    // 10-minute window; the mapping must therefore never render it as connected.
+    const view = describeRufloDashboardStatus('CONNECTING');
+    assert.equal(view.tone, 'warn');
+    assert.equal(view.healthVerified, false);
+    assert.match(view.note, /stale|within the last 10 minutes/);
+  });
+
   it('keeps the existing default wording when nothing is configured', () => {
     const view = describeRufloDashboardStatus('NOT_CONFIGURED');
     assert.equal(view.label, 'RUFLO READY · NOT CONNECTED');
     assert.equal(view.tone, 'muted');
   });
 
-  it('distinguishes configured-but-not-enabled and failed verification', () => {
-    assert.equal(describeRufloDashboardStatus('AUTH_REQUIRED').label, 'CONFIGURED · NOT ENABLED');
+  it('distinguishes a missing handle (not a claim about the cause) and failed verification', () => {
+    const auth = describeRufloDashboardStatus('AUTH_REQUIRED');
+    assert.equal(auth.label, 'TOKEN SET · NO HANDLE REGISTERED');
+    assert.doesNotMatch(auth.label, /ENABLED|DISABLED/);
     assert.equal(describeRufloDashboardStatus('ERROR').label, 'RUFLO HEALTH CHECK FAILED');
     assert.equal(describeRufloDashboardStatus('ERROR').healthVerified, false);
   });

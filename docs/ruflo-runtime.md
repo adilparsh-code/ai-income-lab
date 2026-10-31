@@ -12,7 +12,7 @@ Ruflo runtime (external orchestrator)
    │  HTTP, bearer RUFLO_RUNTIME_TOKEN (server-side secret)
    ▼
 /api/ruflo/runtime/*            ← authenticated runtime API (this repo)
-   │  auth (constant-time) → per-IP throttle → strict body guard
+   │  per-IP throttle → auth (per-credential throttle → constant-time compare) → strict body guard
    ▼
 dispatchForRufloRuntime()       ← workflow-level idempotency by executionId
    │
@@ -52,9 +52,9 @@ logs, API responses, or client bundles (enforced by regression tests).
 | State | Meaning |
 |---|---|
 | `NOT_CONFIGURED` | No token, no handle. Integration dormant. |
-| `AUTH_REQUIRED` | Token configured but handle not registered (`RUFLO_RUNTIME_ENABLED` not true). Dispatch refused. |
-| `CONNECTING` | Token + handle registered but no successful health verification recorded yet. |
-| `CONNECTED` | Real verification (boundary contracts + DB) succeeded; freshness window applies. |
+| `AUTH_REQUIRED` | Token configured but no handle registered in this process (`RUFLO_RUNTIME_ENABLED` not true, or registration failed). Dispatch refused. |
+| `CONNECTING` | Token + handle registered but no successful health verification recorded yet, or the last success is older than the 10-minute freshness window (stale). Re-run `POST /api/ruflo/runtime`. |
+| `CONNECTED` | Real verification (boundary contracts + DB) succeeded within the last 10 minutes. Nothing refreshes it automatically; without a new health check it returns to `CONNECTING`. |
 | `ERROR` | Last verification failed (boundary or DB). |
 
 The status is computed from real facts (config + registered handle + durable

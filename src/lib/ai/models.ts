@@ -121,7 +121,13 @@ export function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
-/** Daily spend cap in USD. Defaults to $2.00; invalid values fall back safely. */
+/**
+ * Per-request estimated-cost ceiling in USD (env AI_DAILY_BUDGET_USD).
+ * Despite the variable name this is NOT an aggregate daily spend cap: the
+ * generation gate (generate.ts) compares ONE request's estimated cost against
+ * it and does not add prior usage, so many requests that each fit under it all
+ * pass. Defaults to $2.00; invalid values fall back safely.
+ */
 export function getDailyBudgetUsd(): number {
   const raw = process.env.AI_DAILY_BUDGET_USD;
   const parsed = raw ? Number(raw) : 2.0;

@@ -71,7 +71,7 @@ describe('generateValidated (mock provider)', () => {
       );
       assert.equal(outcome.ok, false);
       if (!outcome.ok) {
-        assert.ok(outcome.errors[0].includes('exceeds daily budget'));
+        assert.ok(outcome.errors[0].includes('per-request estimated-cost ceiling'));
         assert.equal(outcome.attempts, 0);
       }
     } finally {

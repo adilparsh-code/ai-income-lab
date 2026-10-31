@@ -165,7 +165,7 @@ export function AiUsagePanel({
         <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
           <div className="flex items-center gap-2">
             <Coins className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Daily AI Budget</h3>
+            <h3 className="text-sm font-semibold">AI Spend vs Per-Request Ceiling</h3>
           </div>
           <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">ESTIMATED</span>
         </div>
@@ -177,11 +177,11 @@ export function AiUsagePanel({
                 <div className="font-semibold">{formatUsd(budget.todaySpendUsd)}</div>
               </div>
               <div>
-                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Daily budget</div>
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Per-request ceiling</div>
                 <div className="font-semibold">{formatUsd(budget.dailyBudgetUsd)}</div>
               </div>
               <div>
-                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Remaining</div>
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Ceiling − spend</div>
                 <div className="font-semibold">{formatUsd(budget.remainingUsd ?? 0)}</div>
               </div>
             </div>
@@ -195,12 +195,12 @@ export function AiUsagePanel({
               />
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
-              {formatPercent(budget.percentUsed)} of daily budget used · estimates from the isolated price table
+              {formatPercent(budget.percentUsed)} of the per-request ceiling (AI_DAILY_BUDGET_USD) · informational: that variable limits the estimated cost of a single request and is not enforced as an aggregate daily cap · estimates from the isolated price table
             </div>
           </>
         ) : (
           <p className="text-sm text-muted-foreground">
-            No daily budget configured. Today&apos;s estimated spend: <span className="font-medium tabular-nums">{formatUsd(budget.todaySpendUsd)}</span> (estimates, not billing data).
+            AI_DAILY_BUDGET_USD is not set (the generation gate still applies a $2.00 per-request ceiling). Today&apos;s estimated spend: <span className="font-medium tabular-nums">{formatUsd(budget.todaySpendUsd)}</span> (estimates, not billing data).
           </p>
         )}
       </div>
