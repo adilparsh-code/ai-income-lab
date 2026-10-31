@@ -62,7 +62,7 @@ export function AiUsageCard({ usage }: { usage: AiUsageSummary }) {
             </div>
             <div className="font-semibold">{formatUsd(summary.estimatedTotalCostUsd)}</div>
             <div className="text-[10px] text-muted-foreground">
-              {budget.dailyBudgetUsd > 0 ? `${formatUsd(budget.remainingUsd ?? 0)} budget left today` : 'no budget cap set'}
+              {budget.dailyBudgetUsd > 0 ? `${formatUsd(budget.dailyBudgetUsd)} per-request ceiling` : '$2.00 default per-request ceiling'}
             </div>
           </div>
         </div>

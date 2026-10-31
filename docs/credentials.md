@@ -60,14 +60,20 @@ bundle. Server-side data access stays on `DATABASE_URL` above.
 
 ## AI provider (optional — mock mode when unset)
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:4989d336d24878ca3cb089978581bdd5db27074283c388ef95e57ac3aa3e0f8a -->
+
 | Variable | Purpose | Behavior when missing |
 | --- | --- | --- |
 | `AI_PROVIDER` | `gemini` enables live AI; `mock` (default) uses the deterministic provider. | Mock provider; every AI output labelled MOCKED. |
 | `AI_PROVIDER_API_KEY` | Gemini credential (server-only; read in `src/lib/ai/generate.ts`). | AI stays in mock mode; nothing fabricated. |
 | `AI_MODEL_*` | Optional per-purpose model overrides: `AI_MODEL_RESEARCH`, `AI_MODEL_VALIDATION`, `AI_MODEL_PRODUCT`, `AI_MODEL_ANALYTICS_NARRATIVE`, `AI_MODEL_BM_NARRATIVE` (model names only, no secrets). | Default Gemini model. |
-| `AI_DAILY_BUDGET_USD` | **Per-request estimated-cost ceiling** in USD (positive number), despite the name. The generation gate (`getDailyBudgetUsd` in `src/lib/ai/models.ts`, checked in `src/lib/ai/generate.ts`) blocks a single request whose estimated cost exceeds it. It does **not** add up earlier usage, so it is **not** an aggregate daily spend cap; many requests that each fit under it all pass. The AI Usage page separately displays today's estimated spend against the same number. | Unset or invalid: the generation gate uses **$2.00**, while the AI Usage page shows no budget ("unlimited"). These two code paths currently disagree; set the variable explicitly to remove the ambiguity. |
+| `AI_DAILY_BUDGET_USD` | **Per-request estimated-cost ceiling** in USD (positive number), despite the name. The generation gate (`getDailyBudgetUsd` in `src/lib/ai/models.ts`, checked in `src/lib/ai/generate.ts`) blocks a single request whose estimated cost exceeds it. It does **not** add up earlier usage, so it is **not** an aggregate daily spend cap; many requests that each fit under it all pass. The AI Usage page displays today's estimated spend separately from the ceiling. | Unset or invalid: the generation gate uses **$2.00**, and the AI Usage page identifies the default per-request ceiling. |
 | `AI_TIMEOUT_MS` | Per-request generation timeout in ms (positive integer). | 25000. |
 | `AI_MAX_RETRIES` | Generation retries (positive integer, capped at 5). | 2. |
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Research providers (optional — RESEARCH_UNAVAILABLE when unset)
 

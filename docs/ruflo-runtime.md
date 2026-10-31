@@ -82,17 +82,25 @@ SecurityEvent verification records). It cannot be flipped manually.
    > in this repository).
 
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:e1711bc6c65522de3c02ab4899036a7fc6071578a157bf6879d876f6546dc554 -->
+
 ```bash
 curl -s -X POST "$BASE_URL/api/ruflo/runtime" \
   -H "Authorization: Bearer $RUFLO_RUNTIME_TOKEN" \
   -H "User-Agent: ruflo-runtime-operator/1.0"
-# → 200 {"ok":true,"health":{"status":"CONNECTED",...}}  (503 AUTH_REQUIRED · 500 ERROR)
+# → 200 {"ok":true,"health":{"status":"CONNECTED",...}}
+# → 503 {"ok":false,"error":"Ruflo runtime API is NOT_CONFIGURED: set RUFLO_RUNTIME_TOKEN server-side to enable it."} (server token absent)
+# → 503 {"ok":false,"health":{"status":"AUTH_REQUIRED",...}} (valid bearer token, no handle) · 500 ERROR
 
 curl -s "$BASE_URL/api/ruflo/runtime" \
   -H "Authorization: Bearer $RUFLO_RUNTIME_TOKEN" \
   -H "User-Agent: ruflo-runtime-operator/1.0"
 # → {"ok":true,"ruflo":{"status":"<NOT_CONFIGURED|AUTH_REQUIRED|CONNECTING|CONNECTED|ERROR>",...}}
 ```
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 5. Dispatch a workflow (idempotent by `executionId`):
 
@@ -135,13 +143,17 @@ endpoints without further changes to this codebase.
 
 All four endpoints apply a per-IP throttle first, then bearer authentication.
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:ee071e15c48a86fa95c2b2bc725029c0b5baa56d0ede491e987e4fdd62012ba4 -->
+
 | Endpoint | Status | Meaning |
 | --- | --- | --- |
 | all | 429 | Per-IP throttle, or too many attempts for the presented credential (`retry-after` set on the IP throttle). |
 | all | 401 | Missing or wrong bearer token (audited). |
-| all | 503 | `RUFLO_RUNTIME_TOKEN` is not configured (fail-closed). |
+| all | 503 | Server token absent: `{ "ok": false, "error": "Ruflo runtime API is NOT_CONFIGURED: set RUFLO_RUNTIME_TOKEN server-side to enable it." }` (fail-closed). |
 | `GET /api/ruflo/runtime` | 200 | Capability status; `ruflo.status` is one of the five states above. |
-| `POST /api/ruflo/runtime` | 200 / 503 / 500 | Health verdict `CONNECTED` / `AUTH_REQUIRED` (no token or no handle) / `ERROR` (boundary or database check failed, or the check threw). |
+| `POST /api/ruflo/runtime` | 200 / 503 / 500 | After successful authentication: health verdict `CONNECTED` / `AUTH_REQUIRED` (no handle registered) / `ERROR` (boundary or database check failed, or the check threw). A missing server token instead returns the authentication error above. |
 | `POST /api/ruflo/runtime/dispatch` | 202 | Fresh dispatch accepted. |
 | | 200 | Duplicate `executionId`: the recorded execution is returned, nothing re-runs. |
 | | 400 / 413 | Body is not a JSON object or fails field validation (unknown `workflowType`, missing `objective`, bad `opportunityId`) / body over 32 KiB or 12,000 characters. |
@@ -149,6 +161,8 @@ All four endpoints apply a per-IP throttle first, then bearer authentication.
 | | 504 | Dispatch exceeded `RUFLO_DISPATCH_TIMEOUT_MS`; durable partial state stays queryable. |
 | `GET /api/ruflo/runtime/executions/:executionId` | 200 | Trace returned; an unknown id is `found:false`, not an error. |
 | | 400 / 500 | `executionId` empty or over 128 characters / lookup failed. |
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Failure modes handled
 

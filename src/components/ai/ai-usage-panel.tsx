@@ -23,10 +23,6 @@ function formatUsd(value: number): string {
   return `$${value.toFixed(4)}`;
 }
 
-function formatPercent(value: number | null): string {
-  return value === null ? '—' : `${value.toFixed(1)}%`;
-}
-
 function formatNumber(value: number): string {
   return new Intl.NumberFormat('en-US').format(value);
 }
@@ -166,13 +162,13 @@ export function AiUsagePanel({
         <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
           <div className="flex items-center gap-2">
             <Coins className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">AI Spend vs Per-Request Ceiling</h3>
+            <h3 className="text-sm font-semibold">AI Spend and Per-Request Ceiling</h3>
           </div>
           <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">ESTIMATED</span>
         </div>
         {budget.dailyBudgetUsd > 0 ? (
           <>
-            <div className="grid grid-cols-3 gap-3 text-sm tabular-nums">
+            <div className="grid grid-cols-2 gap-3 text-sm tabular-nums">
               <div>
                 <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Current spend (today)</div>
                 <div className="font-semibold">{formatUsd(budget.todaySpendUsd)}</div>
@@ -181,27 +177,14 @@ export function AiUsagePanel({
                 <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Per-request ceiling</div>
                 <div className="font-semibold">{formatUsd(budget.dailyBudgetUsd)}</div>
               </div>
-              <div>
-                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Ceiling − spend</div>
-                <div className="font-semibold">{formatUsd(budget.remainingUsd ?? 0)}</div>
-              </div>
-            </div>
-            <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className={cn(
-                  'h-full rounded-full transition-all',
-                  (budget.percentUsed ?? 0) >= 100 ? 'bg-red-500' : (budget.percentUsed ?? 0) >= 75 ? 'bg-amber-500' : 'bg-emerald-500'
-                )}
-                style={{ width: `${Math.min(100, budget.percentUsed ?? 0)}%` }}
-              />
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
-              {formatPercent(budget.percentUsed)} of the per-request ceiling (AI_DAILY_BUDGET_USD) · informational: that variable limits the estimated cost of a single request and is not enforced as an aggregate daily cap · estimates from the isolated price table
+              AI_DAILY_BUDGET_USD limits the estimated cost of a single request; it is not an aggregate daily cap. Estimates come from the isolated price table.
             </div>
           </>
         ) : (
           <p className="text-sm text-muted-foreground">
-            AI_DAILY_BUDGET_USD is not set (the generation gate still applies a $2.00 per-request ceiling). Today&apos;s estimated spend: <span className="font-medium tabular-nums">{formatUsd(budget.todaySpendUsd)}</span> (estimates, not billing data).
+            AI_DAILY_BUDGET_USD is unset or invalid (the generation gate still applies a $2.00 per-request ceiling). Today&apos;s estimated spend: <span className="font-medium tabular-nums">{formatUsd(budget.todaySpendUsd)}</span> (estimates, not billing data).
           </p>
         )}
       </div>
