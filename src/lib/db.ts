@@ -12,7 +12,8 @@ import { resolveDatabaseUrl } from './config';
 //
 // Dialect selection: the SQL dialect is baked into the generated client by the
 // schema provider, so ONE client class cannot serve both databases.
-// - `postgres…` URL (Supabase transaction pooler in production) → the main
+// - `postgres…` URL (any PostgreSQL provider; the production provider is not
+//   recorded in this repository) → the main
 //   PostgreSQL client via the official `@prisma/adapter-pg` driver adapter.
 // - `file:` URL → the SQLite test client (generated from
 //   prisma/schema.test.prisma by scripts/generate-test-schema.mjs, run by the

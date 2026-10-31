@@ -1,7 +1,7 @@
 // Ruflo runtime API — status + health (authenticated, server-to-server).
 //
 // GET  /api/ruflo/runtime         → capability status (5-state machine).
-// POST /api/ruflo/runtime/health  → REAL verification: boundary contracts +
+// POST /api/ruflo/runtime         → REAL verification: boundary contracts +
 //                                   database reachability; recorded durably in
 //                                   the SecurityEvent audit trail. This is the
 //                                   only thing that can move the capability to

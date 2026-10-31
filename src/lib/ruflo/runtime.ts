@@ -174,7 +174,7 @@ export async function describeRufloRuntime(): Promise<RufloRuntimeCapability> {
     handleRegistered: true,
     runtimeTokenConfigured: true,
     executionTrace: 'executionId = correlationId: RufloRuntime(execution) → WorkflowRun.correlationId → JobRun.correlationId → AgentLog',
-    unmetRequirements: ['Run the authenticated health check (GET /api/ruflo/runtime/health) to verify and reach CONNECTED.'],
+    unmetRequirements: ['Run the authenticated health check (POST /api/ruflo/runtime) to verify and reach CONNECTED.'],
   };
 }
 

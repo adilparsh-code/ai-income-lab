@@ -30,7 +30,7 @@ placeholders only.
 
 | Variable | Used by | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | App runtime (`src/lib/db.ts`, `@prisma/adapter-pg`) | Application connection. In production: Supabase **transaction** pooler, port `6543` (`?pgbouncer=true`). |
+| `DATABASE_URL` | App runtime (`src/lib/db.ts`, `@prisma/adapter-pg`) | Application connection. With a Supabase-style **transaction** pooler: port `6543` (`?pgbouncer=true`). The production provider is not recorded in this repository (operator to confirm). |
 | `DIRECT_URL` | `prisma7` CLI (`migrate status`, `migrate deploy`) | Direct/session connection, port `5432`. PgBouncer on `6543` rejects the CLI engine's prepared statements. Falls back to `DATABASE_URL`. |
 
 Host shapes (both are in `.env.example`):

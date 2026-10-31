@@ -21,7 +21,10 @@ export interface SystemStatusData {
     note: string;
   };
   ruflo: {
-    status: 'RUFLO_READY' | 'NOT_CONNECTED';
+    /** Badge text from describeRufloDashboardStatus (runtime status, not handle registration). */
+    label: string;
+    tone: 'good' | 'warn' | 'muted';
+    note: string;
     workflowCount: number;
     lastWorkflowStatus: string | null;
   };
@@ -71,7 +74,6 @@ function Tile({
 
 export function SystemStatusCard({ data }: { data: SystemStatusData }) {
   const researchTone = data.research.status === 'AVAILABLE' ? 'good' : 'warn';
-  const rufloTone = data.ruflo.status === 'RUFLO_READY' ? 'muted' : 'muted';
   return (
     <div className="grid gap-4 md:grid-cols-3">
       <Tile
@@ -98,11 +100,12 @@ export function SystemStatusCard({ data }: { data: SystemStatusData }) {
       <Tile
         icon={<Workflow className="h-4 w-4" />}
         title="Ruflo Orchestration"
-        badges={[{ label: data.ruflo.status === 'RUFLO_READY' ? 'RUFLO READY · NOT CONNECTED' : 'NOT CONNECTED', tone: rufloTone }]}
+        badges={[{ label: data.ruflo.label, tone: data.ruflo.tone }]}
         lines={[
+          data.ruflo.note,
           `Workflow runs recorded: ${data.ruflo.workflowCount}.`,
           data.ruflo.lastWorkflowStatus ? `Last workflow: ${data.ruflo.lastWorkflowStatus}.` : 'No workflow executed yet.',
-          'The contract (workflows + job runner + agents) is ready for an external orchestrator; nothing runs autonomously.',
+          'Nothing runs autonomously; publishing, spending and other irreversible actions stay human-gated.',
         ]}
       />
       <Tile

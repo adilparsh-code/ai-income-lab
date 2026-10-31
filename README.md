@@ -2,9 +2,10 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Database
 
-The data layer is PostgreSQL (Supabase in production) via Prisma 7
-(`npx prisma7`), with the schema in `prisma/schema.prisma` and the applied
-migration history in `prisma/migrations/`.
+The data layer is PostgreSQL via Prisma 7 (`npx prisma7`), with the schema in
+`prisma/schema.prisma` and the applied migration history in `prisma/migrations/`.
+The production database provider is not recorded in this repository; confirm it
+in the deployment environment.
 
 - `DATABASE_URL` (app runtime) and `DIRECT_URL` (Prisma CLI migrations) are
   required for any live database work. Copy `.env.example` to `.env.local` and
