@@ -83,6 +83,7 @@ function GroupTable({ title, groups, unit }: { title: string; groups: UsageGroup
   );
 }
 
+/** Render aggregated AI usage and estimated costs for the selected range, or its loading/error state. */
 export function AiUsagePanel({
   data,
   error,

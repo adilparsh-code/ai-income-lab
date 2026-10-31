@@ -36,6 +36,7 @@ const KNOWN_STATES: readonly RufloRuntimeStatus[] = [
   'ERROR',
 ];
 
+/** Check whether a value is one of the recognized Ruflo runtime states. */
 function isRuntimeStatus(value: unknown): value is RufloRuntimeStatus {
   return typeof value === 'string' && (KNOWN_STATES as readonly string[]).includes(value);
 }

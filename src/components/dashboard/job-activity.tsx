@@ -40,6 +40,7 @@ function formatTime(iso: string): string {
   });
 }
 
+/** Display recorded job activity alongside the supplied Ruflo status label. */
 export function JobActivity({ jobs, rufloLabel }: { jobs: JobActivityItem[]; rufloLabel: string }) {
   return (
     <div className="rounded-xl border bg-card p-5 shadow-sm">

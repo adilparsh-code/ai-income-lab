@@ -72,6 +72,7 @@ function Tile({
   );
 }
 
+/** Render the supplied research, publishing, Ruflo, and growth status summaries. */
 export function SystemStatusCard({ data }: { data: SystemStatusData }) {
   const researchTone = data.research.status === 'AVAILABLE' ? 'good' : 'warn';
   return (

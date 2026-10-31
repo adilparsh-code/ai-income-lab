@@ -41,6 +41,7 @@ import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
+/** Load the admin dashboard at request time, including the Ruflo runtime status. */
 export default async function DashboardPage() {
   await requireAdminPageAccess('/');
   const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary, operationsSummary, controlCenter, incomeEngineSummary] =

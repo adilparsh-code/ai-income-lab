@@ -237,6 +237,11 @@ export interface FailedGeneration {
 
 export type GenerationOutcome<T> = ValidatedGeneration<T> | FailedGeneration;
 
+/**
+ * Generate and validate AI output under the configured budget, cache, deduplication,
+ * and retry policies. Operational failures return a failed outcome for caller
+ * fallback; invalid provider configuration throws.
+ */
 export async function generateValidated<T extends Record<string, unknown>>(
   prompt: string,
   purpose: string,
