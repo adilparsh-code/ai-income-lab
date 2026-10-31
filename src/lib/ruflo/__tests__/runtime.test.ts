@@ -160,6 +160,50 @@ describe('ruflo runtime capability: honest 5-state machine', () => {
     connector.clearRufloOrchestrator();
   });
 
+  it('a STALE successful health record (older than the 10-minute window) is CONNECTING, not CONNECTED', async () => {
+    const runtime = await importRuntime();
+    const { db } = await import('@/lib/db');
+    const connector = await importConnector();
+    connector.clearRufloOrchestrator();
+    connector.registerRufloOrchestrator({ id: 'ruflo-test-runtime' });
+    // Isolate: the capability reads only the NEWEST health event, so clear the
+    // events earlier tests recorded and seed exactly one old success.
+    await db.securityEvent.deleteMany({ where: { kind: 'RUFLO_HEALTH' } });
+    try {
+      await db.securityEvent.create({
+        data: {
+          kind: 'RUFLO_HEALTH',
+          surface: 'ruflo:runtime',
+          outcome: 'ok',
+          detail: 'old success for staleness test',
+          createdAt: new Date(Date.now() - 11 * 60_000),
+        },
+      });
+      const stale = await runtime.describeRufloRuntime();
+      assert.equal(stale.status, 'CONNECTING');
+      assert.equal(stale.handleRegistered, true);
+      assert.ok(/within the last 10 minutes/i.test(stale.detail), stale.detail);
+      assert.ok(stale.unmetRequirements.length >= 1);
+
+      // Boundary: a success just inside the window is still CONNECTED.
+      await db.securityEvent.deleteMany({ where: { kind: 'RUFLO_HEALTH' } });
+      await db.securityEvent.create({
+        data: {
+          kind: 'RUFLO_HEALTH',
+          surface: 'ruflo:runtime',
+          outcome: 'ok',
+          detail: 'recent success for freshness test',
+          createdAt: new Date(Date.now() - 9 * 60_000),
+        },
+      });
+      const fresh = await runtime.describeRufloRuntime();
+      assert.equal(fresh.status, 'CONNECTED');
+    } finally {
+      await db.securityEvent.deleteMany({ where: { kind: 'RUFLO_HEALTH' } });
+      connector.clearRufloOrchestrator();
+    }
+  });
+
   it('AUTH_REQUIRED from verifyRufloRuntime when the token config is missing', async () => {
     const runtime = await importRuntime();
     const saved = process.env.RUFLO_RUNTIME_TOKEN;

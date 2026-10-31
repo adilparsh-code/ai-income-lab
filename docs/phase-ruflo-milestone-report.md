@@ -10,7 +10,7 @@ Completes the **Ruflo Live Integration Phase**: the RUFLO_READY / NOT_CONNECTED 
 - **Real health verification**: workflow boundary contracts + database reachability, recorded durably in the audit trail.
 - **Authenticated runtime API** (the only inbound execution path for an external orchestrator):
   - `GET /api/ruflo/runtime` — capability status
-  - `POST /api/ruflo/runtime/health` — real verification (fail-closed)
+  - `POST /api/ruflo/runtime` — real verification (fail-closed; this report originally listed a non-existent `/health` sub-path)
   - `POST /api/ruflo/runtime/dispatch` — workflow dispatch (202 fresh / 200 duplicate / 401 / 429 / 504)
   - `GET /api/ruflo/runtime/executions/:executionId` — end-to-end trace
 - **Execution chain preserved**: Ruflo → `dispatchWorkflowViaRuflo` (existing connector seam) → `executeWorkflow` (planner + halal/human-review gates) → `runJob` (Job Runner: idempotency, bounded retries) → Agents → durable `WorkflowRun`/`JobRun`/`AgentLog` → `SecurityEvent` audit → completion callback.

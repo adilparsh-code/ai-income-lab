@@ -193,43 +193,30 @@ describe('date ranges (Phase 4.5.1)', () => {
   });
 });
 
-describe('daily budget calculation (Phase 4.5.1)', () => {
+describe('per-request ceiling reporting', () => {
   it('returns null when no budget is configured', () => {
     const prev = process.env.AI_DAILY_BUDGET_USD;
     delete process.env.AI_DAILY_BUDGET_USD;
     try {
       assert.equal(getDailyBudgetUsdSafe(), null);
       const summary = aggregateUsage([row()], NOW);
-      assert.equal(summary.budget.remainingUsd, null, 'unlimited budget reports null remaining, not 0');
-      assert.equal(summary.budget.percentUsed, null);
+      assert.equal(summary.budget.dailyBudgetUsd, 0);
     } finally {
       if (prev === undefined) delete process.env.AI_DAILY_BUDGET_USD;
       else process.env.AI_DAILY_BUDGET_USD = prev;
     }
   });
 
-  it('computes remaining budget and percent used with a configured budget', () => {
+  it('reports today spend independently of the configured per-request ceiling', () => {
     const prev = process.env.AI_DAILY_BUDGET_USD;
     process.env.AI_DAILY_BUDGET_USD = '1.00';
     try {
-      const summary = aggregateUsage([row({ estimatedCostUsd: 0.25 })], NOW);
+      const summary = aggregateUsage([row({ estimatedCostUsd: 1.25 })], NOW);
       assert.equal(summary.budget.dailyBudgetUsd, 1.0);
-      assert.equal(summary.budget.remainingUsd, 0.75);
-      assert.equal(summary.budget.percentUsed, 25);
+      assert.equal(summary.budget.todaySpendUsd, 1.25);
+      assert.equal('remainingUsd' in summary.budget, false);
+      assert.equal('percentUsed' in summary.budget, false);
       assert.equal(summary.budget.costBasis, 'ESTIMATED');
-    } finally {
-      if (prev === undefined) delete process.env.AI_DAILY_BUDGET_USD;
-      else process.env.AI_DAILY_BUDGET_USD = prev;
-    }
-  });
-
-  it('clamps remaining at zero when spend exceeds budget', () => {
-    const prev = process.env.AI_DAILY_BUDGET_USD;
-    process.env.AI_DAILY_BUDGET_USD = '0.001';
-    try {
-      const summary = aggregateUsage([row({ estimatedCostUsd: 0.5 })], NOW);
-      assert.equal(summary.budget.remainingUsd, 0);
-      assert.ok((summary.budget.percentUsed ?? 0) > 100);
     } finally {
       if (prev === undefined) delete process.env.AI_DAILY_BUDGET_USD;
       else process.env.AI_DAILY_BUDGET_USD = prev;

@@ -21,15 +21,29 @@ endpoints refuse writes rather than pretending to work.
 
 | Variable | Purpose |
 | --- | --- |
-| `DATABASE_URL` | PostgreSQL connection string for Prisma (Supabase transaction pooler in production). See `.env.example`. |
+| `DATABASE_URL` | PostgreSQL connection string for Prisma, used through `@prisma/adapter-pg` (a standard PostgreSQL URL). The production provider is not recorded in this repository — operator to confirm. `.env.example` shows Supabase-shaped examples. |
 | `DIRECT_URL` | Direct/session PostgreSQL connection used by the Prisma 7 CLI for `prisma7 migrate status` and `prisma7 migrate deploy` (the transaction pooler rejects the CLI engine). Falls back to `DATABASE_URL`, but the CLI must not run through port 6543. |
 
 Database verification steps and the migration inventory live in
 [`docs/database-operations.md`](./database-operations.md). Both variables must
-be supplied from the project's authorized provider (Supabase/PostgreSQL) and are
+be supplied from the project's authorized PostgreSQL provider and are
 never committed; `.env.example` carries placeholders only. Percent-encode
 URL-special characters in the password (`@ : / ? # & %`…) or the connection
 string will not parse.
+
+## Admin authentication (single administrator — required for any login)
+
+| Variable | Purpose | Behavior when missing |
+| --- | --- | --- |
+| `ADMIN_EMAIL` | The single admin identity (not a secret). | Login refused (fail-closed). |
+| `ADMIN_PASSWORD_HASH` | scrypt hash `scrypt:<salt>:<hash>` from `node scripts/hash-admin-password.mjs`. Always wins over `ADMIN_PASSWORD`. | Falls back to `ADMIN_PASSWORD`, else login refused. |
+| `ADMIN_PASSWORD` | Bootstrap plaintext fallback. Do not use in production. | Ignored when a hash is set. |
+| `ADMIN_REQUIRE_PASSWORD_HASH` | Truthy → plaintext `ADMIN_PASSWORD` is ignored (migration switch; can only remove a credential path). | Plaintext fallback allowed. |
+| `ADMIN_DISABLED` | Truthy → kill switch, every admin login refused. | Admin enabled. |
+| `ADMIN_SESSION_TTL_MS` | Absolute session lifetime, bounded 30 min – 7 days. | 12 hours. |
+| `LOGIN_LOCKOUT_IP_MAX_FAILURES` | Per-IP failed-login ceiling (3–20). | 5. |
+| `LOGIN_LOCKOUT_ACCOUNT_MAX_FAILURES` | Account-wide failed-login ceiling (10–100). | 20. |
+| `LOGIN_LOCKOUT_WINDOW_SECONDS` | Lockout window (300–3600). | 900. |
 
 ## Supabase client (optional — currently unused by this codebase)
 
@@ -46,12 +60,20 @@ bundle. Server-side data access stays on `DATABASE_URL` above.
 
 ## AI provider (optional — mock mode when unset)
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:4989d336d24878ca3cb089978581bdd5db27074283c388ef95e57ac3aa3e0f8a -->
+
 | Variable | Purpose | Behavior when missing |
 | --- | --- | --- |
 | `AI_PROVIDER` | `gemini` enables live AI; `mock` (default) uses the deterministic provider. | Mock provider; every AI output labelled MOCKED. |
 | `AI_PROVIDER_API_KEY` | Gemini credential (server-only; read in `src/lib/ai/generate.ts`). | AI stays in mock mode; nothing fabricated. |
 | `AI_MODEL_*` | Optional per-purpose model overrides: `AI_MODEL_RESEARCH`, `AI_MODEL_VALIDATION`, `AI_MODEL_PRODUCT`, `AI_MODEL_ANALYTICS_NARRATIVE`, `AI_MODEL_BM_NARRATIVE` (model names only, no secrets). | Default Gemini model. |
-| `AI_DAILY_BUDGET_USD` | Daily spend guard for the AI Usage center. | Budget shows as unlimited. |
+| `AI_DAILY_BUDGET_USD` | **Per-request estimated-cost ceiling** in USD (positive number), despite the name. The generation gate (`getDailyBudgetUsd` in `src/lib/ai/models.ts`, checked in `src/lib/ai/generate.ts`) blocks a single request whose estimated cost exceeds it. It does **not** add up earlier usage, so it is **not** an aggregate daily spend cap; many requests that each fit under it all pass. The AI Usage page displays today's estimated spend separately from the ceiling. | Unset or invalid: the generation gate uses **$2.00**, and the AI Usage page identifies the default per-request ceiling. |
+| `AI_TIMEOUT_MS` | Per-request generation timeout in ms (positive integer). | 25000. |
+| `AI_MAX_RETRIES` | Generation retries (positive integer, capped at 5). | 2. |
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Research providers (optional — RESEARCH_UNAVAILABLE when unset)
 
@@ -90,9 +112,13 @@ Publication claims `PUBLISHED` only after a verified provider round-trip
 | `OPERATOR_CONTROL_TOKEN` | Bearer token for control endpoints (jobs, workflows, ruflo/pipeline, operations POST, ai/usage). **No fallback**: it is never derived from `OPERATOR_REVENUE_TOKEN`. Must be a different value from `OPERATOR_REVENUE_TOKEN` — if both are set to the same value, both endpoints refuse (503). Generate each with e.g. `openssl rand -base64 48`. | Control endpoints refuse (503). |
 | `SECURITY_FINGERPRINT_SALT` | Salt for keyed HMAC credential fingerprints (audit correlation only). | Stable default salt. |
 | `RUFLO_RUNTIME_TOKEN` | Bearer token for the Ruflo runtime API (`/api/ruflo/runtime/*`). See `docs/ruflo-runtime.md`. | Runtime API refuses (503); capability stays NOT_CONFIGURED. |
-| `RUFLO_RUNTIME_ENABLED` | Must be `true` to register the runtime handle at startup (kill switch). | Handle not registered; posture AUTH_REQUIRED. |
+| `RUFLO_RUNTIME_ENABLED` | Must be `true`, `1` or `yes` (case-insensitive) to register the runtime handle at startup (kill switch). | Handle not registered; posture AUTH_REQUIRED. |
 | `RUFLO_RUNTIME_ID` | Non-secret audit label of the Ruflo runtime. | Defaults to `ruflo-runtime`. |
 | `RUFLO_DISPATCH_TIMEOUT_MS` | Dispatch budget (1000–600000 ms). | Defaults to 120000. |
+| `RUFLO_MCP_URL` | **Outbound** base URL of a Ruflo V3 HTTP/MCP server that this app calls (distinct from the inbound runtime API above). | Outbound client not configured; no network calls. |
+| `RUFLO_MCP_TOKEN` | Bearer token for that outbound Ruflo server (optional). | Calls sent without a token. |
+| `RUFLO_MCP_TIMEOUT_MS` | Outbound call timeout in ms. | 10000. |
+| `RUFLO_RESEARCH_FRESHNESS_DAYS` | Window (days, positive number) in which existing research is reused. | 14 (also used for invalid or non-positive values). |
 
 ## External agent credentials (Agent Integration Contract v1, optional — API refuses when unset)
 
@@ -117,6 +143,24 @@ new token value (effective on the next request).
 | Variable | Purpose |
 | --- | --- |
 | `AI_INCOME_MARKET` | `GLOBAL` (default) or `IN`. Gates which provider adapters are configuration-available per market; never changes business logic or safety gates. |
+
+## Additional optional variables (reconciled in Phase 1)
+
+Values below are read in the cited source files. "Invalid" means non-numeric or out of range.
+
+| Variable | Purpose and allowed values | Default when unset or invalid |
+| --- | --- | --- |
+| `NEXT_PUBLIC_APP_NAME` | Client-safe display name (never a secret). `src/lib/config.ts`. | "AI Income Lab" |
+| `NEXT_PUBLIC_APP_URL` | Public base URL for event/revenue callbacks. Only the Vercel deployment adapter's readiness check reads it (`product-factory/deployment-vercel.ts`). | Readiness reports it as missing. |
+| `NEXT_PUBLIC_SITE_PROTOCOL` | Exactly `https:` or `http:`; decides whether HSTS is sent (`src/middleware.ts`). | HSTS is sent when `NODE_ENV=production`, otherwise not. |
+| `AI_DAILY_TOKEN_BUDGET`, `AI_MONTHLY_TOKEN_BUDGET` | Token budgets (positive number, floored), checked against a **process-local in-memory** ledger (`src/lib/ai/efficiency.ts`) that resets at 00:00 UTC and on restart and is not shared across server instances. Despite its name, `AI_MONTHLY_TOKEN_BUDGET` is therefore **not** a durable monthly budget: it behaves like a per-process, per-UTC-day guard. Usage is recorded after a call finishes, so concurrent requests can pass the pre-check together. | Not enforced when unset. |
+| `AI_MAX_REQUEST_INPUT_TOKENS` | Per-request input-token ceiling (positive number). | 24000. |
+| `AI_TOKEN_BUDGET_AGENT_<AGENT>`, `AI_TOKEN_BUDGET_PURPOSE_<PURPOSE>` | Per-agent / per-purpose daily token budgets (positive number). The suffix is the id upper-cased with non-alphanumerics as `_`, e.g. `AI_TOKEN_BUDGET_AGENT_BUSINESS_MANAGER`, `AI_TOKEN_BUDGET_PURPOSE_PRODUCT_CONCEPT`. | Not enforced. |
+| `GROWTH_PROVEN_REVENUE_MINOR`, `GROWTH_PROMISING_REVENUE_MINOR`, `GROWTH_MIN_VISITORS_MINOR` | Growth-classification thresholds (number ≥ 0; revenue in minor currency units). `product-factory/events.ts`. | 50000 / 5000 / 30 |
+| `BUILDER_MAX_ATTEMPTS` | Sandboxed product-builder attempts (integer 1–5). | 2 |
+| `AI_LIVE_TESTS`, `RUFLO_LIVE_TEST_URL`, `RUFLO_LIVE_TEST_TOKEN`, `AGENT_HEALTHTEST_*` | Test and CI only; only test files and CI read them. Never set in production. | Live tests are skipped. |
+
+Variables already documented in the sections above (`AI_PROVIDER*`, `AI_DAILY_BUDGET_USD`, `RESEARCH_*`, `TAVILY_API_KEY`, `POLAR_*`, `VERCEL_*`, `AI_INCOME_MARKET`) are intentionally not repeated here.
 
 ## Security checklist (audited in Phase 8)
 

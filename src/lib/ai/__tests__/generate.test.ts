@@ -12,6 +12,7 @@ import {
   getEfficiencySnapshot,
 } from '../generate';
 import { __resetDedupWindow, __resetResultCache, __resetTokenLedger } from '../efficiency';
+import { estimateCostUsd, estimateTokens } from '../models';
 import type { AiJsonSchema } from '../provider';
 
 const MOCK_SCHEMA: AiJsonSchema = {
@@ -71,12 +72,43 @@ describe('generateValidated (mock provider)', () => {
       );
       assert.equal(outcome.ok, false);
       if (!outcome.ok) {
-        assert.ok(outcome.errors[0].includes('exceeds daily budget'));
+        assert.ok(outcome.errors[0].includes('per-request estimated-cost ceiling'));
         assert.equal(outcome.attempts, 0);
       }
     } finally {
       if (previous === undefined) delete process.env.AI_DAILY_BUDGET_USD;
       else process.env.AI_DAILY_BUDGET_USD = previous;
+    }
+  });
+
+  it('allows distinct requests when their combined cost exceeds the per-request ceiling', async () => {
+    const previous = process.env.AI_DAILY_BUDGET_USD;
+    const ceiling = 0.004;
+    const model = 'gemini-2.5-flash';
+    const maxOutputTokens = 100;
+    const prompts = ['a'.repeat(40000) + ' first', 'a'.repeat(40000) + ' second'];
+    process.env.AI_DAILY_BUDGET_USD = String(ceiling);
+    __resetDedupWindow();
+    __resetTokenLedger();
+    try {
+      const estimates = prompts.map((prompt) => estimateCostUsd(model, estimateTokens(prompt), maxOutputTokens));
+      assert.ok(estimates.every((cost) => cost < ceiling));
+      assert.ok(estimates[0] + estimates[1] > ceiling);
+
+      const first = await generateValidated<{ mock: boolean }>(prompts[0], 'budget.sequence', MOCK_SCHEMA, { model, maxOutputTokens });
+      assert.equal(first.ok, true);
+      const second = await generateValidated<{ mock: boolean }>(prompts[1], 'budget.sequence', MOCK_SCHEMA, { model, maxOutputTokens });
+      assert.equal(second.ok, true);
+      if (first.ok && second.ok) {
+        assert.ok(first.usage.estimatedCostUsd + second.usage.estimatedCostUsd > ceiling);
+        assert.equal(second.attempts, 1);
+        assert.notEqual(second.servedFromCache, true);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.AI_DAILY_BUDGET_USD;
+      else process.env.AI_DAILY_BUDGET_USD = previous;
+      __resetDedupWindow();
+      __resetTokenLedger();
     }
   });
 });

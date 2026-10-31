@@ -9,7 +9,12 @@ import { getRecentPipelineRuns } from '@/actions/pipeline';
 import { getOpportunities } from '@/actions/opportunities';
 import { getBusinessIntelligenceSummary } from '@/actions/business-intelligence';
 import { getAiUsageForRange } from '@/lib/ai/usage-server';
-import { getRecentJobActivity, describeRufloIntegration, type JobActivityItem } from '@/lib/jobs/job-registry';
+import { getRecentJobActivity, type JobActivityItem } from '@/lib/jobs/job-registry';
+// Phase 1: the dashboard shows the RUNTIME status (registered handle AND a
+// successful health check), not merely handle registration. The job-registry
+// descriptor is a static "ready" value and never reflects a real runtime.
+import { describeRufloRuntime } from '@/lib/ruflo/runtime';
+import { describeRufloDashboardStatus } from '@/lib/ruflo/dashboard-status';
 import { describeResearchProviderHealth } from '@/lib/research/provider';
 import { describePublishingStatus } from '@/lib/publishing/contract';
 import { getRecentWorkflowRuns } from '@/lib/ruflo/workflow-runner';
@@ -36,6 +41,7 @@ import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 import { requireAdminPageAccess } from '@/lib/agency/page-guard';
 
+/** Load the admin dashboard at request time, including the Ruflo runtime status. */
 export default async function DashboardPage() {
   await requireAdminPageAccess('/');
   const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary, operationsSummary, controlCenter, incomeEngineSummary] =
@@ -72,6 +78,10 @@ export default async function DashboardPage() {
     db.evidenceItemModel.count({ where: { evidenceType: 'VERIFIED_DATA' } }).catch(() => 0),
     db.evidenceItemModel.count({ where: { evidenceType: 'SEARCH_DISCOVERY' } }).catch(() => 0),
   ]);
+  // Status query failure degrades to UNAVAILABLE — never to a connected label.
+  const rufloRuntime = await describeRufloRuntime().catch(() => null);
+  const rufloStatus = describeRufloDashboardStatus(rufloRuntime?.status);
+
   const systemStatus: SystemStatusData = {
     research: {
       providerId: researchHealth.providerId,
@@ -82,7 +92,9 @@ export default async function DashboardPage() {
     },
     publishing: describePublishingStatus(),
     ruflo: {
-      status: describeRufloIntegration().status,
+      label: rufloStatus.label,
+      tone: rufloStatus.tone,
+      note: rufloStatus.note,
       workflowCount: workflowRuns.length,
       lastWorkflowStatus: workflowRuns[0]?.status ?? null,
     },
@@ -216,7 +228,7 @@ export default async function DashboardPage() {
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Orchestration — job activity and Ruflo readiness
         </h2>
-        <JobActivity jobs={jobActivity} rufloStatus={describeRufloIntegration().status} />
+        <JobActivity jobs={jobActivity} rufloLabel={rufloStatus.label} />
       </section>
 
       {/* Opportunity → Product Pipeline */}

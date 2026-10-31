@@ -30,10 +30,14 @@ placeholders only.
 
 | Variable | Used by | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | App runtime (`src/lib/db.ts`, `@prisma/adapter-pg`) | Application connection. In production: Supabase **transaction** pooler, port `6543` (`?pgbouncer=true`). |
+| `DATABASE_URL` | App runtime (`src/lib/db.ts`, `@prisma/adapter-pg`) | Application connection. With a Supabase-style **transaction** pooler: port `6543` (`?pgbouncer=true`). The production provider is not recorded in this repository (operator to confirm). |
 | `DIRECT_URL` | `prisma7` CLI (`migrate status`, `migrate deploy`) | Direct/session connection, port `5432`. PgBouncer on `6543` rejects the CLI engine's prepared statements. Falls back to `DATABASE_URL`. |
 
-Host shapes (both are in `.env.example`):
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:55c9b9d7c0daf1d387d4dd7f1d546ae40bc5c0087f8030596e896ed8a941f735 -->
+
+Supabase example host shapes (also in `.env.example`); confirm the production provider before choosing production URLs:
 
 ```dotenv
 # Direct connection — IPv6 only: the host publishes an AAAA record and no A
@@ -42,11 +46,13 @@ Host shapes (both are in `.env.example`):
 DATABASE_URL="postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require"
 DIRECT_URL="postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require"
 
-# Shared pooler — IPv4. Required for the deployment platform and any IPv4-only
-# network; note the `postgres.<project-ref>` username on pooler connections.
+# Supabase shared pooler — IPv4. Use on IPv4-only networks when Supabase is
+# the confirmed provider; note the `postgres.<project-ref>` username.
 DATABASE_URL="postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require"
 DIRECT_URL="postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require"
 ```
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 Percent-encode URL-special characters in the password (`@ : / ? # & %`…): a raw
 `@` or `:` splits the userinfo field and the URL stops parsing. Append
@@ -103,30 +109,40 @@ fresh clone or CI. It never writes to a database.
 
 ## 5. Operator runbook — verify the migrations against the real database
 
-Everything repository-side is ready. `.env.local` already carries the wired
-connection strings for Supabase project `lzzvsprmczgdgirtpmca`. The steps below
-need the authorized database password — that single substitution is the **only**
-remaining work.
+<!-- coderabbit-ai-generated:v1 -->
 
-1. In `.env.local` (git-ignored), replace `[YOUR-PASSWORD]` in `DATABASE_URL` and
-   `DIRECT_URL` with the real database password, percent-encoding any URL-special
-   characters. The file carries two shapes: the active one is the direct
-   connection (IPv6-only), the shared pooler is below it, commented.
+<!-- coderabbit-ai-generated-section:v1:016834d0e803612803d089bc385921ca2fa5a84e45a03b13f712d44c89fad50a -->
+
+> The examples below and `scripts/db-connection-doctor.mjs` and
+> `scripts/apply-baseline.mjs` assume Supabase. The application needs PostgreSQL;
+> the production provider is not recorded in this repository. Confirm the provider
+> and target database with the operator before using production connection details.
+
+The following connection examples are for local work with Supabase. Check your
+own `.env.local` for the correct project and placeholders; its contents are not
+confirmed by this repository. For production, use the confirmed provider's
+connection details in the deployment platform's secret store.
+
+1. For a local Supabase target, set `DATABASE_URL` and `DIRECT_URL` in the
+   git-ignored `.env.local` using the project's connection details and authorized
+   password. Percent-encode URL-special characters in the password. Examples:
 
    ```dotenv
-   # Active for local dev on an IPv6-capable network (this host is IPv6-only).
-   DATABASE_URL="postgresql://postgres:<password>@db.lzzvsprmczgdgirtpmca.supabase.co:5432/postgres?sslmode=require"
-   DIRECT_URL="postgresql://postgres:<password>@db.lzzvsprmczgdgirtpmca.supabase.co:5432/postgres?sslmode=require"
+   # Direct connection for an IPv6-capable network.
+   DATABASE_URL="postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require"
+   DIRECT_URL="postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require"
 
-   # Production, the deployment platform and any IPv4-only network: transaction
-   # pooler for the app runtime, session pooler for the Prisma CLI.
+   # Supabase shared pooler for an IPv4-only network: transaction pooler for
+   # the app runtime, session pooler for the Prisma CLI.
    DATABASE_URL="postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require"
    DIRECT_URL="postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require"
    ```
 
-   Never commit the file. Until the password is filled in, `npm run db:health`
-   names the `[YOUR-PASSWORD]` placeholder and exits non-zero — an intentional
-   fail-closed stop, not a connection failure.
+   Never commit the file. An unfilled password placeholder causes
+   `npm run db:health` to exit non-zero before attempting a connection. After
+   confirming the target database and provider, use the steps below for it.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 2. Compare the recorded history with the migration folder — read-only:
 

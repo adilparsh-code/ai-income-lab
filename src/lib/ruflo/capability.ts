@@ -1,11 +1,12 @@
 // Phase 5.4 — Ruflo integration capability discovery (Part 8).
 //
-// Ruflo remains RUFLO_READY / NOT_CONNECTED: no Ruflo package, credential, or
-// runtime exists in this environment, and none was installed merely for
-// appearance. This module is the single honest capability surface a future
-// integration (or a human operator) can query to see exactly what exists,
-// what is missing, and what the existing job system still enforces even after
-// Ruflo connects.
+// Ruflo is RUFLO_READY / NOT_CONNECTED until a runtime handle is registered
+// server-side (see runtime-setup.ts: needs RUFLO_RUNTIME_TOKEN +
+// RUFLO_RUNTIME_ENABLED=true), then RUFLO_CONNECTED. Note this reports handle
+// REGISTRATION only; verified health (CONNECTING/CONNECTED/ERROR) is the
+// separate state machine in runtime.ts. This module is the single honest
+// capability surface an operator can query to see what exists, what is
+// missing, and what the job system still enforces once Ruflo connects.
 //
 // The AI Income Lab job system remains authoritative for idempotency,
 // correlation IDs, bounded retries, halal gates, lifecycle guards, and

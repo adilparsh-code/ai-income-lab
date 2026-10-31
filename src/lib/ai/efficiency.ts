@@ -19,7 +19,8 @@
 //
 // Everything here is process-local and in-memory by design: it optimizes AI
 // spend within a running server instance and is never presented as durable
-// business data. Nothing here knows about concrete providers, keys, or secrets.
+// business data. In particular the token ledger resets at every UTC day
+// boundary and on process restart, and is not shared between server instances. Nothing here knows about concrete providers, keys, or secrets.
 
 // ---------------------------------------------------------------------------
 // Types
@@ -110,7 +111,11 @@ export function getDailyTokenBudget(): number | null {
   return envTokenBudget('AI_DAILY_TOKEN_BUDGET');
 }
 
-/** Monthly token budget (input+output). Null when unset. */
+/**
+ * "Monthly" token budget (input+output). Null when unset. NOT a durable monthly
+ * budget: it is compared against the process-local ledger, which resets daily
+ * and on restart and is not shared across instances (see checkTokenBudgets).
+ */
 export function getMonthlyTokenBudget(): number | null {
   return envTokenBudget('AI_MONTHLY_TOKEN_BUDGET');
 }
@@ -126,7 +131,10 @@ export function getDedupWindowSeconds(): number {
 }
 
 // ---------------------------------------------------------------------------
-// Token usage ledger (process-local, rolls over at UTC day boundaries)
+// Token usage ledger (process-local, in-memory, rolls over at UTC day boundaries;
+// lost on restart; not shared across instances). Usage is recorded AFTER a call
+// completes while budgets are checked BEFORE it, so concurrent requests can all
+// pass the pre-check before any of them is recorded.
 // ---------------------------------------------------------------------------
 
 function utcDayKey(date: Date): string {
@@ -213,6 +221,8 @@ export interface TokenBudgetDecision {
  * Evaluate all token budgets for a prospective call of `estimatedTotalTokens`
  * (input + output). Order: request → daily → monthly → agent → purpose
  * (first blocker wins). Never throws; unset budgets are unlimited.
+ * All counters come from the process-local daily ledger, so the "monthly"
+ * check is effectively a per-process, per-UTC-day guard, not a monthly budget.
  */
 export function checkTokenBudgets(input: {
   estimatedTotalTokens: number;
@@ -249,7 +259,7 @@ export function checkTokenBudgets(input: {
   if (monthly !== null && ledger.totalTokens + tokens > monthly) {
     return {
       allowed: false,
-      reason: 'Monthly token budget reached; AI calls paused until the budget resets.',
+      reason: `Monthly token budget (AI_MONTHLY_TOKEN_BUDGET) reached (${ledger.totalTokens}/${monthly} tokens counted by this server process today). The counter is in-memory and resets at 00:00 UTC and on restart; it is not a durable monthly total.`,
       budgetKind: 'monthly',
     };
   }

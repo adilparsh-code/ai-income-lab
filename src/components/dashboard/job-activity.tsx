@@ -40,7 +40,8 @@ function formatTime(iso: string): string {
   });
 }
 
-export function JobActivity({ jobs, rufloStatus }: { jobs: JobActivityItem[]; rufloStatus: string }) {
+/** Display recorded job activity alongside the supplied Ruflo status label. */
+export function JobActivity({ jobs, rufloLabel }: { jobs: JobActivityItem[]; rufloLabel: string }) {
   return (
     <div className="rounded-xl border bg-card p-5 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
@@ -50,10 +51,7 @@ export function JobActivity({ jobs, rufloStatus }: { jobs: JobActivityItem[]; ru
         </div>
         <div className="flex items-center gap-1.5">
           <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">
-            {rufloStatus}
-          </span>
-          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
-            ORCHESTRATION READY — NOT CONNECTED
+            {rufloLabel}
           </span>
         </div>
       </div>

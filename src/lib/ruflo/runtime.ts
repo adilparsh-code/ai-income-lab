@@ -100,9 +100,12 @@ const LAST_HEALTH_OK_WINDOW_MS = 10 * 60_000;
 /**
  * The live capability of the Ruflo runtime integration. A CONNECTED verdict
  * requires BOTH a registered server-side handle (real wiring) AND a recorded
- * successful health verification within the freshness window (SecurityEvent
- * `RUFLO_HEALTH` / `ok`). Configured-but-unverified is honestly CONNECTING;
- * configured-but-failed-verification is honestly ERROR.
+ * successful health verification within the freshness window
+ * (LAST_HEALTH_OK_WINDOW_MS; SecurityEvent `RUFLO_HEALTH` / `ok`).
+ * Configured-but-unverified is honestly CONNECTING, and so is a last success
+ * that is older than the window (stale: re-verify to return to CONNECTED).
+ * Configured-but-failed-verification is honestly ERROR. Nothing refreshes the
+ * health record automatically; it is renewed only by POST /api/ruflo/runtime.
  */
 export async function describeRufloRuntime(): Promise<RufloRuntimeCapability> {
   const config = getRufloRuntimeConfig();
@@ -138,15 +141,12 @@ export async function describeRufloRuntime(): Promise<RufloRuntimeCapability> {
   }
 
   const lastHealth = await lastHealthVerification();
-  const freshness = config.dispatchTimeoutMs; // reuse bounded constant naming below
+  const windowMinutes = LAST_HEALTH_OK_WINDOW_MS / 60_000;
 
-  if (handle && config.token && lastHealth.state === 'ok') {
-    const fresh = Date.now() - lastHealth.at <= LAST_HEALTH_OK_WINDOW_MS + freshness * 0;
+  if (handle && config.token && lastHealth.state === 'ok' && Date.now() - lastHealth.at <= LAST_HEALTH_OK_WINDOW_MS) {
     return {
       status: 'CONNECTED',
-      detail: fresh
-        ? `Ruflo runtime '${config.runtimeId}' is connected: a real health verification (workflow boundary contracts + database) succeeded at ${new Date(lastHealth.at).toISOString()}. All Job Runner gates remain authoritative.`
-        : `Ruflo runtime '${config.runtimeId}' has a registered handle and a past successful verification (${new Date(lastHealth.at).toISOString()}); re-verify with a health check to refresh the CONNECTED freshness window.`,
+      detail: `Ruflo runtime '${config.runtimeId}' is connected: a real health verification (workflow boundary contracts + database) succeeded at ${new Date(lastHealth.at).toISOString()}. All Job Runner gates remain authoritative.`,
       runtimeId: config.runtimeId,
       handleRegistered: true,
       runtimeTokenConfigured: true,
@@ -167,14 +167,19 @@ export async function describeRufloRuntime(): Promise<RufloRuntimeCapability> {
     };
   }
 
+  // Reached with a handle + token and either no record, or an `ok` record that
+  // is older than the freshness window (stale success is NOT connected).
+  const staleSuccessAt = lastHealth.state === 'ok' ? new Date(lastHealth.at).toISOString() : null;
   return {
     status: 'CONNECTING',
-    detail: `Ruflo runtime '${config.runtimeId}' is configured (token present, handle registered) but no successful health verification has been recorded yet. Run the runtime health check to complete connection.`,
+    detail: staleSuccessAt
+      ? `Ruflo runtime '${config.runtimeId}' is configured (token present, handle registered) but no successful health verification within the last ${windowMinutes} minutes (most recent success: ${staleSuccessAt}). Re-run the runtime health check to return to CONNECTED.`
+      : `Ruflo runtime '${config.runtimeId}' is configured (token present, handle registered) but no successful health verification has been recorded yet. Run the runtime health check to complete connection.`,
     runtimeId: config.runtimeId,
     handleRegistered: true,
     runtimeTokenConfigured: true,
     executionTrace: 'executionId = correlationId: RufloRuntime(execution) → WorkflowRun.correlationId → JobRun.correlationId → AgentLog',
-    unmetRequirements: ['Run the authenticated health check (GET /api/ruflo/runtime/health) to verify and reach CONNECTED.'],
+    unmetRequirements: ['Run the authenticated health check (POST /api/ruflo/runtime) to verify and reach CONNECTED.'],
   };
 }
 

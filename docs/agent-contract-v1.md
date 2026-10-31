@@ -280,12 +280,20 @@ npm test                  # includes the agent-contract suites
 
 Manual smoke test with curl (after configuring one binding in `.env.local`):
 
+> **Client identification:** the edge middleware (`src/middleware.ts`) rejects API requests whose
+> `User-Agent` matches generic scripting clients (`curl/`, `python-requests/`, `Go-http-client/` …) with
+> **403** before the route runs, so a bare `curl` fails. The examples below send an identifying
+> `User-Agent`. This filter is **not authentication** — the Bearer token is. Do not weaken the filter to
+> make `curl` work.
+
 ```bash
 curl -s http://localhost:3000/api/agent/v1/health \
-  -H "Authorization: Bearer $AGENT_MOCK_AGENT_TOKEN"
+  -H "Authorization: Bearer $AGENT_MOCK_AGENT_TOKEN" \
+  -H "User-Agent: agent-contract-smoke-test/1.0"
 
 curl -s -X POST http://localhost:3000/api/agent/v1/actions \
   -H "Authorization: Bearer $AGENT_MOCK_AGENT_TOKEN" \
+  -H "User-Agent: agent-contract-smoke-test/1.0" \
   -H 'content-type: application/json' \
   -d '{"contractVersion":"v1","agentId":"mock-agent-runtime","agentVersion":"1.0.0","requestId":"req-1","correlationId":"corr-1","timestamp":"2026-09-30T12:00:00.000Z","action":"WRITE_RESEARCH_EVIDENCE","payload":{"researchObjective":"Evaluate demand for a TypeScript toolkit."}}'
 ```

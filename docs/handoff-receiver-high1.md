@@ -203,9 +203,16 @@ export OPERATOR_CONTROL_TOKEN=...  # server-side only; never commit
 
 Then send:
 
+> **Client identification:** the edge middleware (`src/middleware.ts`) rejects API requests whose
+> `User-Agent` matches generic scripting clients (`curl/`, `python-requests/`, `Go-http-client/` …) with
+> **403** before the route runs, so a bare `curl` fails. The examples below send an identifying
+> `User-Agent`. This filter is **not authentication** — the Bearer token is. Do not weaken the filter to
+> make `curl` work.
+
 ```bash
 curl -X POST https://<host>/api/handoff/receive \
   -H "Authorization: Bearer $OPERATOR_CONTROL_TOKEN" \
+  -H "User-Agent: opportunity-handoff-sender/1.0" \
   -H "Content-Type: application/json" \
   -d @envelope.json
 ```

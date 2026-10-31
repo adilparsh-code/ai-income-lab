@@ -86,8 +86,6 @@ export interface AiUsageSummary {
   budget: {
     dailyBudgetUsd: number;
     todaySpendUsd: number;
-    remainingUsd: number | null; // null when the budget is unlimited (not configured)
-    percentUsed: number | null; // null when remaining is null or budget is 0
     costBasis: 'ESTIMATED';
   };
   dataMode: 'LIVE_DATA' | 'NO_DATA';
@@ -308,17 +306,11 @@ export function aggregateUsage(rows: UsageLogRow[], now: Date = new Date()): AiU
     avgLatencyMs: latencies.length > 0 ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : null,
   };
 
-  // Daily budget — reuses the existing configuration (AI_DAILY_BUDGET_USD via
-  // the shared generation-layer accessor). Today's spend comes from the same
-  // rows, bucketed on today's UTC day key.
+  // The configured per-request ceiling and today's spend are independent.
   const dailyBudgetUsd = getDailyBudgetUsdSafe();
   const todayKey = utcDayKey(now);
   const todayEntry = daily.get(todayKey);
   const todaySpendUsd = todayEntry ? Math.round(todayEntry.cost * 1_000_000) / 1_000_000 : 0;
-  const remaining = dailyBudgetUsd === null ? null : Math.max(0, dailyBudgetUsd - todaySpendUsd);
-  const percentUsed = remaining === null || dailyBudgetUsd === null || dailyBudgetUsd <= 0
-    ? null
-    : Math.round((todaySpendUsd / dailyBudgetUsd) * 10000) / 100;
 
   // Build the bounded daily series only in aggregateUsageForRange; the
   // unbounded core aggregation emits an unpadded series (observed days only).
@@ -333,8 +325,6 @@ export function aggregateUsage(rows: UsageLogRow[], now: Date = new Date()): AiU
     budget: {
       dailyBudgetUsd: dailyBudgetUsd ?? 0,
       todaySpendUsd,
-      remainingUsd: remaining,
-      percentUsed,
       costBasis: 'ESTIMATED',
     },
     dataMode: totalExecutions === 0 ? 'NO_DATA' : 'LIVE_DATA',
@@ -391,10 +381,9 @@ function buildDailySeries(
 // ---------------------------------------------------------------------------
 
 /**
- * Read the daily AI budget from the existing configuration. Returns null when
- * no budget is configured (AI_DAILY_BUDGET_USD unset) so the UI can show
- * "unlimited" instead of pretending a default cap exists. Kept local (rather
- * than importing generate.ts) so this module stays free of provider wiring.
+ * Read the configured per-request ceiling. Returns null when unset or invalid;
+ * the generation gate separately applies its default. Kept local so this
+ * module stays free of provider wiring.
  */
 export function getDailyBudgetUsdSafe(): number | null {
   const raw = process.env.AI_DAILY_BUDGET_USD;

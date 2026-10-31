@@ -237,6 +237,11 @@ export interface FailedGeneration {
 
 export type GenerationOutcome<T> = ValidatedGeneration<T> | FailedGeneration;
 
+/**
+ * Generate and validate AI output under the configured budget, cache, deduplication,
+ * and retry policies. Operational failures return a failed outcome for caller
+ * fallback; invalid provider configuration throws.
+ */
 export async function generateValidated<T extends Record<string, unknown>>(
   prompt: string,
   purpose: string,
@@ -277,9 +282,10 @@ export async function generateValidated<T extends Record<string, unknown>>(
   const estimatedInputTokens = estimateTokens(prompt);
   const estimatedCostRaw = estimateCostUsd(model, estimatedInputTokens, maxOutputTokens);
   const estimatedCost = Number.isFinite(estimatedCostRaw) && estimatedCostRaw >= 0 ? estimatedCostRaw : 0;
+  // Per-request ceiling only (AI_DAILY_BUDGET_USD): prior usage is NOT aggregated here.
   const budget = getDailyBudgetUsd();
   if (estimatedCost > budget) {
-    return { ok: false, errors: [`Estimated cost $${estimatedCost.toFixed(6)} exceeds daily budget $${budget.toFixed(2)}. Request blocked.`], fallbackUsed: true, attempts: 0 };
+    return { ok: false, errors: [`Estimated cost $${estimatedCost.toFixed(6)} exceeds the per-request estimated-cost ceiling $${budget.toFixed(2)} (AI_DAILY_BUDGET_USD; not an aggregate daily cap). Request blocked.`], fallbackUsed: true, attempts: 0 };
   }
 
   // Phase 4.5.3 — TOKEN BUDGETS (per request/agent/purpose/daily/monthly).
