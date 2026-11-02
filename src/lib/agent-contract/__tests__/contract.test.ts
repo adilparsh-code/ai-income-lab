@@ -13,6 +13,9 @@ import {
   validateAgentRequest,
   payloadByteSize,
   MAX_PAYLOAD_BYTES,
+  MAX_PAYLOAD_DEPTH,
+  MAX_PAYLOAD_KEYS,
+  MAX_FIELD_LENGTH,
   AGENT_CONTRACT_VERSION,
   agentRequestSchema,
   FORBIDDEN_PAYLOAD_KEYS,
@@ -26,6 +29,19 @@ import {
   getCapability,
   WRITE_AUTHORITIES,
 } from '../capabilities';
+
+// Helpers for building boundary payloads.
+function makeDeep(wraps: number): Record<string, unknown> {
+  let p: Record<string, unknown> = { end: true };
+  for (let i = 0; i < wraps; i += 1) p = { nested: p };
+  return p;
+}
+
+function makeManyKeys(n: number): Record<string, unknown> {
+  const m: Record<string, unknown> = {};
+  for (let i = 0; i < n; i += 1) m[`k${i}`] = i;
+  return m;
+}
 
 function validRequest(overrides: Record<string, unknown> = {}) {
   return {
@@ -113,6 +129,29 @@ describe('agent request schema (v1)', () => {
 
     const big = validateAgentRequest(validRequest({ payload: { blob: 'y'.repeat(MAX_PAYLOAD_BYTES) } }));
     assert.equal(!big.ok && big.httpStatus, 413);
+
+    // Boundary tests: the limit must hold at the exact threshold, not only
+    // for obviously-overflowing inputs. An off-by-one here would silently
+    // widen the accepted payload envelope.
+    const belowDepth = validateAgentRequest(validRequest({ payload: makeDeep(MAX_PAYLOAD_DEPTH - 1) }));
+    assert.equal(belowDepth.ok, true, `depth ${MAX_PAYLOAD_DEPTH - 1} wraps must be accepted`);
+    const atDepth = validateAgentRequest(validRequest({ payload: makeDeep(MAX_PAYLOAD_DEPTH) }));
+    assert.equal(atDepth.ok, false, `depth ${MAX_PAYLOAD_DEPTH} wraps must be rejected`);
+    assert.equal(!atDepth.ok && atDepth.code, 'PAYLOAD_TOO_LARGE');
+
+    const belowKeys = validateAgentRequest(validRequest({ payload: makeManyKeys(MAX_PAYLOAD_KEYS - 1) }));
+    assert.equal(belowKeys.ok, true, `payload with ${MAX_PAYLOAD_KEYS - 1} keys must be accepted`);
+    const atKeys = validateAgentRequest(validRequest({ payload: makeManyKeys(MAX_PAYLOAD_KEYS) }));
+    assert.equal(atKeys.ok, true, `payload with exactly ${MAX_PAYLOAD_KEYS} keys must be accepted`);
+    const overKeys = validateAgentRequest(validRequest({ payload: makeManyKeys(MAX_PAYLOAD_KEYS + 1) }));
+    assert.equal(overKeys.ok, false, `payload with ${MAX_PAYLOAD_KEYS + 1} keys must be rejected`);
+
+    const belowLen = validateAgentRequest(validRequest({ payload: { f: 'x'.repeat(MAX_FIELD_LENGTH - 1) } }));
+    assert.equal(belowLen.ok, true);
+    const atLen = validateAgentRequest(validRequest({ payload: { f: 'x'.repeat(MAX_FIELD_LENGTH) } }));
+    assert.equal(atLen.ok, true, `string of exactly ${MAX_FIELD_LENGTH} chars must be accepted`);
+    const overLen = validateAgentRequest(validRequest({ payload: { f: 'x'.repeat(MAX_FIELD_LENGTH + 1) } }));
+    assert.equal(overLen.ok, false, `string of ${MAX_FIELD_LENGTH + 1} chars must be rejected`);
   });
 
   it('measures payload byte size deterministically', () => {
