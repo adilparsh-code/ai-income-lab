@@ -1,7 +1,6 @@
 // use prisma-8
 
-model Opportunity {
-  id                    String   @id @default(cuid(2))
+model Opportunity {  id                 String   @id @onCreate(cuid(2))
   title                 String
   category              String
   businessModel         String
@@ -29,7 +28,7 @@ model Opportunity {
   nextAction            String   @default("")
   
   createdAt             DateTime @default(now())
-  updatedAt             temporal.updatedAt()
+  updatedAt             temporal.UpdatedAt
   lastReviewedAt        DateTime?
   
   products              Product[]
@@ -49,7 +48,7 @@ model Opportunity {
 }
 
 model Product {
-  id              String   @id @default(cuid(2))
+  id              String   @id @onCreate(cuid(2))
   name            String
   type            String
   targetAudience  String   @default("")
@@ -63,10 +62,8 @@ model Product {
   notes           String   @default("")
   
   opportunityId   String?
-  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
-  
-  createdAt       DateTime @default(now())
-  updatedAt       temporal.updatedAt()
+  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])  createdAt     DateTime @default(now())
+  updatedAt      temporal.UpdatedAt
   publishedAt     DateTime?
   
   revenues        Revenue[]
@@ -92,7 +89,7 @@ model Product {
 // a product DEPLOYED/PUBLISHED by itself — only the deployment/publishing
 // provider confirmations can.
 model ProductBuild {
-  id            String   @id @default(cuid(2))
+  id            String   @id @onCreate(cuid(2))
   productId     String
   product       Product  @relation(fields: [productId], references: [id])
 
@@ -117,7 +114,7 @@ model ProductBuild {
 // provider confirmation (deploymentId + url) exists on a row here; the
 // unavailable adapter writes DEPLOYMENT_NOT_CONNECTED rows with no ids.
 model ProductDeployment {
-  id            String   @id @default(cuid(2))
+  id            String   @id @onCreate(cuid(2))
   productId     String
   product       Product  @relation(fields: [productId], references: [id])
 
@@ -144,7 +141,7 @@ model ProductDeployment {
 // can only be marked publishable when rights are CLEAR/OWNED; unclear rights
 // force HUMAN_REVIEW and blocked assets stay unpublishable.
 model ProductAsset {
-  id                String   @id @default(cuid(2))
+  id                String   @id @onCreate(cuid(2))
   productId         String
   product           Product  @relation(fields: [productId], references: [id])
 
@@ -162,7 +159,7 @@ model ProductAsset {
 }
 
 model Experiment {
-  id              String   @id @default(cuid(2))
+  id              String   @id @onCreate(cuid(2))
   hypothesis      String
   target          String   @default("")
   budget          Float    @default(0)
@@ -182,15 +179,13 @@ model Experiment {
   decision        String?  // SCALE, ITERATE, PAUSE, KILL
   
   opportunityId   String?
-  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
-  
-  createdAt       DateTime @default(now())
-  updatedAt       temporal.updatedAt()
+  opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])  createdAt     DateTime @default(now())
+  updatedAt      temporal.UpdatedAt
   @@map("Experiment")
 }
 
 model Revenue {
-  id              String   @id @default(cuid(2))
+  id              String   @id @onCreate(cuid(2))
   date            DateTime
   revenueSource   String
   grossRevenue    Float    @default(0)
@@ -211,15 +206,13 @@ model Revenue {
   // historical rows; when present, a unique violation is a DUPLICATE, so the
   // same payment can never be recorded twice. Written by the shared
   // revenueIdempotencyKey() rule — never by the API caller.
-  idempotencyKey  String?  @unique
-  
-  createdAt       DateTime @default(now())
-  updatedAt       temporal.updatedAt()
+  idempotencyKey  String?  @unique  createdAt     DateTime @default(now())
+  updatedAt      temporal.UpdatedAt
   @@map("Revenue")
 }
 
 model Affiliate {
-  id              String   @id @default(cuid(2))
+  id              String   @id @onCreate(cuid(2))
   merchant        String
   product         String
   category        String   @default("")
@@ -230,15 +223,13 @@ model Affiliate {
   productUrl      String   @default("")
   lastChecked     DateTime?
   linkStatus      String   @default("ACTIVE")
-  disclosureStatus String  @default("REQUIRED")
-  
-  createdAt       DateTime @default(now())
-  updatedAt       temporal.updatedAt()
+  disclosureStatus String  @default("REQUIRED")  createdAt     DateTime @default(now())
+  updatedAt      temporal.UpdatedAt
   @@map("Affiliate")
 }
 
 model Content {
-  id              String   @id @default(cuid(2))
+  id              String   @id @onCreate(cuid(2))
   title           String
   type            String
   body            String   @default("")
@@ -250,10 +241,8 @@ model Content {
   opportunity     Opportunity? @relation(fields: [opportunityId], references: [id])
   
   productId       String?
-  product         Product? @relation(fields: [productId], references: [id])
-  
-  createdAt       DateTime @default(now())
-  updatedAt       temporal.updatedAt()
+  product         Product? @relation(fields: [productId], references: [id])  createdAt     DateTime @default(now())
+  updatedAt      temporal.UpdatedAt
   @@map("Content")
 }
 
@@ -274,7 +263,7 @@ model Content {
 // - No market size, customer counts, prices, or revenue figures are stored
 //   here; extraction only keeps observed page text (see extraction.ts).
 model EvidenceItemModel {
-  id             String   @id @default(cuid(2))
+  id             String   @id @onCreate(cuid(2))
 
   opportunityId  String?
   opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
@@ -303,8 +292,7 @@ model EvidenceItemModel {
   fetchDurationMs Int?
   cache          Boolean  @default(true)
 
-  createdAt      DateTime @default(now())
-  updatedAt      temporal.updatedAt()
+  createdAt      DateTime @default(now())  updatedAt            temporal.UpdatedAt
   @@unique([url, query])
   @@index([opportunityId])
   @@index([fetchedAt])
@@ -312,7 +300,7 @@ model EvidenceItemModel {
 }
 
 model PipelineRun {
-  id             String   @id @default(cuid(2))
+  id             String   @id @onCreate(cuid(2))
 
   // The opportunity this run operated on. Optional: a run may start from a
   // free-form objective before any opportunity record is selected.
@@ -338,8 +326,7 @@ model PipelineRun {
   completedAt    DateTime?
   durationMs     Int?
 
-  createdAt      DateTime @default(now())
-  updatedAt      temporal.updatedAt()
+  createdAt      DateTime @default(now())  updatedAt            temporal.UpdatedAt
   @@map("PipelineRun")
 }
 
@@ -352,7 +339,7 @@ model PipelineRun {
 /// verification outcomes). NEVER stores secrets, tokens, credentials, or
 /// raw request bodies — `detail` is a short, human-safe classification.
 model SecurityEvent {
-  id        String   @id @default(cuid(2))
+  id        String   @id @onCreate(cuid(2))
   /// Event class, e.g. AUTH_FAILURE, RATE_LIMITED, REQUEST_TOO_LARGE, WEBHOOK_REJECTED.
   kind      String
   /// Coarse outcome category (ok | refused | error) — never a secret.
@@ -372,7 +359,7 @@ model SecurityEvent {
 /// vanish on restart, so they must never be the only production protection.
 /// This table gives every deployment instance a shared, DB-backed counter.
 model RateLimitWindow {
-  id        String   @id @default(cuid(2))
+  id        String   @id @onCreate(cuid(2))
   /// Bucket identifier, e.g. "agents_execute|ip:1.2.3.4".
   bucketKey String
   /// Epoch-second-aligned window label, e.g. "1700000000-60".
@@ -397,8 +384,7 @@ model RateLimitWindow {
 // never returned by any accessor. The state machine (NOT_CONNECTED →
 // AUTHORIZING → CONNECTED → EXPIRED/REVOKED/ERROR) is deterministic; expired
 // grants are never silently reused.
-model IntegrationAuthorization {
-  id                     String   @id @default(cuid(2))
+model IntegrationAuthorization {  id       String   @id @onCreate(cuid(2))
   providerId             String
   scope                  String?
   state                  String   @default("NOT_CONNECTED")
@@ -409,13 +395,13 @@ model IntegrationAuthorization {
   metadata               String   @default("{}")
 
   createdAt DateTime @default(now())
-  updatedAt temporal.updatedAt()
+  updatedAt temporal.UpdatedAt
   @@unique([providerId, scope])
   @@map("IntegrationAuthorization")
 }
 
 model JobRun {
-  id             String   @id @default(cuid(2))
+  id             String   @id @onCreate(cuid(2))
 
   jobType        String   // RESEARCH, VALIDATION, PRODUCT, ANALYTICS, BUSINESS_MANAGER, OPPORTUNITY_PIPELINE
   status         String   // QUEUED, RUNNING, SUCCEEDED, FAILED, BLOCKED, HUMAN_REVIEW, DEGRADED
@@ -445,8 +431,7 @@ model JobRun {
 
   createdAt      DateTime @default(now())
   startedAt      DateTime?
-  completedAt    DateTime?
-  updatedAt      temporal.updatedAt()
+  completedAt    DateTime?  updatedAt            temporal.UpdatedAt
   @@index([status])
   @@index([jobType, createdAt])
   @@index([correlationId])
@@ -461,7 +446,7 @@ model JobRun {
 // execute through the existing JobRun/AgentLog stack; this model only records
 // workflow-level state and never bypasses halal or human-review gates.
 model WorkflowRun {
-  id            String   @id @default(cuid(2))
+  id            String   @id @onCreate(cuid(2))
 
   workflowType  String   // OPPORTUNITY_DISCOVERY, OPPORTUNITY_TO_PRODUCT, BUSINESS_ANALYSIS, FULL_INCOME_PIPELINE
   status        String   // COMPLETED, PARTIAL, BLOCKED, HUMAN_REVIEW, FAILED
@@ -478,7 +463,7 @@ model WorkflowRun {
   completedAt   DateTime
   durationMs    Int?
   createdAt     DateTime @default(now())
-  updatedAt     temporal.updatedAt()
+  updatedAt     temporal.UpdatedAt
   @@index([workflowType, createdAt])
   @@index([correlationId])
   @@index([status])
@@ -492,7 +477,7 @@ model WorkflowRun {
 // anonymous session identifier; no fabricated events (rows are written only
 // from validated ingestion calls). The Growth Engine consumes these rows.
 model ProductEvent {
-  id              String   @id @default(cuid(2))
+  id              String   @id @onCreate(cuid(2))
 
   productId       String
   product         Product  @relation(fields: [productId], references: [id])
@@ -537,7 +522,7 @@ model ProductEvent {
 }
 
 model AgentLog {
-  id              String   @id @default(cuid(2))
+  id              String   @id @onCreate(cuid(2))
   agentType       String
   action          String
   input           String   @default("")
@@ -588,7 +573,7 @@ model AgentLog {
 /// Durable agent mission. Execution always goes through the Job Runner;
 /// this model never bypasses halal, human-review, or publishing gates.
 model AgentMission {
-  id                   String   @id @default(cuid(2))
+  id                   String   @id @onCreate(cuid(2))
   objective            String
   opportunityId        String?
   opportunity          Opportunity? @relation(fields: [opportunityId], references: [id])
@@ -611,7 +596,7 @@ model AgentMission {
   failureClass         String?
   jobId                String?
   createdAt            DateTime @default(now())
-  updatedAt            temporal.updatedAt()
+  updatedAt            temporal.UpdatedAt
   startedAt            DateTime?
   completedAt          DateTime?
 
@@ -625,7 +610,7 @@ model AgentMission {
 /// Auditable autonomous-loop transition. One row per attempted stage move.
 /// from/to/reason/evidence/correlationId/timestamp/status are always present.
 model LoopTransition {
-  id              String   @id @default(cuid(2))
+  id              String   @id @onCreate(cuid(2))
   opportunityId   String
   opportunity     Opportunity @relation(fields: [opportunityId], references: [id])
   fromStage       String
@@ -645,8 +630,7 @@ model LoopTransition {
 
 /// Paper-income / simulation run. Label is always SIMULATED.
 /// These rows MUST never be copied into the Revenue table.
-model SimulationRun {
-  id               String   @id @default(cuid(2))
+model SimulationRun {  id        String   @id @onCreate(cuid(2))
   seed             String
   opportunityId    String?
   opportunity      Opportunity? @relation(fields: [opportunityId], references: [id])
@@ -670,8 +654,7 @@ model SimulationRun {
 
 /// Structured operational memory (not chat history). Entries without
 /// sufficient provenance must never be treated as verified truth.
-model OperationalMemory {
-  id                 String   @id @default(cuid(2))
+model OperationalMemory {  id          String   @id @onCreate(cuid(2))
   category           String
   source             String
   evidenceType       String
@@ -692,8 +675,7 @@ model OperationalMemory {
 }
 
 /// Classified failure + recovery state. Bounded retries; dead-letter when exhausted.
-model FailureRecord {
-  id                 String   @id @default(cuid(2))
+model FailureRecord {  id          String   @id @onCreate(cuid(2))
   classification     String
   retryCount         Int      @default(0)
   maxRetries         Int      @default(3)
@@ -707,7 +689,7 @@ model FailureRecord {
   opportunityId      String?
   opportunity        Opportunity? @relation(fields: [opportunityId], references: [id])
   createdAt          DateTime @default(now())
-  updatedAt          temporal.updatedAt()
+  updatedAt          temporal.UpdatedAt
   @@index([classification, createdAt])
   @@index([correlationId])
   @@index([recoveryState])
