@@ -13,7 +13,7 @@
 //   5. invalid payload               13. safe error response
 //   6. oversized payload             14. prompt-injection / untrusted payload
 //   7. missing correlation ID        15. ownership / authorization boundary
-//   8. missing idempotency key
+//   8. missing idempotency key       16. per-dispatch failure + replay semantics
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -76,11 +76,44 @@ function validEnvelope(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** In-memory HandoffDb that enforces the unique idempotencyKey, like the real one. */
+/** In-memory HandoffDb that enforces the unique idempotencyKey, like the real one.
+ *
+ * NOTE: this fake deliberately mirrors the real Prisma seam shape so the
+ * receiver code can be exercised without a database, including the
+ * dispatch-failure path where the persisted row is UPDATED in place.
+ * The real `NewHandoffData`/`CreatedHandoff` types are narrower than a raw
+ * `Record<string, unknown>`, so the fake keeps its stored rows compatible
+ * with both read and write paths instead of widening them indefinitely.
+ */
 function makeFakeDb() {
   const rows = new Map<string, Record<string, unknown>>();
   const events: { kind: string; outcome: string; detail: string | null }[] = [];
   let nextId = 1;
+
+  // Shape the fake rows like the real created handoff so the receiver's
+  // update path can find and mutate them by idempotencyKey.
+  function makeRow(data: Record<string, unknown>) {
+    return {
+      id: `handoff-${nextId++}`,
+      jobRunId: null,
+      opportunityId: null,
+      contractVersion: data.contractVersion as string | undefined,
+      contractId: data.contractId as string | undefined,
+      idempotencyKey: data.idempotencyKey as string | undefined,
+      correlationId: data.correlationId as string | undefined,
+      eventType: data.eventType as string | undefined,
+      senderIdentity: data.senderIdentity as string | undefined,
+      title: data.title as string | undefined,
+      payloadJson: data.payloadJson as string | undefined,
+      assertedEligibility: data.assertedEligibility as string | undefined,
+      eligibility: data.eligibility as string | undefined,
+      halalStatus: data.halalStatus as string | undefined,
+      jobType: data.jobType as string | undefined,
+      status: data.status as string | undefined,
+      reason: data.reason as string | undefined,
+    };
+  }
+
   return {
     rows,
     events,
@@ -94,16 +127,17 @@ function makeFakeDb() {
           if (rows.has(String(data.idempotencyKey))) {
             throw new Error('Unique constraint failed on idempotencyKey');
           }
-          const row = {
-            id: `handoff-${nextId++}`,
-            jobRunId: null,
-            opportunityId: null,
-            ...data,
-          };
+          const row = makeRow(data);
           rows.set(String(data.idempotencyKey), row);
           return row as never;
         },
-        async update({ where, data }: { where: { idempotencyKey: string }; data: Record<string, unknown> }) {
+        async update({
+          where,
+          data,
+        }: {
+          where: { idempotencyKey: string };
+          data: Record<string, unknown>;
+        }) {
           const row = rows.get(where.idempotencyKey);
           if (!row) throw new Error('not found');
           Object.assign(row, data);
@@ -111,8 +145,20 @@ function makeFakeDb() {
         },
       },
       securityEvent: {
-        async create({ data }: { data: { kind: string; outcome: string; detail?: string | null } }) {
-          events.push({ kind: data.kind, outcome: data.outcome, detail: data.detail ?? null });
+        async create({
+          data,
+        }: {
+          data: {
+            kind: string;
+            outcome: string;
+            detail?: string | null;
+          };
+        }) {
+          events.push({
+            kind: data.kind,
+            outcome: data.outcome,
+            detail: data.detail ?? null,
+          });
           return {};
         },
       },
@@ -339,6 +385,69 @@ describe('HIGH-1 receiver', () => {
     assert.equal(row.status, 'REJECTED');
   });
 
+  // 16. per-dispatch failure + replay semantics
+  it('16. marks the handoff REJECTED when a valid dispatch fails, so a replay cannot re-dispatch', async () => {
+    const fake = makeFakeDb();
+    const runJob: HandoffRunJob = async () => {
+      throw new Error('job-runner persistent failure');
+    };
+    const first = await receiver.receiveHandoff(validEnvelope({ idempotencyKey: 'idem-dispatch-fail' }), {
+      db: fake.db as unknown as HandoffDb,
+      senderIdentity: 'sender-fp',
+      runJob,
+    });
+
+    // Dispatch failure returns a SAFE generic 502 — internal error text is never
+    // leaked (the throw payload is internal detail, not the returned error string).
+    assert.equal(first.ok, false);
+    assert.equal(!first.ok && first.status, 502);
+    assert.ok(!first.error.includes('job-runner persistent failure'), 'error must not leak internal detail');
+
+    // The persisted row IS marked REJECTED so a replay cannot silently
+    // re-dispatch work. The return shape intentionally omits `handoff` here:
+    // on dispatch failure the receiver did not complete a handoff transition,
+    // so it reports only the safe error + the persisted row status.
+    const row = fake.rows.get('idem-dispatch-fail') as Record<string, unknown>;
+    assert.equal(row.status, 'REJECTED');
+    assert.equal(row.eligibility, 'ALLOWED');
+    assert.equal(row.halalStatus, 'HALAL');
+    assert.equal(row.jobType, 'RESEARCH');
+    assert.equal(row.jobRunId, null);
+    assert.ok(fake.events.some((e) => e.kind === 'HANDOFF_ERROR'), 'an audit error record must be written');
+  });
+
+  it('16b. replaying a failed delivery returns DUPLICATE with no second dispatch attempt', async () => {
+    const fake = makeFakeDb();
+    const runJob: HandoffRunJob = async () => {
+      throw new Error('job-runner persistent failure');
+    };
+    const first = await receiver.receiveHandoff(validEnvelope({ idempotencyKey: 'idem-replay-fail' }), {
+      db: fake.db as unknown as HandoffDb,
+      senderIdentity: 'sender-fp',
+      runJob,
+    });
+
+    // First delivery: safe 502, row marked REJECTED (no handoff field on failure).
+    assert.equal(first.ok, false);
+    assert.equal(!first.ok && first.status, 502);
+    const firstRow = fake.rows.get('idem-replay-fail') as Record<string, unknown>;
+    assert.equal(firstRow.status, 'REJECTED');
+
+    // Replay of the same idempotency key collapses to DUPLICATE — the row
+    // already exists as REJECTED, so no second dispatch is attempted.
+    const second = await receiver.receiveHandoff(validEnvelope({ idempotencyKey: 'idem-replay-fail' }), {
+      db: fake.db as unknown as HandoffDb,
+      senderIdentity: 'sender-fp',
+      runJob,
+    });
+    assert.equal(second.ok, true);
+    assert.equal(second.handoff, 'DUPLICATE');
+    assert.equal(second.status, 200);
+    assert.equal(second.duplicate, true);
+    assert.equal(second.jobRunId, null);
+    assert.equal(fake.rows.size, 1, 'only one persisted row across both deliveries');
+  });
+
   // 14. prompt injection / untrusted payload handling
   it('14. rejects smuggled instruction keys in the payload (prompt injection)', async () => {
     const fake = makeFakeDb();
@@ -408,6 +517,42 @@ describe('HIGH-1 receiver', () => {
     assert.equal(row.status, 'REVIEW_REQUIRED');
     assert.equal(row.halalStatus, 'REVIEW_REQUIRED');
   });
+
+  it('15b. records the caller identity and rejects persisting secrets in the handoff row', async () => {
+    const fake = makeFakeDb();
+    const rec = recorder();
+    const result = await receiver.receiveHandoff(validEnvelope({ idempotencyKey: 'idem-id-1' }), {
+      db: fake.db as unknown as HandoffDb,
+      senderIdentity: 'aiagent-handoff-sender',
+      runJob: rec.runJob,
+    });
+
+    assert.equal(result.ok, true);
+    const row = fake.rows.get('idem-id-1') as Record<string, unknown>;
+    assert.equal(row.senderIdentity, 'aiagent-handoff-sender');
+
+    const rowDetail = JSON.stringify({
+      id: row.id,
+      eventType: row.eventType,
+      senderIdentity: row.senderIdentity,
+      contractVersion: row.contractVersion,
+      contractId: row.contractId,
+      correlationId: row.correlationId,
+      assertedEligibility: row.assertedEligibility,
+      eligibility: row.eligibility,
+      halalStatus: row.halalStatus,
+      jobType: row.jobType,
+      status: row.status,
+      payloadJson: row.payloadJson,
+      reason: row.reason,
+    });
+    assert.ok(
+      !rowDetail.includes('test-operator-token-value'),
+      'persisted handoff row must not contain the operator credential',
+    );
+    assert.ok(!rowDetail.includes('internal detail: db password hunter2'));
+    assert.ok(!rowDetail.includes('job-runner persistent failure'));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -442,14 +587,43 @@ describe('HIGH-1 receiver auth boundary', () => {
   });
 
   it('10. rate limits repeated requests from one identity', async () => {
-    const { enforceRateLimit } = await import('@/lib/security/guard');
-    const identity = `test-identity-${Date.now()}`;
-    const results = [];
-    for (let i = 0; i < 6; i += 1) {
-      results.push(await enforceRateLimit({ surface: 'api:handoff:rate-test', identity, max: 3, windowSeconds: 60 }));
+    // Use the existing test seam (countingStore) so the rate-limit ALGORITHM is
+    // verified deterministically without depending on the real DB table being
+    // initialized. The production path (prismaRateLimitStore) is covered by the
+    // schema + other DB-backed tests; this test isolates the algorithm.
+    const { enforceRateLimit, __setRateLimitStoreForTests } = await import('@/lib/security/guard');
+
+    let calls = 0;
+    const countingStore: { upsert: (args: { bucketKey: string; windowKey: string; expiresAt: Date }) => Promise<{ count: number; expiresAt: Date }> } = {
+      upsert: async ({ bucketKey, windowKey, expiresAt }) => {
+        calls += 1;
+        const k = `${bucketKey}|${windowKey}`;
+        // Preserve the real shape: upsert returns { count, expiresAt } and the
+        // first upsert for a new (bucketKey, windowKey) starts at count 1.
+        const prev = windowedCounts.get(k) ?? 0;
+        const count = prev + 1;
+        windowedCounts.set(k, count);
+        return { count, expiresAt };
+      },
+    };
+    const windowedCounts = new Map<string, number>();
+
+    __setRateLimitStoreForTests(countingStore);
+    try {
+      const identity = `test-identity-${Date.now()}`;
+      const results = [] as Array<{ allowed: boolean }>;
+      for (let i = 0; i < 6; i += 1) {
+        results.push(await enforceRateLimit({ surface: 'api:handoff:rate-test', identity, max: 3, windowSeconds: 60 }));
+      }
+      // First request is allowed; once the counter exceeds max (3), further
+      // requests in the same window are denied.
+      assert.equal(results[0].allowed, true);
+      assert.equal(results[results.length - 1].allowed, false);
+      // Exactly 6 upsert calls (no retries in the single-process test path).
+      assert.equal(calls, 6);
+    } finally {
+      __setRateLimitStoreForTests(null);
     }
-    assert.equal(results[0].allowed, true);
-    assert.equal(results[results.length - 1].allowed, false);
   });
 });
 
