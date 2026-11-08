@@ -41,10 +41,13 @@ import { installTestDatabase } from '@/test-utils/install-test-database';
 // reference repository is absent. The two scenarios — "AIAgent is present" and
 // "AIAgent is absent" — are tested independently and neither is assumed.
 
-let aiagentAdapterModule:
-  | typeof import('../../../../AIAgent/src/lib/handoff-delivery/income-lab-adapter')
-  | null
-  | undefined = undefined;
+// The specifier is held in a variable so TypeScript (and `next build`'s type
+// check) does not try to resolve the sibling AIAgent repo, which is absent in
+// CI/Vercel. The module is still loaded lazily at test time when present.
+const AIAGENT_ADAPTER_SPECIFIER = '../../../../AIAgent/src/lib/handoff-delivery/income-lab-adapter';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AIAgentAdapterModule = Record<string, any>;
+let aiagentAdapterModule: AIAgentAdapterModule | null | undefined = undefined;
 let aiagentAdapterLoadable = false;
 
 async function loadAIAgentAdapter() {
@@ -52,7 +55,7 @@ async function loadAIAgentAdapter() {
     return aiagentAdapterLoadable;
   }
   try {
-    const mod = await import('../../../../AIAgent/src/lib/handoff-delivery/income-lab-adapter');
+    const mod = (await import(AIAGENT_ADAPTER_SPECIFIER)) as AIAgentAdapterModule;
     aiagentAdapterModule = mod;
     aiagentAdapterLoadable = true;
     return true;
@@ -545,6 +548,7 @@ describe('HIGH-1 contract compatibility — AIAgent adapter → AIIncomeLab rece
       });
       assert.equal(first.handoff, 'ACCEPTED');
       assert.equal(dispatchCalls.length, 1, 'the first delivery must dispatch exactly one job');
+      assert.ok(first.ok, 'the first delivery must be accepted');
       assert.equal(first.jobRunId, 'job-run-first');
 
       // Prove the first dispatched payload satisfies the real RESEARCH contract.
