@@ -30,5 +30,12 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "AIAgent",
+    "docs",
+    "generated",
+    "node_modules",
+    "prisma8",
+    "tmp"
+  ]
 }
