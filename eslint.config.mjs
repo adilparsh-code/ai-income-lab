@@ -17,6 +17,10 @@ const eslintConfig = defineConfig([
     "prisma/schema.test.prisma",
     // Generated Prisma 8 contract artifacts (`prisma contract emit`):
     "generated/**",
+    // Independent nested application (separate repo with its own lint setup):
+    "AIAgent/**",
+    // Ephemeral scratch directory:
+    "tmp/**",
   ]),
 ]);
 
