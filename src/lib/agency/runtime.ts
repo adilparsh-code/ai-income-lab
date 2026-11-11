@@ -541,6 +541,11 @@ export type CreateReviewInput = {
   opportunityId?: string | null;
   evidenceRefs?: { type: string; id: string }[];
   correlationId?: string | null;
+  /**
+   * Phase 4.2D — owning tenant, supplied by an authorized server-side scope.
+   * Omitted/null means the legacy partition (pre-tenancy rows).
+   */
+  tenantId?: string | null;
 };
 
 export async function createHumanReview(input: CreateReviewInput): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
@@ -559,6 +564,7 @@ export async function createHumanReview(input: CreateReviewInput): Promise<{ ok:
       opportunityId: input.opportunityId ?? null,
       evidenceRefs: JSON.stringify((input.evidenceRefs ?? []).slice(0, AGENCY_BOUNDS.evidenceRefsMax)),
       correlationId: input.correlationId ? bounded(input.correlationId, 200) : null,
+      tenantId: input.tenantId ?? null,
     },
   });
   return { ok: true, id: row.id };
@@ -622,9 +628,17 @@ function toReviewView(row: {
   };
 }
 
-export async function listHumanReviews(status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'PAUSED' | 'RETIRED', limit = 50): Promise<HumanReviewView[]> {
+/**
+ * List reviews for ONE tenant partition. `ownerTenantId` defaults to null
+ * (legacy) so a caller that forgets it can never see tenant-owned reviews.
+ */
+export async function listHumanReviews(
+  status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'PAUSED' | 'RETIRED',
+  limit = 50,
+  ownerTenantId: string | null = null,
+): Promise<HumanReviewView[]> {
   const rows = await db.humanReview.findMany({
-    ...(status ? { where: { status } } : {}),
+    where: { tenantId: ownerTenantId, ...(status ? { status } : {}) },
     orderBy: { createdAt: 'desc' },
     take: Math.max(1, Math.min(100, limit)),
   });
@@ -636,8 +650,13 @@ export async function decideHumanReview(input: {
   decision: 'APPROVE' | 'REJECT' | 'PAUSE' | 'RETRY';
   decidedBy: string;
   note?: string;
+  /** Phase 4.2D — authorized tenant partition of the review (default legacy). */
+  tenantId?: string | null;
 }): Promise<{ ok: true; review: HumanReviewView } | { ok: false; error: string }> {
-  const row = await db.humanReview.findUnique({ where: { id: input.id } });
+  // Ownership is part of the lookup: a foreign review is indistinguishable from
+  // a missing one, so a decision cannot cross the tenant boundary.
+  const ownerTenantId = input.tenantId ?? null;
+  const row = await db.humanReview.findFirst({ where: { id: input.id, tenantId: ownerTenantId } });
   if (!row) return { ok: false, error: 'Review not found.' };
   if (row.status !== 'PENDING') return { ok: false, error: `Review is already ${row.status}; only PENDING reviews can be decided.` };
   const status =
@@ -645,8 +664,8 @@ export async function decideHumanReview(input: {
       : input.decision === 'REJECT' ? 'REJECTED'
         : input.decision === 'PAUSE' ? 'PAUSED'
           : 'RETIRED'; // RETRY keeps the item closed here; resubmission is a new request
-  const updated = await db.humanReview.update({
-    where: { id: input.id },
+  const updatedRow = await db.humanReview.updateMany({
+    where: { id: input.id, tenantId: ownerTenantId, status: 'PENDING' },
     data: {
       status,
       decidedBy: bounded(input.decidedBy, 80),
@@ -654,6 +673,11 @@ export async function decideHumanReview(input: {
       decisionNote: input.note ? bounded(input.note, AGENCY_BOUNDS.noteChars) : null,
     },
   });
+  if (updatedRow.count !== 1) {
+    return { ok: false, error: 'Review is no longer PENDING; the decision was not recorded.' };
+  }
+  const updated = await db.humanReview.findFirst({ where: { id: input.id, tenantId: ownerTenantId } });
+  if (!updated) return { ok: false, error: 'Review not found.' };
   await auditSecurityEvent({
     kind: 'HUMAN_REVIEW_DECISION',
     surface: 'agency:reviews',

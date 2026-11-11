@@ -7,15 +7,19 @@
 // re-derivation remains the authority. No screening is presented as a fatwa.
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { opportunityWhere, productWhere, revenueWhere, opportunityHandoffWhere, productDeploymentWhere, productEventWhere } from '@/lib/tenancy/relation-scope';
 import { describeCommunicationHealth } from '@/lib/commercial/communication-provider';
 import type { CustomerInteractionView, HalalMap, IntegrationHealth, PublishingRow } from './types';
 
-export async function getHalalMap(): Promise<HalalMap> {
+export async function getHalalMap(scope?: TenantScope): Promise<HalalMap> {
+  if (!scope) { try { scope = await currentScope('tenant:read', 'observatory:halal'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; } }
   const [opportunities, products, revenues, handoffs] = await Promise.all([
-    db.opportunity.findMany({ select: { id: true, halalStatus: true }, take: 2000 }),
-    db.product.findMany({ select: { id: true, opportunityId: true, status: true }, take: 2000 }),
-    db.revenue.findMany({ select: { grossRevenue: true, currency: true, opportunityId: true, productId: true }, take: 2000 }),
-    db.opportunityHandoff.findMany({ select: { halalStatus: true }, take: 500 }),
+    db.opportunity.findMany({ where: opportunityWhere(scope!), select: { id: true, halalStatus: true }, take: 2000 }),
+    db.product.findMany({ where: productWhere(scope!), select: { id: true, opportunityId: true, status: true }, take: 2000 }),
+    db.revenue.findMany({ where: revenueWhere(scope!), select: { grossRevenue: true, currency: true, opportunityId: true, productId: true }, take: 2000 }),
+    db.opportunityHandoff.findMany({ where: opportunityHandoffWhere(scope!), select: { halalStatus: true }, take: 500 }),
   ]);
 
   // Screening verdict lookup used for products and revenue linkage.
@@ -83,17 +87,18 @@ export async function getHalalMap(): Promise<HalalMap> {
 // Phase 10.4 — Publishing / external activity observability.
 // ---------------------------------------------------------------------------
 
-export async function getPublishingRows(limit = 40): Promise<{
+export async function getPublishingRows(limit = 40, scope?: TenantScope): Promise<{
   rows: PublishingRow[];
   providerState: IntegrationHealth;
 }> {
+  if (!scope) { try { scope = await currentScope('tenant:read', 'observatory:publishing'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; } }
   const [products, deployments, events, revenueRows, publishingStatus, parentOpportunities] = await Promise.all([
-    db.product.findMany({ orderBy: { updatedAt: 'desc' }, take: limit, select: { id: true, name: true, status: true, opportunityId: true, createdAt: true, updatedAt: true } }),
-    db.productDeployment.findMany({ orderBy: { createdAt: 'desc' }, take: limit * 3, select: { productId: true, status: true, providerId: true, url: true, errors: true, createdAt: true } }),
-    db.productEvent.groupBy({ by: ['productId', 'eventType'], _count: { _all: true } }),
-    db.revenue.findMany({ select: { productId: true, grossRevenue: true, currency: true }, take: 2000 }),
+    db.product.findMany({ where: productWhere(scope!), orderBy: { updatedAt: 'desc' }, take: limit, select: { id: true, name: true, status: true, opportunityId: true, createdAt: true, updatedAt: true } }),
+    db.productDeployment.findMany({ where: productDeploymentWhere(scope!), orderBy: { createdAt: 'desc' }, take: limit * 3, select: { productId: true, status: true, providerId: true, url: true, errors: true, createdAt: true } }),
+    db.productEvent.groupBy({ where: productEventWhere(scope!), by: ['productId', 'eventType'], _count: { _all: true } }),
+    db.revenue.findMany({ where: revenueWhere(scope!), select: { productId: true, grossRevenue: true, currency: true }, take: 2000 }),
     import('@/lib/publishing/contract').then((m) => m.describePublishingStatus()),
-    db.opportunity.findMany({ select: { id: true, halalStatus: true }, take: 2000 }),
+    db.opportunity.findMany({ where: opportunityWhere(scope!), select: { id: true, halalStatus: true }, take: 2000 }),
   ]);
 
   const publishingOppStatus = new Map(parentOpportunities.map((o) => [o.id, o.halalStatus]));

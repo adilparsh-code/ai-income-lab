@@ -72,6 +72,12 @@ export type SecurityAuditInput = {
   surface: string;
   outcome: 'ok' | 'refused' | 'error';
   detail?: string;
+  /**
+   * Phase 4.2D — tenant the event belongs to. Only ever set by a caller that
+   * has already resolved an authorized tenant scope; never from request input.
+   * Null/omitted = a global/legacy event.
+   */
+  tenantId?: string | null;
 };
 
 export async function auditSecurityEvent(input: SecurityAuditInput): Promise<void> {
@@ -82,6 +88,7 @@ export async function auditSecurityEvent(input: SecurityAuditInput): Promise<voi
         surface: input.surface.slice(0, 80),
         outcome: input.outcome,
         detail: input.detail ? input.detail.slice(0, 300) : null,
+        ...(input.tenantId !== undefined ? { tenantId: input.tenantId ?? null } : {}),
       },
     });
   } catch {

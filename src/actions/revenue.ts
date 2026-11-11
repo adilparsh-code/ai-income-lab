@@ -3,6 +3,12 @@
 import { db } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { requireAdminAction } from '@/lib/agency/action-guard';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import {
+  assertOpportunityInScope,
+  assertProductInScope,
+  revenueWhere,
+} from '@/lib/tenancy/relation-scope';
 
 export interface CreateRevenueInput {
   date: string;
@@ -26,7 +32,9 @@ export interface UpdateRevenueInput extends Partial<CreateRevenueInput> {
  */
 export async function getRevenues() {
   await requireAdminAction();
+  const scope = await currentScope('tenant:read', 'action:getRevenues');
   const revenues = await db.revenue.findMany({
+    where: revenueWhere(scope),
     include: {
       opportunity: {
         select: {
@@ -52,7 +60,8 @@ export async function getRevenues() {
  */
 export async function getRevenueSummary() {
   await requireAdminAction();
-  const revenues = await db.revenue.findMany();
+  const scope = await currentScope('tenant:read', 'action:getRevenueSummary');
+  const revenues = await db.revenue.findMany({ where: revenueWhere(scope) });
 
   const totalGross = revenues.reduce((sum, r) => sum + r.grossRevenue, 0);
   const totalFees = revenues.reduce((sum, r) => sum + (r.fees || 0), 0);
@@ -82,6 +91,7 @@ export async function getRevenueSummary() {
  */
 export async function createRevenue(input: CreateRevenueInput) {
   await requireAdminAction();
+  const scope = await currentScope('tenant:write', 'action:createRevenue');
   if (!input.revenueSource || input.revenueSource.trim().length === 0) {
     throw new Error('Revenue source is required');
   }
@@ -94,6 +104,12 @@ export async function createRevenue(input: CreateRevenueInput) {
   const advertisingCost = input.advertisingCost || 0;
   const otherCosts = input.otherCosts || 0;
   const netRevenue = grossRevenue - (fees + advertisingCost + otherCosts);
+
+  // Attachment guard: a revenue row may only reference a parent that already
+  // belongs to the caller's partition (never another tenant's, never legacy
+  // unattributed data from a tenant scope).
+  if (input.opportunityId) await assertOpportunityInScope(scope, input.opportunityId);
+  if (input.productId) await assertProductInScope(scope, input.productId);
 
   const revenue = await db.revenue.create({
     data: {
@@ -125,9 +141,10 @@ export async function createRevenue(input: CreateRevenueInput) {
  */
 export async function updateRevenue(input: UpdateRevenueInput) {
   await requireAdminAction();
+  const scope = await currentScope('tenant:write', 'action:updateRevenue');
   const { id, ...data } = input;
 
-  const existing = await db.revenue.findUnique({ where: { id } });
+  const existing = await db.revenue.findFirst({ where: { id, ...revenueWhere(scope) } });
   if (!existing) throw new Error('Revenue entry not found');
 
   const grossRevenue = data.grossRevenue !== undefined ? data.grossRevenue : existing.grossRevenue;
@@ -136,8 +153,11 @@ export async function updateRevenue(input: UpdateRevenueInput) {
   const otherCosts = data.otherCosts !== undefined ? data.otherCosts : existing.otherCosts;
   const netRevenue = grossRevenue - (fees + advertisingCost + otherCosts);
 
-  const revenue = await db.revenue.update({
-    where: { id },
+  if (data.opportunityId) await assertOpportunityInScope(scope, data.opportunityId);
+  if (data.productId) await assertProductInScope(scope, data.productId);
+
+  const updated = await db.revenue.updateMany({
+    where: { id, ...revenueWhere(scope) },
     data: {
       ...data,
       date: data.date ? new Date(data.date) : existing.date,
@@ -149,6 +169,9 @@ export async function updateRevenue(input: UpdateRevenueInput) {
       updatedAt: new Date(),
     },
   });
+  if (updated.count === 0) throw new Error('Revenue entry not found');
+  const revenue = await db.revenue.findFirst({ where: { id, ...revenueWhere(scope) } });
+  if (!revenue) throw new Error('Revenue entry not found');
 
   revalidatePath('/revenue');
   revalidatePath('/');
@@ -164,10 +187,12 @@ export async function updateRevenue(input: UpdateRevenueInput) {
  */
 export async function deleteRevenue(id: string) {
   await requireAdminAction();
-  const existing = await db.revenue.findUnique({ where: { id } });
+  const scope = await currentScope('tenant:write', 'action:deleteRevenue');
+  const existing = await db.revenue.findFirst({ where: { id, ...revenueWhere(scope) } });
   if (!existing) throw new Error('Revenue entry not found');
 
-  await db.revenue.delete({ where: { id } });
+  const removed = await db.revenue.deleteMany({ where: { id, ...revenueWhere(scope) } });
+  if (removed.count === 0) throw new Error('Revenue entry not found');
 
   revalidatePath('/revenue');
   revalidatePath('/');

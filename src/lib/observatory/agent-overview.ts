@@ -6,6 +6,9 @@
 // returned as null + UNKNOWN, never zero (Phase 10.15).
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { agentLogWhere } from '@/lib/tenancy/relation-scope';
 import type { AgentObservation, AgentRunSnapshot, QualityValue } from './types';
 
 function toSnapshot(row: {
@@ -58,11 +61,15 @@ function nextActionFor(run: { status: string; stage: string } | null, paused: bo
   }
 }
 
-export async function getAgentObservations(): Promise<{
+export async function getAgentObservations(scope?: TenantScope): Promise<{
   paused: boolean;
   pauseReason: string | null;
   agents: AgentObservation[];
 }> {
+  if (!scope) {
+    try { scope = await currentScope('tenant:read', 'observatory:agent-overview'); }
+    catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; }
+  }
   const control = await db.agencyControl.findUnique({ where: { key: 'autonomy' } });
   const paused = control?.paused ?? false;
 
@@ -74,6 +81,7 @@ export async function getAgentObservations(): Promise<{
     // Cost/model provenance comes from AgentLog rows (the existing AI usage
     // choke point). Bounded window keeps the read cheap and recent.
     db.agentLog.findMany({
+      where: await agentLogWhere(scope!),
       orderBy: { createdAt: 'desc' },
       take: 1000,
       select: {

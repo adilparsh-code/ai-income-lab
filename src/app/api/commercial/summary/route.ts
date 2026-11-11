@@ -12,6 +12,7 @@ import { NextResponse } from 'next/server';
 import { requireAdminApi } from '@/lib/agency/session-guard';
 import { auditSecurityEvent, clientIpFrom, enforceRateLimit } from '@/lib/security/guard';
 import { getCommercialSummary } from '@/lib/commercial/commercial-summary';
+import { currentScope } from '@/lib/tenancy/action-scope';
 import { deriveCommercialSignals } from '@/lib/commercial/commercial-learning';
 
 export const dynamic = 'force-dynamic';
@@ -28,10 +29,13 @@ export async function GET(request: Request) {
   const auth = await requireAdminApi(request);
   if ('response' in auth) return auth.response;
 
+  let scope;
+  try { scope = await currentScope('tenant:read', 'api:commercial:summary'); }
+  catch { return NextResponse.json({ ok: false, error: 'Forbidden.' }, { status: 403 }); }
   try {
     const [summary, learning] = await Promise.all([
-      getCommercialSummary(),
-      deriveCommercialSignals(),
+      getCommercialSummary(scope),
+      deriveCommercialSignals(scope),
     ]);
     return NextResponse.json({ ok: true, summary, learning: { signals: learning.signals, evidence: learning.evidence } });
   } catch {

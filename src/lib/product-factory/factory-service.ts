@@ -118,6 +118,8 @@ export interface ProductFactoryRequest {
   productType?: string;
   monetizationPreference?: string;
   constraints?: string[];
+  /** Authorized tenant scope (server-resolved; never from client input). */
+  tenantId?: string;
 }
 
 export interface ProductFactoryOutcome {
@@ -175,6 +177,7 @@ export async function runProductFactory(
   const pipelineRequest: PipelineRequest = {
     opportunityId: request.opportunityId,
     objective,
+    tenantId: request.tenantId,
     stages: [...FACTORY_STAGES],
     ...(productType ? { productType } : {}),
     ...(monetization ? { monetizationPreference: monetization } : {}),

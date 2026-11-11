@@ -11,6 +11,14 @@ import {
   type BusinessIntelligenceResult,
 } from '@/lib/business/profitability';
 import { resolveRevenueHealth } from '@/lib/business/profitability';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import {
+  experimentWhere,
+  opportunityWhere,
+  productWhere,
+  revenueWhere,
+} from '@/lib/tenancy/relation-scope';
 
 export interface BusinessIntelligenceSummary {
   hasRevenueData: boolean;
@@ -29,13 +37,17 @@ export interface BusinessIntelligenceSummary {
   error: string | null;
 }
 
-export async function getBusinessIntelligenceSummary(): Promise<BusinessIntelligenceSummary> {
+export async function getBusinessIntelligenceSummary(
+  scopeInput?: TenantScope,
+): Promise<BusinessIntelligenceSummary> {
+  const scope = scopeInput ?? (await currentScope('tenant:read', 'loader:business-intelligence'));
   try {
     const [opportunities, products, experiments, revenues] = await Promise.all([
-      db.opportunity.findMany(),
-      db.product.findMany(),
-      db.experiment.findMany(),
+      db.opportunity.findMany({ where: opportunityWhere(scope) }),
+      db.product.findMany({ where: productWhere(scope) }),
+      db.experiment.findMany({ where: experimentWhere(scope) }),
       db.revenue.findMany({
+        where: revenueWhere(scope),
         select: {
           id: true,
           grossRevenue: true,

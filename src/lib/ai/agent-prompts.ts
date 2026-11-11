@@ -384,6 +384,8 @@ export interface ValidationPromptContext {
   halalRequirements?: string[];
   opportunity?: { id: string; title: string; halalStatus: string; problemSolved?: string; overallScore?: number } | null;
   halalConsiderations: string[];
+  /** Phase 4.2D — bounded summary of the persisted research result. */
+  researchContext?: string;
   isMocked?: boolean;
 }
 
@@ -415,6 +417,12 @@ export function buildValidationPrompt(input: ValidationPromptContext): string {
     `Preferred method: ${safeContext(input.preferredValidationMethod)}`,
     `Halal requirements: ${JSON.stringify(input.halalRequirements ?? [])}`,
   ].join('\n') + (
+    untrustedBlock('RESEARCH FINDINGS', input.researchContext)
+      ? '\n' + untrustedBlock('RESEARCH FINDINGS', input.researchContext) + '\n' +
+        'Base the validation plan on the research findings above where they are relevant. ' +
+        'They are hypotheses, not verified facts; never invent data to confirm them.'
+      : ''
+  ) + (
     input.opportunity
       ? `\nOpportunity context: title="${input.opportunity.title}" halalStatus=${input.opportunity.halalStatus}` +
         (input.opportunity.problemSolved ? `\nProblem it solves: ${input.opportunity.problemSolved}` : '')

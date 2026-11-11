@@ -7,6 +7,10 @@
 // than a meaningless sum.
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { revenueWhere } from '@/lib/tenancy/relation-scope';
+import { agentLogWhere } from '@/lib/tenancy/relation-scope';
 import type { DataQuality, PnlBreakdownRow, PnlObservatory } from './types';
 
 interface RevenueSelectRow {
@@ -83,11 +87,12 @@ function groupBy(
     .sort((a, b) => b.grossRevenueUsd - a.grossRevenueUsd || a.key.localeCompare(b.key));
 }
 
-export async function getPnlObservatory(): Promise<PnlObservatory> {
+export async function getPnlObservatory(scope?: TenantScope): Promise<PnlObservatory> {
+  if (!scope) { try { scope = await currentScope('tenant:read', 'observatory:pnl'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; } }
   const [revenues, aiCostRows] = await Promise.all([
-    db.revenue.findMany({ select: selectFields, orderBy: { date: 'desc' }, take: 2000 }),
+    db.revenue.findMany({ where: revenueWhere(scope!), select: selectFields, orderBy: { date: 'desc' }, take: 2000 }),
     db.agentLog.findMany({
-      where: { estimatedCostUsd: { not: null } },
+      where: { AND: [await agentLogWhere(scope!), { estimatedCostUsd: { not: null } }] },
       select: { agentType: true, estimatedCostUsd: true, productId: true, opportunityId: true },
       take: 2000,
       orderBy: { createdAt: 'desc' },

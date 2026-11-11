@@ -21,6 +21,7 @@ import {
 import { APPROVAL_ACTIONS, isApprovalAction } from '@/lib/security/approvals-core';
 import { issueApproval } from '@/lib/security/approvals';
 import { resolveApprovalScope } from '@/lib/security/approval-scope';
+import { resolveTenantScope, scopeTenantId } from '@/lib/tenancy/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,7 +53,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: 'subjectId is required (max 128 chars).' }, { status: 400 });
   }
 
-  const scope = await resolveApprovalScope(action, subjectId);
+  // Phase 4.2D — an approval is issued INSIDE the approver's authorized tenant
+  // partition, and the subject must belong to that same partition. A grant for
+  // another tenant's product/offer is never minted (and not disclosed).
+  const tenant = await resolveTenantScope(request, {
+    permission: 'tenant:write',
+    surface: SURFACE,
+  });
+  if (!tenant.ok) {
+    return NextResponse.json({ ok: false, error: tenant.error }, { status: tenant.status });
+  }
+  const ownerTenantId = scopeTenantId(tenant.scope);
+
+  const scope = await resolveApprovalScope(action, subjectId, ownerTenantId);
   if (!scope.ok) return NextResponse.json({ ok: false, error: scope.error }, { status: 404 });
 
   const issued = await issueApproval({
@@ -60,12 +73,14 @@ export async function POST(request: Request) {
     subjectId,
     scopeHash: scope.scopeHash,
     approver: { sessionId: auth.session.sessionId, email: auth.session.email },
+    tenantId: ownerTenantId,
   });
   await auditSecurityEvent({
     kind: 'APPROVAL_ISSUED',
     surface: SURFACE,
     outcome: 'ok',
     detail: `action=${action} subject=${subjectId.slice(0, 24)} grant=${issued.grantId.slice(0, 12)}`.slice(0, 300),
+    tenantId: ownerTenantId,
   });
 
   return NextResponse.json(

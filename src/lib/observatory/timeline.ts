@@ -5,6 +5,9 @@
 // fabricated. Bounded takes per table keep the read cheap.
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { opportunityWhere, productWhere, productDeploymentWhere, growthDecisionWhere, learningEntryWhere, revenueWhere, productEventWhere, humanReviewWhere, opportunityHandoffWhere } from '@/lib/tenancy/relation-scope';
 import type { TimelineEntry } from './types';
 
 const PER_TABLE_LIMIT = 30;
@@ -21,7 +24,8 @@ function sinceDate(since?: string): Date | undefined {
   return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
-export async function getObservatoryTimeline(options: TimelineOptions = {}): Promise<TimelineEntry[]> {
+export async function getObservatoryTimeline(options: TimelineOptions = {}, scope?: TenantScope): Promise<TimelineEntry[]> {
+  if (!scope) { try { scope = await currentScope('tenant:read', 'observatory:timeline'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; } }
   const limit = Math.min(200, Math.max(10, options.limit ?? 60));
   const since = sinceDate(options.since);
   const sinceFilter = since ? { gte: since } : undefined;
@@ -42,17 +46,17 @@ export async function getObservatoryTimeline(options: TimelineOptions = {}): Pro
     handoffs,
   ] = await Promise.all([
     db.agentRun.findMany({ where: sinceFilter ? { startedAt: sinceFilter } : undefined, orderBy: { startedAt: 'desc' }, take: PER_TABLE_LIMIT }),
-    db.jobRun.findMany({ where: sinceFilter ? { createdAt: sinceFilter } : undefined, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT }),
-    db.opportunity.findMany({ where: sinceFilter ? { createdAt: sinceFilter } : undefined, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, title: true, status: true, halalStatus: true, createdAt: true } }),
-    db.product.findMany({ where: sinceFilter ? { createdAt: sinceFilter } : undefined, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, name: true, status: true, createdAt: true, updatedAt: true } }),
-    db.productDeployment.findMany({ where: sinceFilter ? { createdAt: sinceFilter } : undefined, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, productId: true, status: true, providerId: true, url: true, createdAt: true } }),
-    db.growthDecision.findMany({ where: sinceFilter ? { createdAt: sinceFilter } : undefined, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, opportunityId: true, experimentId: true, decision: true, reason: true, decidedBy: true, evidenceType: true, createdAt: true } }),
-    db.learningEntry.findMany({ where: sinceFilter ? { createdAt: sinceFilter } : undefined, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, hypothesis: true, result: true, evidenceType: true, createdAt: true } }),
-    db.revenue.findMany({ where: sinceFilter ? { createdAt: sinceFilter } : undefined, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, revenueSource: true, grossRevenue: true, netRevenue: true, currency: true, productId: true, opportunityId: true, createdAt: true } }),
-    db.productEvent.findMany({ where: sinceFilter ? { occurredAt: sinceFilter } : undefined, orderBy: { occurredAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, productId: true, eventType: true, occurredAt: true, source: true } }),
-    db.humanReview.findMany({ where: sinceFilter ? { createdAt: sinceFilter } : undefined, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, category: true, title: true, status: true, requestedBy: true, createdAt: true, decidedAt: true } }),
-    db.securityEvent.findMany({ where: sinceFilter ? { createdAt: sinceFilter } : undefined, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, kind: true, surface: true, outcome: true, createdAt: true } }),
-    db.opportunityHandoff.findMany({ where: sinceFilter ? { receivedAt: sinceFilter } : undefined, orderBy: { receivedAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, idempotencyKey: true, eventType: true, status: true, eligibility: true, jobRunId: true, receivedAt: true } }),
+    db.jobRun.findMany({ where: { ...(sinceFilter ? { createdAt: sinceFilter } : {}), ...(scope!.mode === 'tenant' ? { tenantId: scope!.tenantId } : { tenantId: null }) }, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT }),
+    db.opportunity.findMany({ where: { ...(sinceFilter ? { createdAt: sinceFilter } : {}), ...opportunityWhere(scope!) }, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, title: true, status: true, halalStatus: true, createdAt: true } }),
+    db.product.findMany({ where: { ...(sinceFilter ? { createdAt: sinceFilter } : {}), ...productWhere(scope!) }, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, name: true, status: true, createdAt: true, updatedAt: true } }),
+    db.productDeployment.findMany({ where: { ...(sinceFilter ? { createdAt: sinceFilter } : {}), ...productDeploymentWhere(scope!) }, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, productId: true, status: true, providerId: true, url: true, createdAt: true } }),
+    db.growthDecision.findMany({ where: { ...(sinceFilter ? { createdAt: sinceFilter } : {}), ...growthDecisionWhere(scope!) }, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, opportunityId: true, experimentId: true, decision: true, reason: true, decidedBy: true, evidenceType: true, createdAt: true } }),
+    db.learningEntry.findMany({ where: { ...(sinceFilter ? { createdAt: sinceFilter } : {}), ...learningEntryWhere(scope!) }, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, hypothesis: true, result: true, evidenceType: true, createdAt: true } }),
+    db.revenue.findMany({ where: { ...(sinceFilter ? { createdAt: sinceFilter } : {}), ...revenueWhere(scope!) }, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, revenueSource: true, grossRevenue: true, netRevenue: true, currency: true, productId: true, opportunityId: true, createdAt: true } }),
+    db.productEvent.findMany({ where: { ...(sinceFilter ? { occurredAt: sinceFilter } : {}), ...productEventWhere(scope!) }, orderBy: { occurredAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, productId: true, eventType: true, occurredAt: true, source: true } }),
+    db.humanReview.findMany({ where: { ...(sinceFilter ? { createdAt: sinceFilter } : {}), ...humanReviewWhere(scope!) }, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, category: true, title: true, status: true, requestedBy: true, createdAt: true, decidedAt: true } }),
+    db.securityEvent.findMany({ where: { ...(sinceFilter ? { createdAt: sinceFilter } : {}), ...(scope!.mode === 'tenant' ? { tenantId: scope!.tenantId } : { tenantId: null }) }, orderBy: { createdAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, kind: true, surface: true, outcome: true, createdAt: true } }),
+    db.opportunityHandoff.findMany({ where: { ...(sinceFilter ? { receivedAt: sinceFilter } : {}), ...opportunityHandoffWhere(scope!) }, orderBy: { receivedAt: 'desc' }, take: PER_TABLE_LIMIT, select: { id: true, idempotencyKey: true, eventType: true, status: true, eligibility: true, jobRunId: true, receivedAt: true } }),
   ]);
 
   const entries: TimelineEntry[] = [];

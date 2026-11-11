@@ -15,7 +15,8 @@ import { logger } from '@/lib/server-log';
 import { runJob } from '@/lib/jobs/job-runner';
 import { isJobType, type JobPayload } from '@/lib/jobs/types';
 import { getRecentJobActivity } from '@/lib/jobs/job-registry';
-import { guardOperatorEndpoint, readJsonBody } from '@/lib/security/guard';
+import { guardOperatorEndpoint, guardBrowserOrOperator, readJsonBody } from '@/lib/security/guard';
+import { resolveTenantScope, scopeTenantId } from '@/lib/tenancy/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,10 +47,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: 'correlationId must be a non-empty string of at most 200 characters' }, { status: 400 });
   }
 
+  // Phase 4.2D — the job is created INSIDE the caller's authorized tenant. A
+  // body-supplied tenant is impossible: the payload has no such field and the
+  // runner never reads one.
+  const resolved = await resolveTenantScope(request, {
+    permission: 'tenant:write',
+    surface: 'api:jobs:post',
+  });
+  if (!resolved.ok) {
+    return NextResponse.json({ ok: false, error: resolved.error }, { status: resolved.status });
+  }
+
   logger.info('Job API dispatch', { jobType });
 
   try {
-    const outcome = await runJob(jobType, payload as JobPayload, correlationId as string | undefined);
+    const outcome = await runJob(jobType, payload as JobPayload, correlationId as string | undefined, {
+      tenantId: scopeTenantId(resolved.scope),
+    });
     return NextResponse.json({ ok: true, job: outcome }, { status: outcome.deduplicated ? 200 : 201 });
   } catch {
     logger.error('Job API execution failed', new Error('job dispatch failed'), { jobType: String(jobType) });
@@ -58,15 +72,27 @@ export async function POST(request: Request) {
 }
 
 export async function GET(request: Request) {
-  // Read-only operator telemetry: rate-limited by IP, credential required so
-  // job activity (which can reveal workload patterns) is not publicly readable.
-  const guard = await guardOperatorEndpoint(request, 'api:jobs:get', { max: 60, windowSeconds: 60 });
+  // Read-only telemetry: rate-limited by IP and gated by the operator credential
+  // or an admin session. Phase 4.2D — the list is scoped to the caller's
+  // authorized tenant partition; there is no cross-tenant listing.
+  const guard = await guardBrowserOrOperator(request, 'api:jobs:get', { max: 60, windowSeconds: 60 });
   if ('response' in guard) {
     return NextResponse.json(guard.response, { status: guard.status });
   }
+  const resolved = await resolveTenantScope(request, {
+    permission: 'tenant:read',
+    surface: 'api:jobs:get',
+  });
+  if (!resolved.ok) {
+    return NextResponse.json({ ok: false, error: resolved.error }, { status: resolved.status });
+  }
   try {
-    const activity = await getRecentJobActivity(20);
-    return NextResponse.json({ ok: true, jobs: activity });
+    const activity = await getRecentJobActivity(20, scopeTenantId(resolved.scope));
+    return NextResponse.json({
+      ok: true,
+      tenant: resolved.scope.mode === 'tenant' ? resolved.scope.tenantSlug : null,
+      jobs: activity,
+    });
   } catch {
     return NextResponse.json({ ok: false, error: 'Job activity is temporarily unavailable.' }, { status: 500 });
   }

@@ -3,6 +3,11 @@
 import { db } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import { requireAdminAction } from '@/lib/agency/action-guard';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import {
+  assertOpportunityInScope,
+  experimentWhere,
+} from '@/lib/tenancy/relation-scope';
 
 export interface CreateExperimentInput {
   hypothesis: string;
@@ -39,7 +44,9 @@ export interface UpdateExperimentInput {
  */
 export async function getExperiments() {
   await requireAdminAction();
+  const scope = await currentScope('tenant:read', 'action:getExperiments');
   const experiments = await db.experiment.findMany({
+    where: experimentWhere(scope),
     include: {
       opportunity: {
         select: {
@@ -60,8 +67,9 @@ export async function getExperiments() {
  */
 export async function getExperiment(id: string) {
   await requireAdminAction();
-  const experiment = await db.experiment.findUnique({
-    where: { id },
+  const scope = await currentScope('tenant:read', 'action:getExperiment');
+  const experiment = await db.experiment.findFirst({
+    where: { id, ...experimentWhere(scope) },
     include: {
       opportunity: true,
     },
@@ -75,9 +83,12 @@ export async function getExperiment(id: string) {
  */
 export async function createExperiment(input: CreateExperimentInput) {
   await requireAdminAction();
+  const scope = await currentScope('tenant:write', 'action:createExperiment');
   if (!input.hypothesis || input.hypothesis.trim().length === 0) {
     throw new Error('Hypothesis is required');
   }
+
+  if (input.opportunityId) await assertOpportunityInScope(scope, input.opportunityId);
 
   const experiment = await db.experiment.create({
     data: {
@@ -105,9 +116,10 @@ export async function createExperiment(input: CreateExperimentInput) {
  */
 export async function updateExperiment(input: UpdateExperimentInput) {
   await requireAdminAction();
+  const scope = await currentScope('tenant:write', 'action:updateExperiment');
   const { id, ...data } = input;
 
-  const existing = await db.experiment.findUnique({ where: { id } });
+  const existing = await db.experiment.findFirst({ where: { id, ...experimentWhere(scope) } });
   if (!existing) throw new Error('Experiment not found');
 
   // Auto-calculate conversion rate if visitors and sales provided
@@ -115,8 +127,10 @@ export async function updateExperiment(input: UpdateExperimentInput) {
   const sales = data.sales !== undefined ? data.sales : existing.sales;
   const conversionRate = visitors > 0 ? (sales / visitors) * 100 : 0;
 
-  const experiment = await db.experiment.update({
-    where: { id },
+  if (data.opportunityId) await assertOpportunityInScope(scope, data.opportunityId);
+
+  const updated = await db.experiment.updateMany({
+    where: { id, ...experimentWhere(scope) },
     data: {
       ...data,
       startDate: data.startDate !== undefined ? (data.startDate ? new Date(data.startDate) : null) : existing.startDate,
@@ -125,6 +139,9 @@ export async function updateExperiment(input: UpdateExperimentInput) {
       updatedAt: new Date(),
     },
   });
+  if (updated.count === 0) throw new Error('Experiment not found');
+  const experiment = await db.experiment.findFirst({ where: { id, ...experimentWhere(scope) } });
+  if (!experiment) throw new Error('Experiment not found');
 
   revalidatePath('/experiments');
   revalidatePath(`/experiments/${id}`);
@@ -141,10 +158,12 @@ export async function updateExperiment(input: UpdateExperimentInput) {
  */
 export async function deleteExperiment(id: string) {
   await requireAdminAction();
-  const existing = await db.experiment.findUnique({ where: { id } });
+  const scope = await currentScope('tenant:write', 'action:deleteExperiment');
+  const existing = await db.experiment.findFirst({ where: { id, ...experimentWhere(scope) } });
   if (!existing) throw new Error('Experiment not found');
 
-  await db.experiment.delete({ where: { id } });
+  const removed = await db.experiment.deleteMany({ where: { id, ...experimentWhere(scope) } });
+  if (removed.count === 0) throw new Error('Experiment not found');
 
   revalidatePath('/experiments');
   if (existing.opportunityId) {

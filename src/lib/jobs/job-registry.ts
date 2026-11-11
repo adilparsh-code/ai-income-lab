@@ -41,7 +41,7 @@ export interface JobActivityItem {
 export interface JobRegistryDb {
   jobRun: {
     findMany(args: {
-      where?: { status?: { notIn: string[] } };
+      where?: { status?: { notIn: string[] }; tenantId?: string | null };
       orderBy: { createdAt: 'desc' };
       take: number;
     }): Promise<JobActivityRow[]>;
@@ -60,9 +60,18 @@ const defaultDb = new Proxy({} as JobRegistryDb, {
 });
 
 /** Compact, safe activity items for dashboards. No payloads, no secrets. */
-export async function getRecentJobActivity(limit = 8): Promise<JobActivityItem[]> {
+/**
+ * Recent job activity for ONE tenant partition.
+ *
+ * Phase 4.2D — `ownerTenantId` is required by callers. It defaults to null
+ * (legacy) so a caller that forgets it can never see tenant-owned activity.
+ */
+export async function getRecentJobActivity(
+  limit = 8,
+  ownerTenantId: string | null = null,
+): Promise<JobActivityItem[]> {
   const rows = await defaultDb.jobRun.findMany({
-    where: { status: { notIn: ['QUEUED'] } },
+    where: { status: { notIn: ['QUEUED'] }, tenantId: ownerTenantId },
     orderBy: { createdAt: 'desc' },
     take: limit,
   });

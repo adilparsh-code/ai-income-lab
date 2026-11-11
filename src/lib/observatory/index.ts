@@ -12,6 +12,7 @@ import { getGitHubWatcher, getIntegrationHealth } from './integration-health';
 import { getExecutiveNow, getNextActions } from './executive-view';
 import { getControlReflection, type ControlReflectionView } from './control-reflection';
 import { getCommercialSummary, type CommercialSummary } from '@/lib/commercial/commercial-summary';
+import type { TenantScope } from '@/lib/tenancy/scope';
 import type {
   CustomerInteractionView,
   ExecutiveNow,
@@ -51,22 +52,23 @@ export interface ObservatoryView {
   commercial: CommercialSummary;
 }
 
-export async function getObservatoryView(): Promise<ObservatoryView> {
+export async function getObservatoryView(scope?: TenantScope): Promise<ObservatoryView> {
+  if (!scope) { const { currentScope } = await import('@/lib/tenancy/action-scope'); try { scope = await currentScope('tenant:read', 'observatory:view'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; } }
   const [agents, timeline, learning, pnl, halal, publishing, customerInteractions, integrations, github, executive, nextActions, control, commercial] =
     await Promise.all([
-      getAgentObservations(),
-      getObservatoryTimeline({ limit: 80 }),
-      getLearningObservations(40),
-      getPnlObservatory(),
-      getHalalMap(),
-      getPublishingRows(20),
+      getAgentObservations(scope),
+      getObservatoryTimeline({ limit: 80 }, scope),
+      getLearningObservations(40, scope),
+      getPnlObservatory(scope),
+      getHalalMap(scope),
+      getPublishingRows(20, scope),
       getCustomerInteractions(),
       getIntegrationHealth(),
       getGitHubWatcher(),
-      getExecutiveNow(),
-      getNextActions(),
-      getControlReflection(),
-      getCommercialSummary(),
+      getExecutiveNow(scope),
+      getNextActions(scope),
+      getControlReflection(scope),
+      getCommercialSummary(scope),
     ]);
 
   return {

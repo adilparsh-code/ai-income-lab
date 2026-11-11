@@ -35,9 +35,16 @@ import { db } from '@/lib/db';
 import Link from 'next/link';
 import { Search, BarChart3, Crown, Workflow } from 'lucide-react';
 import { requireAdminPageAccess } from '@/lib/agency/page-guard';
+import { resolveScopeForServerComponent, scopeTenantId } from '@/lib/tenancy/scope';
+import { evidenceItemWhere } from '@/lib/tenancy/relation-scope';
 
 export default async function DashboardPage() {
   await requireAdminPageAccess('/');
+  // Phase 4.2D — the activity list is scoped to the signed-in admin's authorized
+  // tenant partition. A resolution failure degrades to the legacy (unattributed)
+  // partition rather than showing another tenant's work.
+  const scopeResolution = await resolveScopeForServerComponent({ permission: 'tenant:read' }).catch(() => null);
+  const ownerTenantId = scopeResolution?.ok ? scopeTenantId(scopeResolution.scope) : null;
   const [stats, nextAction, revenueData, opportunities, lifecycle, recentPipelineRuns, biSummary, aiUsage, jobActivity, researchHealth, workflowRuns, factorySummary, operationsSummary, controlCenter, incomeEngineSummary] =
     await Promise.all([
       // Core sections load independently: one failing query renders that
@@ -51,7 +58,7 @@ export default async function DashboardPage() {
       getBusinessIntelligenceSummary(),
       getAiUsageForRange('7d').catch(() => null),
       // Activity listing is non-critical for page load; degrade to empty.
-      getRecentJobActivity(6).catch(() => [] as JobActivityItem[]),
+      getRecentJobActivity(6, ownerTenantId).catch(() => [] as JobActivityItem[]),
       // Phase 5 status surfaces degrade gracefully; never fabricated.
       Promise.resolve(describeResearchProviderHealth()),
       getRecentWorkflowRuns(5).catch(() => []),
@@ -68,9 +75,10 @@ export default async function DashboardPage() {
   const nextActionData = nextAction.ok ? nextAction.data : null;
 
   // Phase 5 — evidence provenance counts from real stored records.
+  const scopedEvidence = scopeResolution?.ok ? evidenceItemWhere(scopeResolution.scope) : { opportunityId: null };
   const [verifiedEvidenceCount, discoveryCount] = await Promise.all([
-    db.evidenceItemModel.count({ where: { evidenceType: 'VERIFIED_DATA' } }).catch(() => 0),
-    db.evidenceItemModel.count({ where: { evidenceType: 'SEARCH_DISCOVERY' } }).catch(() => 0),
+    db.evidenceItemModel.count({ where: { ...scopedEvidence, evidenceType: 'VERIFIED_DATA' } }).catch(() => 0),
+    db.evidenceItemModel.count({ where: { ...scopedEvidence, evidenceType: 'SEARCH_DISCOVERY' } }).catch(() => 0),
   ]);
   const systemStatus: SystemStatusData = {
     research: {

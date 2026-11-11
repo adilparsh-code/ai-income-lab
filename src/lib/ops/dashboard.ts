@@ -6,6 +6,15 @@
 // BLOCKED | AWAITING_HUMAN_INPUT. Unavailable functionality is never hidden.
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import {
+  experimentWhere,
+  opportunityWhere,
+  productWhere,
+  revenueWhere,
+} from '@/lib/tenancy/relation-scope';
+import { scopeTenantId } from '@/lib/tenancy/scope';
 import { describeCapabilityCenter, type CapabilityCenterReport } from '@/lib/product-factory/capability-center';
 import { getOperationsSummary, type OperationsSummary } from '@/lib/product-factory/operations';
 import { describeAiCapability } from '@/lib/ai/capability';
@@ -95,7 +104,13 @@ function mapCapability(status: string): SystemStateLabel {
   }
 }
 
-export async function getPhase8OperationsView(): Promise<Phase8OperationsView> {
+export async function getPhase8OperationsView(
+  scopeInput?: TenantScope,
+): Promise<Phase8OperationsView> {
+  const scope = scopeInput ?? (await currentScope('tenant:read', 'loader:ops-dashboard'));
+  const scopedOpportunityIds = (
+    await db.opportunity.findMany({ where: opportunityWhere(scope), select: { id: true } })
+  ).map((o) => o.id);
   const [capabilities, factory, missions, simulations, memories] = await Promise.all([
     describeCapabilityCenter(),
     getOperationsSummary().catch(() => null),
@@ -147,13 +162,13 @@ export async function getPhase8OperationsView(): Promise<Phase8OperationsView> {
   };
 
   const [opportunityCount, experimentCount, productCount, loopCount, revenueAgg, simAgg, pendingReview] = await Promise.all([
-    db.opportunity.count().catch(() => 0),
-    db.experiment.count().catch(() => 0),
-    db.product.count().catch(() => 0),
-    db.loopTransition.count().catch(() => 0),
-    db.revenue.aggregate({ _sum: { netRevenue: true } }).catch(() => ({ _sum: { netRevenue: null } })),
-    db.simulationRun.aggregate({ _sum: { revenueUsd: true, profitUsd: true } }).catch(() => ({ _sum: { revenueUsd: null, profitUsd: null } })),
-    db.jobRun.count({ where: { status: 'HUMAN_REVIEW' } }).catch(() => 0),
+    db.opportunity.count({ where: opportunityWhere(scope) }).catch(() => 0),
+    db.experiment.count({ where: experimentWhere(scope) }).catch(() => 0),
+    db.product.count({ where: productWhere(scope) }).catch(() => 0),
+    db.loopTransition.count({ where: { opportunityId: { in: scopedOpportunityIds } } }).catch(() => 0),
+    db.revenue.aggregate({ where: revenueWhere(scope), _sum: { netRevenue: true } }).catch(() => ({ _sum: { netRevenue: null } })),
+    db.simulationRun.aggregate({ where: { opportunityId: { in: scopedOpportunityIds } }, _sum: { revenueUsd: true, profitUsd: true } }).catch(() => ({ _sum: { revenueUsd: null, profitUsd: null } })),
+    db.jobRun.count({ where: { status: 'HUMAN_REVIEW', tenantId: scopeTenantId(scope) } }).catch(() => 0),
   ]);
 
   const income: IncomeEngineOps = {

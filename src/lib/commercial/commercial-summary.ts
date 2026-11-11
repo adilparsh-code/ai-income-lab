@@ -14,6 +14,9 @@
 // ============================================================================
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { prospectWhere, offerWhere, proposalWhere, serviceEngagementWhere, milestoneWhere, deliverableWhere, serviceIssueWhere, revenueWhere, learningEntryWhere } from '@/lib/tenancy/relation-scope';
 import { describeCommunicationHealth } from './communication-provider';
 import { OFFER_TYPES, type OfferType } from './offer-states';
 
@@ -70,7 +73,8 @@ function emptyTypeCounts(): Record<OfferType, number> {
  * caller as an explicit failure — it never returns a partial summary that
  * could read as "zero activity" when it is actually "could not read".
  */
-export async function getCommercialSummary(): Promise<CommercialSummary> {
+export async function getCommercialSummary(scope?: TenantScope): Promise<CommercialSummary> {
+  if (!scope) { try { scope = await currentScope('tenant:read', 'commercial:summary'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'commercial-legacy' }; else throw e; } }
   const [
     prospects,
     offers,
@@ -83,23 +87,23 @@ export async function getCommercialSummary(): Promise<CommercialSummary> {
     revenue,
     learning,
   ] = await Promise.all([
-    db.prospect.findMany({ select: { lifecycleState: true, riskState: true } }),
-    db.offer.findMany({ select: { type: true, status: true, halalStatus: true } }),
-    db.proposal.findMany({ select: { state: true, approvalState: true } }),
-    db.scopeChangeRequest.findMany({ select: { status: true } }),
-    db.serviceEngagement.findMany({ select: { state: true, engagementType: true } }),
-    db.milestone.findMany({ select: { paymentState: true } }),
-    db.deliverable.findMany({ select: { state: true } }),
-    db.serviceIssue.findMany({ select: { status: true, requiresHuman: true } }),
+    db.prospect.findMany({ where: prospectWhere(scope!), select: { lifecycleState: true, riskState: true } }),
+    db.offer.findMany({ where: offerWhere(scope!), select: { type: true, status: true, halalStatus: true } }),
+    db.proposal.findMany({ where: proposalWhere(scope!), select: { state: true, approvalState: true } }),
+    db.scopeChangeRequest.findMany({ where: { proposal: { is: proposalWhere(scope!) } }, select: { status: true } }),
+    db.serviceEngagement.findMany({ where: serviceEngagementWhere(scope!), select: { state: true, engagementType: true } }),
+    db.milestone.findMany({ where: milestoneWhere(scope!), select: { paymentState: true } }),
+    db.deliverable.findMany({ where: deliverableWhere(scope!), select: { state: true } }),
+    db.serviceIssue.findMany({ where: serviceIssueWhere(scope!), select: { status: true, requiresHuman: true } }),
     // PHASE 11.7: only ACTUAL-basis revenue counts as earned here. Estimates,
     // projections and simulations are excluded so the summary cannot report a
     // plan as income.
     db.revenue.findMany({
-      where: { revenueSource: { startsWith: 'service' }, revenueBasis: 'ACTUAL' },
+      where: { AND: [revenueWhere(scope!), { revenueSource: { startsWith: 'service' }, revenueBasis: 'ACTUAL' }] },
       select: { grossRevenue: true, currency: true },
     }),
     db.learningEntry.findMany({
-      where: { context: { startsWith: 'commercial' } },
+      where: { AND: [learningEntryWhere(scope!), { context: { startsWith: 'commercial' } }] },
       orderBy: { createdAt: 'desc' },
       // PHASE 11.7 FIX: this was hard-capped at 5 rows, so the summary could
       // never surface more than the five newest learning entries regardless of

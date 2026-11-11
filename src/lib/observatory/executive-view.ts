@@ -5,18 +5,22 @@
 // answer traces to persisted rows; unknown states are labelled, not filled.
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { humanReviewWhere } from '@/lib/tenancy/relation-scope';
 import { getAgentObservations } from './agent-overview';
 import { getLearningObservations } from './learning';
 import { getPnlObservatory } from './pnl';
 import { getPublishingRows } from './safety-map';
 import type { DataQuality, ExecutiveNow, NextAction, NextActionsView } from './types';
 
-export async function getExecutiveNow(): Promise<ExecutiveNow> {
+export async function getExecutiveNow(scope?: TenantScope): Promise<ExecutiveNow> {
+  if (!scope) { try { scope = await currentScope('tenant:read', 'observatory:executive'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; } }
   const [{ agents, paused }, learning, pnl, publishing] = await Promise.all([
-    getAgentObservations(),
-    getLearningObservations(8),
-    getPnlObservatory(),
-    getPublishingRows(8),
+    getAgentObservations(scope),
+    getLearningObservations(8, scope),
+    getPnlObservatory(scope),
+    getPublishingRows(8, scope),
   ]);
 
   const active = agents
@@ -116,14 +120,15 @@ function buildRisks(
   return risks.slice(0, 8);
 }
 
-export async function getNextActions(): Promise<NextActionsView> {
+export async function getNextActions(scope?: TenantScope): Promise<NextActionsView> {
+  if (!scope) { try { scope = await currentScope('tenant:read', 'observatory:next-actions'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; } }
   const actions: NextAction[] = [];
   const [{ agents, paused }, learning, pnl, publishing, reviews] = await Promise.all([
-    getAgentObservations(),
-    getLearningObservations(10),
-    getPnlObservatory(),
-    getPublishingRows(10),
-    db.humanReview.findMany({ where: { status: 'PENDING' }, orderBy: { createdAt: 'asc' }, take: 5, select: { id: true, category: true, title: true } }),
+    getAgentObservations(scope),
+    getLearningObservations(10, scope),
+    getPnlObservatory(scope),
+    getPublishingRows(10, scope),
+    db.humanReview.findMany({ where: { AND: [{ status: 'PENDING' }, humanReviewWhere(scope!)] }, orderBy: { createdAt: 'asc' }, take: 5, select: { id: true, category: true, title: true } }),
   ]);
 
   for (const r of reviews) {

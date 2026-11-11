@@ -1,6 +1,14 @@
 // Plain (non-server-action) loaders. Callers MUST authorize first;
 // the public entry points live in src/actions/* and call requireAdminAction().
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import {
+  experimentWhere,
+  opportunityWhere,
+  productWhere,
+  revenueWhere,
+} from '@/lib/tenancy/relation-scope';
 
 export interface DashboardStats {
   totalOpportunities: number;
@@ -14,14 +22,15 @@ export interface DashboardStats {
   topOpportunity: { id: string; title: string; score: number } | null;
 }
 
-export async function getDashboardStats(): Promise<DashboardStats> {
+export async function getDashboardStats(scopeInput?: TenantScope): Promise<DashboardStats> {
+  const scope = scopeInput ?? (await currentScope('tenant:read', 'loader:dashboard'));
   const [opportunities, products, experiments, revenues] = await Promise.all([
-    db.opportunity.findMany(),
-    db.product.findMany(),
-    db.experiment.findMany(),
+    db.opportunity.findMany({ where: opportunityWhere(scope) }),
+    db.product.findMany({ where: productWhere(scope) }),
+    db.experiment.findMany({ where: experimentWhere(scope) }),
     // Explicit select: only the columns this loader reads, so the dashboard
     // does not depend on unrelated Revenue columns added by later migrations.
-    db.revenue.findMany({ select: { date: true, netRevenue: true } }),
+    db.revenue.findMany({ where: revenueWhere(scope), select: { date: true, netRevenue: true } }),
   ]);
   
   const now = new Date();
@@ -69,10 +78,12 @@ export interface NextBestAction {
   reason: string;
 }
 
-export async function getNextBestAction(): Promise<NextBestAction | null> {
+export async function getNextBestAction(scopeInput?: TenantScope): Promise<NextBestAction | null> {
+  const scope = scopeInput ?? (await currentScope('tenant:read', 'loader:next-best-action'));
   // Find the highest-scoring opportunity that has a next action and isn't rejected/paused
   const opportunity = await db.opportunity.findFirst({
     where: {
+      ...opportunityWhere(scope),
       status: { notIn: ['REJECTED', 'PAUSED', 'SCALING'] },
       halalStatus: { not: 'NOT_ALLOWED' },
       overallScore: { gt: 0 },
@@ -110,8 +121,10 @@ export interface RevenueChartData {
   revenue: number;
 }
 
-export async function getRevenueChartData(): Promise<RevenueChartData[]> {
+export async function getRevenueChartData(scopeInput?: TenantScope): Promise<RevenueChartData[]> {
+  const scope = scopeInput ?? (await currentScope('tenant:read', 'loader:revenue-chart'));
   const revenues = await db.revenue.findMany({
+    where: revenueWhere(scope),
     select: { date: true, netRevenue: true },
     orderBy: { date: 'asc' },
   });

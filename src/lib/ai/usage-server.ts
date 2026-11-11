@@ -4,6 +4,9 @@
 // to src/lib/ai/usage.ts.
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { agentLogWhere } from '@/lib/tenancy/relation-scope';
 import {
   aggregateUsageForRange,
   type AiUsageSummary,
@@ -34,9 +37,16 @@ function rangeStart(range: UsageTimeRange): Date {
  * Aggregate recorded AI usage for a time range. Exported for dashboard/server
  * use; the API route and the /ai-usage page use the same selection strategy.
  */
-export async function getAiUsageForRange(range: UsageTimeRange = '7d'): Promise<AiUsageSummary> {
+export async function getAiUsageForRange(
+  range: UsageTimeRange = '7d',
+  scopeInput?: TenantScope,
+): Promise<AiUsageSummary> {
+  const scope = scopeInput ?? (await currentScope('tenant:read', 'loader:ai-usage'));
+  const usageScope = await agentLogWhere(scope);
   const rows = (await db.agentLog.findMany({
-    where: range !== 'all' ? { createdAt: { gte: rangeStart(range) } } : {},
+    where: range !== 'all'
+      ? { AND: [usageScope, { createdAt: { gte: rangeStart(range) } }] }
+      : usageScope,
     select: {
       agentType: true,
       aiProvider: true,

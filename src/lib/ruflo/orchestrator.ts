@@ -78,6 +78,10 @@ export interface PipelineRunResult {
   reasoning: string;
   humanReviewRequired: boolean;
   executionTime: number;
+  /** Phase 4.2D — persisted research artifact this run produced, if any. */
+  researchResultId?: string;
+  /** Phase 4.2D — authoritative tenant this run is bound to (null = legacy). */
+  tenantId?: string | null;
 }
 
 export interface PipelineRequest {
@@ -97,6 +101,15 @@ export interface PipelineRequest {
    */
   productType?: string;
   monetizationPreference?: string;
+  /**
+   * Phase 4.2D — authorized tenant for this run. Server-supplied only; the
+   * linked opportunity is authoritative and a mismatch fails the run.
+   */
+  tenantId?: string | null;
+  /** Job run that dispatched this pipeline (audit link for ResearchResult). */
+  jobId?: string;
+  /** Correlation id of the dispatching delivery (audit link). */
+  correlationId?: string;
 }
 
 const BLOCKED = 'NOT_ALLOWED';
@@ -121,7 +134,7 @@ async function resolveOpportunity(opportunityId?: string) {
   if (opportunityId) {
     const found = await db.opportunity.findUnique({
       where: { id: opportunityId },
-      select: { id: true, title: true, status: true, halalStatus: true, category: true, problemSolved: true },
+      select: { id: true, title: true, status: true, halalStatus: true, category: true, problemSolved: true, tenantId: true },
     });
     return found;
   }
@@ -131,7 +144,7 @@ async function resolveOpportunity(opportunityId?: string) {
       status: { notIn: ['REJECTED', 'PAUSED'] },
     },
     orderBy: { overallScore: 'desc' },
-    select: { id: true, title: true, status: true, halalStatus: true, category: true, problemSolved: true },
+    select: { id: true, title: true, status: true, halalStatus: true, category: true, problemSolved: true, tenantId: true },
   });
 }
 
@@ -197,6 +210,7 @@ async function persistRun(result: Omit<PipelineRunResult, 'runId'>): Promise<str
     const entry = await db.pipelineRun.create({
       data: {
         opportunityId: result.opportunityId ?? null,
+        tenantId: result.tenantId ?? null,
         objective: result.objective,
         currentStage: result.lifecycleStage,
         status: result.status,
@@ -293,6 +307,97 @@ function skippedResult(stage: PipelineStage, note: string): PipelineStepResult {
   return { stage, agentType: STAGE_AGENT[stage], executed: false, success: false, note, summary, durationMs: 0 };
 }
 
+
+// ---------------------------------------------------------------------------
+// Phase 4.2D — RESEARCH ARTIFACT PERSISTENCE
+// ---------------------------------------------------------------------------
+// Validation must consume WHAT RESEARCH FOUND, not a re-worded objective. The
+// pipeline therefore persists the bounded structured research output and passes
+// the resulting id (plus a bounded summary) into the VALIDATION stage.
+//
+// Bounds: the stored JSON is capped, so a runaway model response can never
+// become an unbounded row. The full step output still lives in PipelineRun.
+
+const RESEARCH_STORE_MAX_CHARS = 20_000;
+const RESEARCH_SUMMARY_MAX_CHARS = 4_000;
+
+function boundedJson(value: unknown, max: number): string {
+  let json: string;
+  try {
+    json = JSON.stringify(value ?? {});
+  } catch {
+    json = '{}';
+  }
+  if (json.length <= max) return json;
+  return JSON.stringify({
+    truncated: true,
+    note: 'Research output exceeded the storage bound; the complete step output is in PipelineRun.result.',
+    preview: json.slice(0, Math.max(0, max - 200)),
+  });
+}
+
+/** Compact, human-readable research summary used as validation context. */
+export function researchSummaryOf(output: unknown): string | undefined {
+  if (!isRecord(output)) return undefined;
+  const parts: string[] = [];
+  const push = (label: string, value: unknown) => {
+    if (!Array.isArray(value)) return;
+    const items = value
+      .map((x) => (typeof x === 'string' ? x : isRecord(x) ? String(x.finding ?? x.text ?? x.name ?? JSON.stringify(x)) : ''))
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .slice(0, 6);
+    if (items.length > 0) parts.push(`${label}: ${items.join(' | ')}`);
+  };
+  push('Findings', output.findings);
+  push('Assumptions', output.assumptions);
+  push('Risks', output.risks);
+  push('Demand indicators', output.demandIndicators);
+  push('Competitors', output.competitors);
+  push('Monetization observations', output.monetizationObservations);
+  if (typeof output.overallConfidence === 'number' && Number.isFinite(output.overallConfidence)) {
+    parts.push(`Overall confidence: ${output.overallConfidence}`);
+  }
+  const text = parts.join('\n').trim();
+  return text.length > 0 ? text.slice(0, RESEARCH_SUMMARY_MAX_CHARS) : undefined;
+}
+
+async function persistResearchResult(args: {
+  opportunityId?: string;
+  tenantId: string | null;
+  pipelineRunId?: string;
+  jobId?: string;
+  correlationId?: string;
+  objective: string;
+  step: PipelineStepResult;
+}): Promise<string | undefined> {
+  try {
+    const output = args.step.summary.output;
+    const row = await db.researchResult.create({
+      data: {
+        opportunityId: args.opportunityId ?? null,
+        tenantId: args.tenantId,
+        pipelineRunId: args.pipelineRunId ?? null,
+        jobId: args.jobId ?? null,
+        correlationId: args.correlationId ?? null,
+        objective: args.objective.slice(0, 4000),
+        findings: boundedJson(output, RESEARCH_STORE_MAX_CHARS),
+        evidenceType: String(args.step.summary.evidenceType ?? 'AI_INFERENCE'),
+        provenance: String(classifyRunProvenance([args.step.summary])),
+        capabilityStatus: args.step.summary.capabilityStatus ?? null,
+        confidence:
+          isRecord(output) && typeof output.overallConfidence === 'number' && Number.isFinite(output.overallConfidence)
+            ? output.overallConfidence
+            : null,
+      },
+    });
+    return row.id;
+  } catch (error) {
+    logger.error('Research artifact persistence failed; validation will not run on unpersisted research', error);
+    return undefined;
+  }
+}
+
 /**
  * Run the bounded Opportunity → Product pipeline. Every stage is halal-gated;
  * a hard block stops the run immediately and never calls downstream agents or
@@ -302,6 +407,11 @@ function skippedResult(stage: PipelineStage, note: string): PipelineStepResult {
 export async function runPipeline(request: PipelineRequest): Promise<PipelineRunResult> {
   const started = Date.now();
   const steps: PipelineStepResult[] = [];
+  /** Authoritative tenant for every record this run writes. */
+  let runTenantId: string | null = request.tenantId ?? null;
+  /** Persisted research artifact consumed by VALIDATION (provenance). */
+  let researchResultId: string | undefined;
+  let researchSummary: string | undefined;
   const requestedStages = resolveStages(request.stages);
   const stageIncluded = (stage: PipelineStage) => requestedStages.includes(stage);
 
@@ -349,6 +459,7 @@ export async function runPipeline(request: PipelineRequest): Promise<PipelineRun
     const base: Omit<PipelineRunResult, 'runId'> = {
       status: effectiveStatus,
       opportunityId,
+      tenantId: runTenantId,
       objective,
       lifecycleStage: lifecycle.stage,
       lifecycleRationale: lifecycle.rationale,
@@ -360,6 +471,7 @@ export async function runPipeline(request: PipelineRequest): Promise<PipelineRun
       reasoning,
       humanReviewRequired: flags.humanReviewRequired,
       executionTime: Date.now() - started,
+      ...(researchResultId ? { researchResultId } : {}),
     };
     const runId = await persistRun(base);
     return { ...base, runId };
@@ -380,6 +492,22 @@ export async function runPipeline(request: PipelineRequest): Promise<PipelineRun
       reasoning: 'Pipeline failed: database error while loading the opportunity.',
       humanReviewRequired: false,
     });
+  }
+
+  // TENANT INTEGRITY: the opportunity is authoritative. A caller-supplied
+  // tenant may never point at another tenant's opportunity.
+  if (opportunity) {
+    const parentTenant = opportunity.tenantId ?? null;
+    if (request.tenantId !== undefined && (request.tenantId ?? null) !== parentTenant) {
+      return finalize({
+        status: 'FAILED',
+        opportunityId: opportunity.id,
+        objective,
+        reasoning: 'Pipeline refused: the authorized tenant does not match the opportunity owner.',
+        humanReviewRequired: false,
+      });
+    }
+    runTenantId = parentTenant;
   }
 
   if (request.opportunityId && !opportunity) {
@@ -460,6 +588,18 @@ export async function runPipeline(request: PipelineRequest): Promise<PipelineRun
       'Stage 1 of the bounded business loop.',
     );
     steps.push(researchStep);
+    if (researchStep.success) {
+      researchResultId = await persistResearchResult({
+        opportunityId: opportunity?.id,
+        tenantId: runTenantId,
+        pipelineRunId: undefined,
+        jobId: request.jobId,
+        correlationId: request.correlationId,
+        objective,
+        step: researchStep,
+      });
+      researchSummary = researchSummaryOf(researchStep.summary.output);
+    }
     if (!researchStep.success) {
       return finalize({
         status: 'PARTIAL',
@@ -479,6 +619,23 @@ export async function runPipeline(request: PipelineRequest): Promise<PipelineRun
 
   // ---- VALIDATION ----
   if (shouldRun('VALIDATION')) {
+    // If research was part of this run, validation MUST consume its persisted
+    // artifact. A missing artifact means provenance cannot be proven, so the
+    // stage is skipped rather than validating an unbacked objective.
+    if (shouldRun('RESEARCH') && !researchResultId) {
+      steps.push(skippedResult(
+        'VALIDATION',
+        'Skipped: the research artifact was not persisted, so validation has no provenance to consume (fail-closed).',
+      ));
+      return finalize({
+        status: 'PARTIAL',
+        opportunityId: opportunity?.id,
+        objective,
+        reasoning: 'Validation was not attempted: the research result could not be persisted.',
+        humanReviewRequired: false,
+      });
+    }
+
     const validationStep = await runAgentStep(
       'VALIDATION',
       {
@@ -487,10 +644,14 @@ export async function runPipeline(request: PipelineRequest): Promise<PipelineRun
         input: {
           opportunityId: opportunity?.id,
           validationObjective: `Validate the opportunity researched in this pipeline run: ${objective}`,
+          ...(researchResultId ? { researchResultId } : {}),
+          ...(researchSummary ? { researchContext: researchSummary } : {}),
         },
         opportunityId: opportunity?.id,
       },
-      'Stage 2 of the bounded business loop.',
+      researchResultId
+        ? 'Stage 2 of the bounded business loop; consumes the persisted research artifact.'
+        : 'Stage 2 of the bounded business loop.',
     );
     steps.push(validationStep);
     if (!validationStep.success) {

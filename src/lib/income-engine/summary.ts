@@ -3,14 +3,19 @@
 
 import { db } from '@/lib/db';
 import type { IncomeEngineSummary } from '@/components/dashboard/income-engine-card';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { opportunityWhere, productWhere, revenueWhere } from '@/lib/tenancy/relation-scope';
 
-export async function getIncomeEngineSummary(): Promise<IncomeEngineSummary> {
+export async function getIncomeEngineSummary(scopeInput?: TenantScope): Promise<IncomeEngineSummary> {
+  const scope = scopeInput ?? (await currentScope('tenant:read', 'loader:income-engine'));
   const opportunities = await db.opportunity.findMany({
+    where: opportunityWhere(scope),
     select: { id: true, status: true, halalStatus: true },
   });
   const [products, revenueOpportunities] = await Promise.all([
-    db.product.findMany({ select: { status: true, opportunityId: true } }),
-    db.revenue.groupBy({ by: ['opportunityId'] }),
+    db.product.findMany({ where: productWhere(scope), select: { status: true, opportunityId: true } }),
+    db.revenue.groupBy({ by: ['opportunityId'], where: revenueWhere(scope) }),
   ]);
 
   const actionable = opportunities.filter(

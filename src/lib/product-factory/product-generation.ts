@@ -90,6 +90,8 @@ export interface ProductSpecificationRecord {
   canonicalHash: string;
   requestedBy: string;
   source: string;
+  /** Phase 4.2D — owning tenant (null = legacy, pre-tenancy). */
+  tenantId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -118,9 +120,39 @@ export function canonicalHashFor(request: ProductSpecificationRequest): string {
 // Specification persistence (idempotent by canonical identity)
 // ---------------------------------------------------------------------------
 
+/**
+ * Raised when a canonical specification already exists under a DIFFERENT
+ * tenant. Canonical identity is global (canonicalHash is DB-unique), so two
+ * tenants submitting the identical logical spec are refused rather than being
+ * silently given each other's record. The collision is explicit and auditable.
+ */
+export class SpecificationTenantConflictError extends Error {
+  constructor() {
+    super('That specification is already owned by another tenant.');
+    this.name = 'SpecificationTenantConflictError';
+  }
+}
+
+export interface SpecificationOwnerOptions {
+  /**
+   * Authorized tenant for the specification. Omitted/null means the legacy
+   * (pre-tenancy) partition. Never taken from a client payload directly.
+   */
+  tenantId?: string | null;
+}
+
+function ownsSpecification(
+  row: { tenantId?: string | null } | null,
+  tenantId: string | null,
+): boolean {
+  return (row?.tenantId ?? null) === tenantId;
+}
+
 export async function getOrCreateSpecification(
   request: ProductSpecificationRequest,
+  owner: SpecificationOwnerOptions = {},
 ): Promise<{ spec: ProductSpecificationRecord; created: boolean }> {
+  const tenantId = owner.tenantId ?? null;
   const canonical = canonicalSpecOf(request);
   const canonicalBody = toCanonicalJson(canonical);
   const canonicalHash = canonicalHashOf(canonical);
@@ -129,6 +161,9 @@ export async function getOrCreateSpecification(
     where: { canonicalHash },
   });
   if (existing) {
+    if (!ownsSpecification(existing as { tenantId?: string | null }, tenantId)) {
+      throw new SpecificationTenantConflictError();
+    }
     return { spec: existing as unknown as ProductSpecificationRecord, created: false };
   }
 
@@ -140,6 +175,7 @@ export async function getOrCreateSpecification(
         canonicalHash,
         requestedBy: request.requestedBy?.trim() ?? '',
         source: request.source?.trim() ?? '',
+        tenantId,
       },
     });
     return { spec: created as unknown as ProductSpecificationRecord, created: true };
@@ -151,6 +187,9 @@ export async function getOrCreateSpecification(
     const winner = await db.productSpecification.findUnique({ where: { canonicalHash } });
     if (!winner) {
       throw new Error('Concurrent specification creation race: unique constraint violated but no row found.');
+    }
+    if (!ownsSpecification(winner as { tenantId?: string | null }, tenantId)) {
+      throw new SpecificationTenantConflictError();
     }
     return { spec: winner as unknown as ProductSpecificationRecord, created: false };
   }

@@ -7,6 +7,9 @@
 // never a fabricated intelligence view.
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { opportunityWhere } from '@/lib/tenancy/relation-scope';
 import { buildAgentContext } from './agent-context';
 import { buildIntelligenceView, type IntelligenceView } from './intelligence';
 import { getExecutionMode } from './agent-ai';
@@ -70,10 +73,12 @@ function stageFromContext(view: IntelligenceView): string {
   }
 }
 
-export async function getControlCenterView(): Promise<ControlCenterView | null> {
+export async function getControlCenterView(scopeInput?: TenantScope): Promise<ControlCenterView | null> {
+  const scope = scopeInput ?? (await currentScope('tenant:read', 'loader:control-center'));
   try {
     const opportunity = await db.opportunity.findFirst({
       where: {
+        ...opportunityWhere(scope),
         status: { notIn: ['REJECTED', 'PAUSED'] },
         halalStatus: { not: 'NOT_ALLOWED' },
       },

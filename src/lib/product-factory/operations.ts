@@ -11,6 +11,15 @@
 // outputs; never reads credentials. Safe for server components.
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { scopeTenantId } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import {
+  agentLogWhere,
+  productWhere,
+  revenueWhere,
+  workflowRunWhere,
+} from '@/lib/tenancy/relation-scope';
 import { describeCapabilityCenter, type CapabilityCenterReport } from './capability-center';
 import { assessProductGrowth, type ProductGrowthAssessment } from './events';
 import { attributeRevenueRow, type RevenueAttribution } from './economics';
@@ -187,21 +196,27 @@ function computeNextBestAction(input: {
 // Main summary
 // ---------------------------------------------------------------------------
 
-export async function getOperationsSummary(): Promise<OperationsSummary> {
+export async function getOperationsSummary(
+  scopeInput?: TenantScope,
+): Promise<OperationsSummary> {
+  const scope = scopeInput ?? (await currentScope('tenant:read', 'loader:operations'));
+  const usageScope = await agentLogWhere(scope);
   const now = new Date();
   const since24h = new Date(now.getTime() - MS_PER_DAY);
 
   const [jobRows, workflowRuns, products, revenueRows, aiCostGroups] = await Promise.all([
     db.jobRun.findMany({
-      where: { createdAt: { gte: since24h } },
+      where: { createdAt: { gte: since24h }, tenantId: scopeTenantId(scope) },
       select: { status: true, createdAt: true },
     }),
     db.workflowRun.findMany({
+      where: workflowRunWhere(scope),
       orderBy: { startedAt: 'desc' },
       take: 20,
       select: { status: true },
     }),
     db.product.findMany({
+      where: productWhere(scope),
       orderBy: { updatedAt: 'desc' },
       take: 20,
       include: {
@@ -211,6 +226,7 @@ export async function getOperationsSummary(): Promise<OperationsSummary> {
       },
     }),
     db.revenue.findMany({
+      where: revenueWhere(scope),
       orderBy: { date: 'desc' },
       take: 200,
       select: {
@@ -221,7 +237,7 @@ export async function getOperationsSummary(): Promise<OperationsSummary> {
     db.agentLog.groupBy({
       by: ['productId'],
       _sum: { estimatedCostUsd: true },
-      where: { productId: { not: null } },
+      where: { AND: [usageScope, { productId: { not: null } }] },
     }).catch(() => [] as { productId: string | null; _sum: { estimatedCostUsd: number | null } }[]),
   ]);
 

@@ -168,6 +168,14 @@ export interface ValidationRequest {
   validationConstraints?: string[];
   preferredValidationMethod?: ValidationMethod;
   halalRequirements?: string[];
+  /**
+   * Phase 4.2D — provenance of the research this validation is derived from.
+   * The id references a persisted ResearchResult; the context is the bounded
+   * research summary. Both are treated as untrusted DATA (quoted, never
+   * instructions) and neither can promote a finding to verified evidence.
+   */
+  researchResultId?: string;
+  researchContext?: string;
 }
 
 export interface ValidationTest {
@@ -221,6 +229,8 @@ export interface ValidationResult {
   recommendation: ValidationDecision;
   capabilityStatus: AgentStatus;
   agentLogId?: string;
+  /** Phase 4.2D — ResearchResult this validation consumed (provenance). */
+  researchResultId?: string;
 }
 
 // Product Agent specific types

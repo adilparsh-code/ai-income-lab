@@ -33,10 +33,16 @@ model Opportunity {
   evidenceNotes         String   @default("")
   risks                 String   @default("")
   nextAction            String   @default("")
+
+  /// Phase 4.2C — owning tenant. Nullable so pre-existing rows stay valid; new
+  /// rows created from an authorized handoff are always bound to a tenant.
+  tenantId              String?
   
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
   lastReviewedAt        DateTime?
+
+  @@index([tenantId])
   
   products              Product[]
   experiments           Experiment[]
@@ -57,6 +63,7 @@ model Opportunity {
   learningEntries       LearningEntry[]
   resourceAllocations   ResourceAllocation[]
   offers                Offer[]
+  researchResults       ResearchResult[]
 }
 
 model Product {
@@ -207,6 +214,10 @@ model ProductSpecification {
   requestedBy    String   @default("")
   source         String   @default("")  // e.g. 'manual', 'pipeline', 'api'
 
+  /// Phase 4.2D — owning tenant. Generation/version/package ownership is
+  /// inherited through this specification (no duplicated tenant columns).
+  tenantId       String?
+
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -218,6 +229,7 @@ model ProductSpecification {
   /// Product versions are produced BY a generation. Versions are immutable
   /// historical artifacts: packaging never mutates an existing version.
   @@index([canonicalHash])  // lookup by identity
+  @@index([tenantId, createdAt])
 }
 
 /// One concrete generation of a specification. Every generation preserves:
@@ -652,6 +664,10 @@ model PipelineRun {
   opportunityId  String?
   opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
 
+  /// Phase 4.2D — owning tenant (inherited from the opportunity / authorized
+  /// scope). Null only for legacy runs.
+  tenantId       String?
+
   // Snapshot of the objective at run time (never mutated afterwards).
   objective      String
 
@@ -673,6 +689,9 @@ model PipelineRun {
 
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  @@index([tenantId, createdAt])
+  @@index([opportunityId])
 }
 
 // ============================================================================
@@ -693,10 +712,15 @@ model SecurityEvent {
   surface   String
   /// Short, safe classification string. Truncated to 300 chars; no secrets.
   detail    String?
+  /// Phase 4.2D — tenant the event belongs to, when the surface acted for one.
+  /// Null for global/legacy events. Never derived from request input alone: it
+  /// is written only after the tenant scope was authorized.
+  tenantId  String?
   createdAt DateTime @default(now())
 
   @@index([kind, createdAt])
   @@index([surface, createdAt])
+  @@index([tenantId, createdAt])
 }
 
 /// Durable rate-limit counters. Process-memory maps are per-instance and
@@ -758,6 +782,11 @@ model JobRun {
   opportunityId  String?
   opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
 
+  /// Phase 4.2D — authoritative tenant for this job. Resolved server-side from
+  /// the authorized scope or the parent opportunity (never from the payload).
+  /// Null only for legacy work created before tenancy existed.
+  tenantId       String?
+
   // Resolved executor: an agent type (single-agent jobs) or the pipeline.
   agentType      String?
 
@@ -781,6 +810,44 @@ model JobRun {
   @@index([status])
   @@index([jobType, createdAt])
   @@index([correlationId])
+  @@index([tenantId, createdAt])
+}
+
+/// Phase 4.2D — the persisted RESEARCH artifact produced by the pipeline.
+///
+/// Before this model existed the research output only lived inside
+/// `PipelineRun.result`, so validation could not reference what research had
+/// actually established. A row here is the provenance link: the pipeline
+/// persists the bounded structured research output and the VALIDATION stage
+/// consumes THIS row (by id) instead of re-deriving the problem from the
+/// objective. It is tenant-owned like every other pipeline record.
+model ResearchResult {
+  id             String   @id @default(cuid())
+
+  opportunityId  String?
+  opportunity    Opportunity? @relation(fields: [opportunityId], references: [id])
+  tenantId       String?
+
+  /// Pipeline run that produced this artifact (audit link).
+  pipelineRunId  String?
+  /// Job run that produced this artifact (audit link).
+  jobId          String?
+  correlationId  String?
+
+  objective      String
+  /// Bounded, canonical JSON of the structured research output. Never a prompt,
+  /// never a credential, never unbounded model text.
+  findings       String   @default("{}")
+  evidenceType   String   @default("AI_INFERENCE")
+  provenance     String   @default("")   // MOCKED | VERIFIED_DATA | MIXED
+  capabilityStatus String?
+  confidence     Float?
+
+  createdAt      DateTime @default(now())
+
+  @@index([opportunityId, createdAt])
+  @@index([tenantId, createdAt])
+  @@index([pipelineRunId])
 }
 
 // Phase 5.2 — Ruflo workflow runs. One row per state-aware workflow execution
@@ -1115,6 +1182,14 @@ model OpportunityHandoff {
   /// Short, safe reason string. Never contains secrets or full payloads.
   reason           String   @default("")
 
+  /// Phase 4.2C — authorized tenant the delivery was bound to. Nullable only
+  /// for rows recorded before tenancy existed; new accepted rows always set it.
+  tenantId         String?
+  /// Canonical fingerprint of the delivered body (idempotency key excluded).
+  /// A replay with the SAME key but a DIFFERENT body is a conflict, not a
+  /// duplicate, so a sender cannot mutate an accepted delivery by replaying it.
+  payloadHash      String?
+
   receivedAt       DateTime @default(now())
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -1123,6 +1198,53 @@ model OpportunityHandoff {
   @@index([correlationId])
   @@index([eventType, receivedAt])
   @@index([opportunityId])
+  @@index([tenantId])
+}
+
+// ============================================================================
+// Phase 4.2C — TENANCY
+// ============================================================================
+//
+// The root application historically had a single operator credential and no
+// tenant model. Multi-tenant delivery needs an authoritative server-side
+// membership record: who (authenticated principal) may act for which tenant,
+// and in what role. Nothing here is trusted from the request; membership is
+// looked up by the credential FINGERPRINT the auth layer already derives.
+
+/// One tenant (an isolated account boundary).
+model Tenant {
+  id        String   @id @default(cuid())
+  /// Stable, human-meaningful slug used by senders to name the target tenant.
+  /// Lowercase, bounded, unique. It is an ADDRESS, never proof of permission.
+  slug      String   @unique
+  name      String
+  /// ACTIVE | INACTIVE. INACTIVE tenants can never receive new work.
+  status    String   @default("ACTIVE")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships TenantMembership[]
+
+  @@index([status])
+}
+
+/// Server-side grant that a principal may act for a tenant.
+model TenantMembership {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Fingerprint of the authenticated credential (never the credential).
+  principalFingerprint String
+  /// SENDER may deliver handoffs; ADMIN may also manage membership.
+  role                 String @default("SENDER")
+  /// ACTIVE | SUSPENDED. A suspended membership authorizes nothing.
+  status               String @default("ACTIVE")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([tenantId, principalFingerprint])
+  @@index([principalFingerprint, status])
 }
 
 // ============================================================================
@@ -1312,6 +1434,9 @@ model HumanReview {
   status         String   @default("PENDING") // PENDING APPROVED REJECTED PAUSED RETIRED
   requestedBy    String             // agent id ('system' for engine requests)
   opportunityId  String?
+  /// Phase 4.2D — tenant the review belongs to. Reviews are never visible to
+  /// another tenant, and a decision is only accepted within this tenant.
+  tenantId       String?
   evidenceRefs   String  @default("[]")
   decisionNote   String?
   decidedBy      String?
@@ -1321,6 +1446,7 @@ model HumanReview {
 
   @@index([status, createdAt])
   @@index([category])
+  @@index([tenantId, status, createdAt])
 }
 
 /// Supervisor evaluation per run (loop protection + budget + safety verdicts).
@@ -2190,6 +2316,9 @@ model ApprovalGrant {
   scopeHash         String    @default("")
   approverSessionId String
   approverEmail     String
+  /// Phase 4.2D — tenant the grant is scoped to. A grant issued for one tenant
+  /// can never authorize an action on another tenant's subject.
+  tenantId          String?
   createdAt         DateTime  @default(now())
   expiresAt         DateTime
   consumedAt        DateTime?
@@ -2198,6 +2327,7 @@ model ApprovalGrant {
   @@unique([tokenHash])
   @@index([subjectType, subjectId, action])
   @@index([expiresAt])
+  @@index([tenantId, createdAt])
 }
 
 // Append-only record of a human halal review decision. Not a religious ruling:

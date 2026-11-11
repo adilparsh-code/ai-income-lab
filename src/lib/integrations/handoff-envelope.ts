@@ -46,7 +46,11 @@ export type HandoffEventType = (typeof HANDOFF_EVENT_TYPES)[number];
  * as an arbitrary job-submission endpoint.
  */
 export const EVENT_TYPE_TO_JOB_TYPE: Record<HandoffEventType, string> = {
-  OPPORTUNITY_PROPOSED: 'RESEARCH',
+  // Phase 4.2C: an accepted proposal runs the EXISTING bounded opportunity
+  // pipeline (RESEARCH → VALIDATION → PRODUCT concept) instead of stopping
+  // after research. The mapping stays a server constant, so the sender still
+  // cannot name the work — it can only choose an event type.
+  OPPORTUNITY_PROPOSED: 'OPPORTUNITY_PIPELINE',
 };
 
 export const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
@@ -357,7 +361,15 @@ export function resolveEligibility(envelope: HandoffEnvelope): EligibilityResolu
   };
 }
 
+/**
+ * Pipeline stages an accepted handoff runs. Deliberately bounded: the handoff
+ * produces research, validation and a product CONCEPT, then stops for human
+ * review. Experiment execution, publishing, pricing and spend are NOT part of
+ * this run and remain human-gated elsewhere.
+ */
+export const HANDOFF_PIPELINE_STAGES = ['RESEARCH', 'VALIDATION', 'PRODUCT'] as const;
+
 /** The job type the receiver dispatches for a validated envelope. */
 export function jobTypeForEvent(eventType: HandoffEventType): string {
-  return EVENT_TYPE_TO_JOB_TYPE[eventType] ?? 'RESEARCH';
+  return EVENT_TYPE_TO_JOB_TYPE[eventType] ?? 'OPPORTUNITY_PIPELINE';
 }

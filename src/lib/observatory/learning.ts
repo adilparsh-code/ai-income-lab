@@ -8,6 +8,9 @@
 // events sum to attributed revenue. No path ⇒ UNATTRIBUTED (never 0).
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { learningEntryWhere, growthExperimentWhere, productEventWhere } from '@/lib/tenancy/relation-scope';
 import type { LearningEpistemicState, LearningObservation, OutcomeLink } from './types';
 
 /** Map the persisted result to the UI epistemic vocabulary (10.6). */
@@ -35,17 +38,19 @@ export async function outcomeLinkFor(entry: {
   id: string;
   opportunityId: string | null;
   experimentId: string | null;
-}): Promise<OutcomeLink | null> {
+}, scope?: TenantScope): Promise<OutcomeLink | null> {
+  if (!scope) { try { scope = await currentScope('tenant:read', 'observatory:learning'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; } }
   if (!entry.experimentId) return null;
 
-  const experiment = await db.growthExperiment.findUnique({
-    where: { id: entry.experimentId },
+  if (!scope) { try { scope = await currentScope('tenant:read', 'observatory:learning'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; } }
+  const experiment = await db.growthExperiment.findFirst({
+    where: { id: entry.experimentId, ...growthExperimentWhere(scope!) },
     select: { id: true, opportunityId: true, experimentType: true, status: true, portfolioItemId: true },
   });
   if (!experiment) return null;
 
   const purchases = await db.productEvent.findMany({
-    where: { experimentId: experiment.id, eventType: 'PURCHASE' },
+    where: { AND: [{ experimentId: experiment.id, eventType: 'PURCHASE' }, productEventWhere(scope!)] },
     select: { productId: true, amountUsd: true },
     take: 500,
   });
@@ -72,18 +77,20 @@ export async function outcomeLinkFor(entry: {
   };
 }
 
-export async function getLearningObservations(limit = 50): Promise<{
+export async function getLearningObservations(limit = 50, scope?: TenantScope): Promise<{
   entries: LearningObservation[];
   counts: Record<LearningEpistemicState, number>;
 }> {
+  if (!scope) { try { scope = await currentScope('tenant:read', 'observatory:learning'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; } }
   const rows = await db.learningEntry.findMany({
+    where: learningEntryWhere(scope!),
     orderBy: { createdAt: 'desc' },
     take: Math.min(200, Math.max(1, limit)),
   });
 
   const entries: LearningObservation[] = [];
   for (const row of rows) {
-    const outcomeLink = await outcomeLinkFor(row);
+    const outcomeLink = await outcomeLinkFor(row, scope);
     entries.push({
       id: row.id,
       // The learning layer has no agent column; the agent provenance is

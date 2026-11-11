@@ -1,11 +1,15 @@
-// Phase 4.5.2 — Job inspection API.
-// GET /api/jobs/:id → safe status detail for one job. Returns job metadata
-// and the compact output summary — never the raw agent input payload,
-// prompts, or secrets.
+// Phase 4.5.2 / 4.2D — Job inspection API.
+// GET /api/jobs/:id → safe status detail for one job INSIDE the caller's
+// authorized tenant partition. Returns job metadata and the compact output
+// summary — never the raw agent input payload, prompts, or secrets.
+//
+// A job owned by another tenant is reported as 404, exactly like a missing id,
+// so the endpoint cannot be used to discover foreign work.
 
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
 import { requireAdminApi } from '@/lib/agency/session-guard';
+import { getScopedJob } from '@/lib/tenancy/scoped-reads';
+import { resolveTenantScope } from '@/lib/tenancy/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,13 +23,20 @@ export async function GET(
   }
 
   // SECURITY: job metadata is admin data — session-gated (IDOR hardening: an
-  // unauthenticated caller cannot enumerate job ids). The request is passed
-  // explicitly so the cookie is read from the actual invocation scope.
+  // unauthenticated caller cannot enumerate job ids).
   const auth = await requireAdminApi(request);
   if ('response' in auth) return auth.response;
 
+  const resolved = await resolveTenantScope(request, {
+    permission: 'tenant:read',
+    surface: 'api:jobs:id',
+  });
+  if (!resolved.ok) {
+    return NextResponse.json({ ok: false, error: resolved.error }, { status: resolved.status });
+  }
+
   try {
-    const row = await db.jobRun.findUnique({ where: { id } });
+    const row = await getScopedJob(resolved.scope, id);
     if (!row) {
       return NextResponse.json({ ok: false, error: 'Job not found' }, { status: 404 });
     }

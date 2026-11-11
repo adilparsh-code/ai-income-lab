@@ -8,6 +8,9 @@ import { revalidatePath } from 'next/cache';
 import { requireAdminAction } from '@/lib/agency/action-guard';
 import { halalContentHash, decideHalalStatusOnUpdate, validateReviewNote } from '@/lib/halal-review';
 import { auditSecurityEvent } from '@/lib/security/guard';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { scopeTenantId } from '@/lib/tenancy/scope';
+import { opportunityWhere } from '@/lib/tenancy/relation-scope';
 
 // Types for filters
 export interface OpportunityFilters {
@@ -24,9 +27,10 @@ export interface OpportunityFilters {
  */
 export async function getOpportunities(filters: OpportunityFilters = {}) {
   await requireAdminAction();
+  const scope = await currentScope('tenant:read', 'action:getOpportunities');
   const { search, status, category, halalStatus, sortBy = 'overallScore', sortOrder = 'desc' } = filters;
   
-    const where: Prisma.OpportunityWhereInput = {};
+    const where: Prisma.OpportunityWhereInput = { ...opportunityWhere(scope) };
   
   if (search) {
     where.OR = [
@@ -62,8 +66,9 @@ export async function getOpportunities(filters: OpportunityFilters = {}) {
  */
 export async function getOpportunity(id: string) {
   await requireAdminAction();
-  const opportunity = await db.opportunity.findUnique({
-    where: { id },
+  const scope = await currentScope('tenant:read', 'action:getOpportunity');
+  const opportunity = await db.opportunity.findFirst({
+    where: { id, ...opportunityWhere(scope) },
     include: {
       products: true,
       experiments: true,
@@ -115,6 +120,7 @@ export async function createOpportunity(data: {
   nextAction: string;
 }) {
   await requireAdminAction();
+  const scope = await currentScope('tenant:write', 'action:createOpportunity');
   // Run halal screening
   const halalResult = screenForHalalCompliance(
     data.title,
@@ -144,6 +150,9 @@ export async function createOpportunity(data: {
   const opportunity = await db.opportunity.create({
     data: {
       ...data,
+      // Ownership is assigned from the AUTHORIZED scope, after the spread, so a
+      // client-supplied tenantId can never win.
+      tenantId: scopeTenantId(scope),
       halalStatus: effectiveHalalStatus,
       overallScore: scoreResult.overallScore,
     },
@@ -163,8 +172,9 @@ export async function updateOpportunity(
   data: Partial<Parameters<typeof createOpportunity>[0]>
 ) {
   await requireAdminAction();
-  // Get existing opportunity
-  const existing = await db.opportunity.findUnique({ where: { id } });
+  const scope = await currentScope('tenant:write', 'action:updateOpportunity');
+  // Get existing opportunity (scoped: a foreign id is "not found")
+  const existing = await db.opportunity.findFirst({ where: { id, ...opportunityWhere(scope) } });
   if (!existing) throw new Error('Opportunity not found');
   
   const merged = { ...existing, ...data };
@@ -207,15 +217,21 @@ export async function updateOpportunity(
     halalStatus: merged.halalStatus as 'HALAL' | 'REVIEW_REQUIRED' | 'NOT_ALLOWED',
   });
   
-  const opportunity = await db.opportunity.update({
-    where: { id },
+  // Mass-assignment guard: ownership is never accepted from the client.
+  const safeData: typeof data = { ...data };
+  delete (safeData as { tenantId?: unknown }).tenantId;
+  const updated = await db.opportunity.updateMany({
+    where: { id, ...opportunityWhere(scope) },
     data: {
-      ...data,
+      ...safeData,
       halalStatus: merged.halalStatus,
       overallScore: scoreResult.overallScore,
       updatedAt: new Date(),
     },
   });
+  if (updated.count === 0) throw new Error('Opportunity not found');
+  const opportunity = await db.opportunity.findFirst({ where: { id, ...opportunityWhere(scope) } });
+  if (!opportunity) throw new Error('Opportunity not found');
   
   revalidatePath('/opportunities');
   revalidatePath(`/opportunities/${id}`);
@@ -233,10 +249,11 @@ export async function updateOpportunity(
  */
 export async function recordHalalReview(id: string, input: { note: string }) {
   const session = await requireAdminAction();
+  const scope = await currentScope('tenant:write', 'action:recordHalalReview');
   const note = validateReviewNote(input?.note);
   if (!note.ok) throw new Error(note.error);
 
-  const existing = await db.opportunity.findUnique({ where: { id } });
+  const existing = await db.opportunity.findFirst({ where: { id, ...opportunityWhere(scope) } });
   if (!existing) throw new Error('Opportunity not found');
   if (existing.halalStatus === 'NOT_ALLOWED') {
     throw new Error('NOT_ALLOWED opportunities cannot be cleared by review.');
@@ -278,10 +295,13 @@ export async function recordHalalReview(id: string, input: { note: string }) {
     halalConfidenceScore: existing.halalConfidenceScore,
     halalStatus: 'HALAL',
   });
-  const opportunity = await db.opportunity.update({
-    where: { id },
+  const updated = await db.opportunity.updateMany({
+    where: { id, ...opportunityWhere(scope) },
     data: { halalStatus: 'HALAL', overallScore: scoreResult.overallScore, updatedAt: new Date() },
   });
+  if (updated.count === 0) throw new Error('Opportunity not found');
+  const opportunity = await db.opportunity.findFirst({ where: { id, ...opportunityWhere(scope) } });
+  if (!opportunity) throw new Error('Opportunity not found');
 
   await auditSecurityEvent({
     kind: 'HALAL_REVIEW_RECORDED',
@@ -301,7 +321,9 @@ export async function recordHalalReview(id: string, input: { note: string }) {
  */
 export async function deleteOpportunity(id: string) {
   await requireAdminAction();
-  await db.opportunity.delete({ where: { id } });
+  const scope = await currentScope('tenant:write', 'action:deleteOpportunity');
+  const removed = await db.opportunity.deleteMany({ where: { id, ...opportunityWhere(scope) } });
+  if (removed.count === 0) throw new Error('Opportunity not found');
   revalidatePath('/opportunities');
   revalidatePath('/');
 }

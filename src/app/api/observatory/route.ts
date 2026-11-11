@@ -6,6 +6,7 @@
 
 import { NextResponse } from 'next/server';
 import { getObservatoryView } from '@/lib/observatory';
+import { currentScope } from '@/lib/tenancy/action-scope';
 import { requireAdminApi } from '@/lib/agency/session-guard';
 import { auditSecurityEvent, clientIpFrom, enforceRateLimit } from '@/lib/security/guard';
 
@@ -22,8 +23,11 @@ export async function GET(request: Request) {
   const auth = await requireAdminApi(request);
   if ('response' in auth) return auth.response;
 
+  let scope;
+  try { scope = await currentScope('tenant:read', 'api:observatory'); }
+  catch { return NextResponse.json({ ok: false, error: 'Forbidden.' }, { status: 403 }); }
   try {
-    const view = await getObservatoryView();
+    const view = await getObservatoryView(scope);
     return NextResponse.json({ ok: true, view });
   } catch {
     return NextResponse.json(

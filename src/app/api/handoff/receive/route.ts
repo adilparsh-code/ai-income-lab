@@ -27,6 +27,10 @@ import { db } from '@/lib/db';
 import { runJob } from '@/lib/jobs/job-runner';
 import { enforceRateLimit, clientIpFrom, readJsonBody, requireOperator } from '@/lib/security/guard';
 import { receiveHandoff, type HandoffDb } from '@/lib/integrations/handoff-receiver';
+import {
+  authorizeHandoffTenant,
+  type TenantAuthorizationDb,
+} from '@/lib/integrations/tenant-authorization';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,11 +57,26 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: bodyGuard.error }, { status: bodyGuard.status });
   }
 
+  // ---- TENANT TARGET (an address, never a grant) -------------------------
+  // The optional `x-tenant-id` header only names the tenant the sender wants to
+  // act for. It is validated below against server-side membership; a value the
+  // principal does not belong to is refused, and a body field can never assert
+  // identity or target tenancy.
+  const requestedTenantSlug = request.headers.get('x-tenant-id')?.trim() || null;
+
   try {
     const result = await receiveHandoff(bodyGuard.value, {
       db: db as unknown as HandoffDb,
       senderIdentity: auth.identity,
-      runJob: (jobType, payload, correlationId) => runJob(jobType, payload, correlationId),
+      runJob: (jobType, payload, correlationId, jobOptions) =>
+        runJob(jobType, payload, correlationId, { tenantId: jobOptions?.tenantId }),
+      requestedTenantSlug,
+      authorizeTenant: ({ principalFingerprint, requestedTenantSlug: target }) =>
+        authorizeHandoffTenant({
+          db: db as unknown as TenantAuthorizationDb,
+          principalFingerprint,
+          requestedTenantSlug: target,
+        }),
     });
 
     if (!result.ok) {

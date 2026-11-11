@@ -246,6 +246,7 @@ export class ValidationAgent extends BaseAgent {
       halalRequirements: validationRequest.halalRequirements,
       opportunity,
       halalConsiderations,
+      researchContext: validationRequest.researchContext,
       isMocked: mode.isMocked,
     });
 
@@ -481,6 +482,9 @@ export class ValidationAgent extends BaseAgent {
       humanReviewRequired: input.humanReviewRequired,
       recommendation,
       capabilityStatus: input.capabilityStatus,
+      ...(input.validationRequest.researchResultId
+        ? { researchResultId: input.validationRequest.researchResultId }
+        : {}),
     };
   }
 }

@@ -306,7 +306,7 @@ describe('8F durable failure records', () => {
 describe('8H operations dashboard honesty', () => {
   it('labels capabilities and never mixes simulated with real revenue', async () => {
     const { getPhase8OperationsView } = await importDash();
-    const view = await getPhase8OperationsView();
+    const view = await getPhase8OperationsView({ mode: 'legacy' as const, principal: 'test-legacy' });
     assert.ok(view.health.length >= 8);
     assert.ok(view.health.every((h) => ['LIVE', 'MOCKED', 'SIMULATED', 'NOT_CONFIGURED', 'NOT_CONNECTED', 'BLOCKED', 'AWAITING_HUMAN_INPUT'].includes(h.state)));
     assert.ok(typeof view.income.simulatedRevenueUsd === 'number');

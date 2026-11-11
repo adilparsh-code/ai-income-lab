@@ -65,6 +65,8 @@ function readPositiveInt(name: string, fallback: number): number {
 // ---------------------------------------------------------------------------
 
 export interface JobOpportunityRow {
+  /** Phase 4.2D — authoritative owner of the opportunity. */
+  tenantId?: string | null;
   id: string;
   title: string;
   problemSolved: string;
@@ -111,6 +113,8 @@ export interface JobRunRow {
   correlationId: string;
   idempotencyKey: string;
   opportunityId: string | null;
+  /** Phase 4.2D — owning tenant. Optional so legacy/fake rows stay valid. */
+  tenantId?: string | null;
   agentType: string | null;
   input: string;
   output: string | null;
@@ -174,6 +178,7 @@ export interface NewJobRunData {
   correlationId: string;
   idempotencyKey: string;
   opportunityId: string | null;
+  tenantId?: string | null;
   agentType: string | null;
   input: string;
   output: string | null;
@@ -263,12 +268,20 @@ export interface RunJobOptions {
     error?: string;
     output?: unknown;
   }>;
+  /**
+   * Phase 4.2D — authoritative tenant for this job, supplied by an authorized
+   * scope. Never read from the payload. When the job targets an opportunity,
+   * the opportunity's tenant is authoritative and a mismatch refuses the job.
+   */
+  tenantId?: string | null;
   /** Test seam: execute the pipeline job without touching the orchestrator. */
-  executePipelineJob?: (payload: JobPayload) => Promise<{
+  executePipelineJob?: (payload: JobPayload, context: { tenantId: string | null }) => Promise<{
     status: string;
     runId?: string;
     steps: unknown[];
     aiTotals?: Record<string, unknown>;
+    opportunityId?: string;
+    humanReviewRequired?: boolean;
   }>;
   /** Test seam: execute a factory job without touching provider boundaries. */
   executeFactoryJob?: (jobType: string, payload: JobPayload) => Promise<FactoryJobOutcome>;
@@ -326,6 +339,7 @@ export async function runJob(
         correlationId: corr,
         idempotencyKey,
         opportunityId: typeof payload.opportunityId === 'string' ? payload.opportunityId : null,
+        tenantId: options.tenantId ?? null,
         agentType: jobType in JOB_TYPE_TO_AGENT ? JOB_TYPE_TO_AGENT[jobType as keyof typeof JOB_TYPE_TO_AGENT] : null,
         input: JSON.stringify(payload),
         output: null,
@@ -368,10 +382,40 @@ export async function runJob(
     }
   }
 
+  // 4b. TENANT INTEGRITY — the parent opportunity is authoritative. A job may
+  // never act on an opportunity owned by another tenant, and a caller-supplied
+  // tenant may never override the parent.
+  const parentTenantId = opportunity?.tenantId ?? undefined;
+  if (
+    parentTenantId !== undefined
+    && options.tenantId !== undefined
+    && (parentTenantId ?? null) !== (options.tenantId ?? null)
+  ) {
+    logger.warn('Job refused: tenant context does not match the parent opportunity', { jobType, jobId: row.id });
+    // Remove the cross-tenant reference: the refused job keeps its own tenant
+    // attribution but must not point at another tenant's opportunity.
+    try {
+      row = await db.jobRun.update({ where: { id: row.id }, data: { opportunityId: null } });
+    } catch {
+      row = { ...row, opportunityId: null };
+    }
+    return finishRow(db, row, 'FAILED', null,
+      'Job refused: the authorized tenant does not match the opportunity owner.', null, row.retryCount);
+  }
+  const effectiveTenantId = parentTenantId ?? options.tenantId ?? null;
+  if ((row.tenantId ?? null) !== effectiveTenantId) {
+    try {
+      row = await db.jobRun.update({ where: { id: row.id }, data: { tenantId: effectiveTenantId } });
+    } catch {
+      // Non-fatal: execution continues with the verified in-memory tenant.
+      row = { ...row, tenantId: effectiveTenantId };
+    }
+  }
+
   // 5. Execute through the EXISTING agents / pipeline / factory boundaries.
   try {
     if (jobType === 'OPPORTUNITY_PIPELINE') {
-      return await executeWorkflowJob(db, row, payload, options);
+      return await executeWorkflowJob(db, row, payload, options, effectiveTenantId);
     }
     if (isFactoryJobType(jobType)) {
       return await executeFactoryJobViaRunner(db, row, jobType, payload, opportunity, options);
@@ -756,9 +800,10 @@ async function executeWorkflowJob(
   row: JobRunRow,
   payload: JobPayload,
   options: RunJobOptions,
+  tenantId: string | null,
 ): Promise<JobOutcome> {
   const executor = options.executePipelineJob ?? defaultPipelineExecutor;
-  const run = await executor(payload);
+  const run = await executor(payload, { tenantId });
 
   const status: JobStatus =
     run.status === 'COMPLETED' ? 'SUCCEEDED'
@@ -777,6 +822,10 @@ async function executeWorkflowJob(
     runId: run.runId ?? null,
     stepsExecuted: run.steps.length,
     blockedWithZeroSteps: blockedRun,
+    // Phase 4.2C — surfaced so the caller can record the human-review boundary
+    // instead of inferring it from a status string.
+    humanReviewRequired: run.humanReviewRequired === true,
+    ...(typeof run.opportunityId === 'string' ? { opportunityId: run.opportunityId } : {}),
   };
   const resultRef = run.runId ? { pipelineRunId: run.runId } : null;
 
@@ -1007,15 +1056,24 @@ async function defaultAgentExecutor(
   };
 }
 
-async function defaultPipelineExecutor(payload: JobPayload): Promise<{
+async function defaultPipelineExecutor(
+  payload: JobPayload,
+  context: { tenantId: string | null } = { tenantId: null },
+): Promise<{
   status: string;
   runId?: string;
   steps: unknown[];
   aiTotals?: Record<string, unknown>;
+  opportunityId?: string;
+  humanReviewRequired?: boolean;
+  researchResultId?: string;
 }> {
   const run = await runPipeline({
     objective: String(payload.objective ?? ''),
     opportunityId: typeof payload.opportunityId === 'string' ? payload.opportunityId : undefined,
+    tenantId: context.tenantId,
+    jobId: typeof payload.jobId === 'string' ? payload.jobId : undefined,
+    correlationId: typeof payload.correlationId === 'string' ? payload.correlationId : undefined,
     ...(Array.isArray(payload.stages) ? { stages: payload.stages as ('RESEARCH' | 'VALIDATION' | 'PRODUCT' | 'EXPERIMENT' | 'TRACKING')[] } : {}),
   });
   return {
@@ -1023,6 +1081,9 @@ async function defaultPipelineExecutor(payload: JobPayload): Promise<{
     runId: run.runId,
     steps: run.steps,
     aiTotals: (run.findings as { aiTotals?: Record<string, unknown> } | undefined)?.aiTotals,
+    opportunityId: run.opportunityId,
+    humanReviewRequired: run.humanReviewRequired,
+    researchResultId: run.researchResultId,
   };
 }
 

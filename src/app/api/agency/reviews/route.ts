@@ -13,6 +13,7 @@ import { createHumanReview, decideHumanReview, listHumanReviews } from '@/lib/ag
 import { isHumanReviewCategory } from '@/lib/agency/types';
 import { requireAdminApi } from '@/lib/agency/session-guard';
 import { auditSecurityEvent, clientIpFrom, enforceRateLimit, readJsonBody } from '@/lib/security/guard';
+import { resolveTenantScope, scopeTenantId, type TenantScope } from '@/lib/tenancy/scope';
 import { logger } from '@/lib/server-log';
 
 export const dynamic = 'force-dynamic';
@@ -28,8 +29,13 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: 'Rate limit exceeded. Retry later.' }, { status: 429 });
   }
 
-  const auth = await requireAdminApi();
+  const auth = await requireAdminApi(request);
   if ('response' in auth) return auth.response;
+
+  const resolved = await resolveTenantScope(request, { permission: 'tenant:read', surface: 'api:agency:reviews' });
+  if (!resolved.ok) {
+    return NextResponse.json({ ok: false, error: resolved.error }, { status: resolved.status });
+  }
 
   const url = new URL(request.url);
   const statusParam = url.searchParams.get('status');
@@ -38,7 +44,7 @@ export async function GET(request: Request) {
     : undefined;
 
   try {
-    const reviews = await listHumanReviews(status);
+    const reviews = await listHumanReviews(status, 50, scopeTenantId(resolved.scope));
     return NextResponse.json({ ok: true, reviews });
   } catch (error) {
     logger.warn('Human review queue unavailable', { error: String(error).slice(0, 150) });
@@ -54,8 +60,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: 'Rate limit exceeded. Retry later.' }, { status: 429 });
   }
 
-  const auth = await requireAdminApi();
+  const auth = await requireAdminApi(request);
   if ('response' in auth) return auth.response;
+
+  const resolved = await resolveTenantScope(request, { permission: 'tenant:write', surface: 'api:agency:reviews:post' });
+  if (!resolved.ok) {
+    return NextResponse.json({ ok: false, error: resolved.error }, { status: resolved.status });
+  }
+  const scope: TenantScope = resolved.scope;
 
   const bodyGuard = await readJsonBody(request, { surface: 'api:agency:reviews', maxChars: 4_000 });
   if (!bodyGuard.ok) {
@@ -75,6 +87,7 @@ export async function POST(request: Request) {
         decision: decision as 'APPROVE' | 'REJECT' | 'PAUSE' | 'RETRY',
         decidedBy: auth.session.email,
         note: typeof raw.note === 'string' ? raw.note : undefined,
+        tenantId: scopeTenantId(scope),
       });
       if (!result.ok) {
         return NextResponse.json({ ok: false, error: result.error }, { status: 409 });
@@ -100,6 +113,9 @@ export async function POST(request: Request) {
       detail: typeof raw.detail === 'string' ? raw.detail : undefined,
       requestedBy: typeof raw.requestedBy === 'string' ? raw.requestedBy : 'system',
       opportunityId: typeof raw.opportunityId === 'string' ? raw.opportunityId : null,
+      // The review is created INSIDE the authorized partition; a body tenant
+      // field is ignored entirely.
+      tenantId: scopeTenantId(scope),
     });
     if (!result.ok) {
       return NextResponse.json({ ok: false, error: result.error }, { status: 400 });

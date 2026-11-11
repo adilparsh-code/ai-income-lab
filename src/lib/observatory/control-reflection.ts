@@ -12,6 +12,9 @@
 // writer; this module is a projection of exactly those rows.
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { humanReviewWhere } from '@/lib/tenancy/relation-scope';
 import { isAgencyAgentId, AGENCY_AGENT_IDS } from '@/lib/agency/types';
 import { getAgentContract } from '@/lib/agency/contracts';
 import { validateConfigAgainstContract, baseConfigFor, agentRuntimeConfigSchema, type AgentRuntimeConfig } from '@/lib/agency/control-center';
@@ -75,14 +78,15 @@ function safeJsonConfig(raw: string): AgentRuntimeConfig | null {
   }
 }
 
-export async function getControlReflection(): Promise<ControlReflectionView> {
+export async function getControlReflection(scope?: TenantScope): Promise<ControlReflectionView> {
+  if (!scope) { try { scope = await currentScope('tenant:read', 'observatory:control'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'observatory-legacy' }; else throw e; } }
   const [globalControlRow, stateRows, latestConfigs, recentActions, healthRows, pendingReviews, lastRuns] = await Promise.all([
     db.agencyControl.findUnique({ where: { key: 'autonomy' } }),
     db.agentControlState.findMany(),
     db.agentConfigVersion.findMany({ orderBy: { version: 'desc' }, take: 13 * 3 }),
     db.agentControlAction.findMany({ orderBy: { createdAt: 'desc' }, take: 120 }),
     db.agentHealth.findMany(),
-    db.humanReview.findMany({ where: { status: 'PENDING' }, select: { requestedBy: true } }),
+    db.humanReview.findMany({ where: { AND: [{ status: 'PENDING' }, humanReviewWhere(scope!)] }, select: { requestedBy: true } }),
     db.agentRun.findMany({ orderBy: { startedAt: 'desc' }, take: 200, select: { agentId: true, status: true, safetyVerdict: true, startedAt: true } }),
   ]);
 

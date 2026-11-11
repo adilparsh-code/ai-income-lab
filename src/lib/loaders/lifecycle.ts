@@ -5,6 +5,14 @@ import {
   summarizePortfolio,
   type PortfolioLifecycleSummary,
 } from '@/lib/ruflo/lifecycle';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import {
+  experimentWhere,
+  opportunityWhere,
+  productWhere,
+  revenueWhere,
+} from '@/lib/tenancy/relation-scope';
 
 /**
  * Business-loop lifecycle overview for the dashboard (Phase 4.2.4).
@@ -12,18 +20,30 @@ import {
  * products, revenues, agent logs). Nothing here is sampled, mocked, or inferred
  * about the outside world; provenance stays inside the lifecycle view.
  */
-export async function getLifecycleOverview(): Promise<PortfolioLifecycleSummary> {
-  const [opportunities, experiments, products, revenues, agentLogs] = await Promise.all([
-    db.opportunity.findMany(),
-    db.experiment.findMany(),
-    db.product.findMany(),
-    db.revenue.findMany({ select: { id: true, opportunityId: true, productId: true } }),
-    db.agentLog.findMany({
-      where: { agentType: { in: ['research', 'validation'] } },
-      orderBy: { createdAt: 'desc' },
-      take: 100,
-    }),
+export async function getLifecycleOverview(scopeInput?: TenantScope): Promise<PortfolioLifecycleSummary> {
+  const scope = scopeInput ?? (await currentScope('tenant:read', 'loader:lifecycle'));
+  const [opportunities, experiments, products, revenues] = await Promise.all([
+    db.opportunity.findMany({ where: opportunityWhere(scope) }),
+    db.experiment.findMany({ where: experimentWhere(scope) }),
+    db.product.findMany({ where: productWhere(scope) }),
+    db.revenue.findMany({ where: revenueWhere(scope), select: { id: true, opportunityId: true, productId: true } }),
   ]);
+  // AgentLog has no tenant column; it is attributed through the scoped
+  // opportunity/product ids so a tenant can never see another tenant's logs.
+  const scopedOpportunityIds = opportunities.map((o) => o.id);
+  const scopedProductIds = products.map((p) => p.id);
+  const agentLogs = await db.agentLog.findMany({
+    where: {
+      agentType: { in: ['research', 'validation'] },
+      OR: [
+        { opportunityId: { in: scopedOpportunityIds } },
+        { opportunityId: null, productId: { in: scopedProductIds } },
+        ...(scope.mode === 'legacy' ? [{ opportunityId: null, productId: null }] : []),
+      ],
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 100,
+  });
 
   const counts = {
     opportunities: opportunities.length,

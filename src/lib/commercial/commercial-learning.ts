@@ -16,6 +16,9 @@
 // ============================================================================
 
 import { db } from '@/lib/db';
+import type { TenantScope } from '@/lib/tenancy/scope';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { proposalWhere, serviceEngagementWhere, deliverableWhere, revenueWhere, offerWhere } from '@/lib/tenancy/relation-scope';
 
 export type CommercialSignalKind =
   | 'OPPORTUNITY_CONVERTED'
@@ -59,21 +62,22 @@ export interface CommercialLearningSnapshot {
  * Derive the learning signals from real persisted rows. Pure counting plus
  * deterministic thresholds — no AI, no estimation.
  */
-export async function deriveCommercialSignals(): Promise<CommercialLearningSnapshot> {
+export async function deriveCommercialSignals(scope?: TenantScope): Promise<CommercialLearningSnapshot> {
+  if (!scope) { try { scope = await currentScope('tenant:read', 'commercial:learning'); } catch (e) { if (e instanceof Error && e.message.includes('outside a request scope')) scope = { mode: 'legacy', principal: 'commercial-legacy' }; else throw e; } }
   const [proposals, changeRequests, engagements, deliverables, revenue, costs, blockedOffers, unverifiedOffers] = await Promise.all([
-    db.proposal.findMany({ select: { state: true } }),
-    db.scopeChangeRequest.findMany({ select: { status: true, classification: true, requiresPayment: true } }),
-    db.serviceEngagement.findMany({ select: { id: true, state: true, engagementType: true, totalPrice: true } }),
-    db.deliverable.findMany({ select: { state: true, revisionCount: true, revisionLimit: true } }),
+    db.proposal.findMany({ where: proposalWhere(scope!), select: { state: true } }),
+    db.scopeChangeRequest.findMany({ where: { proposal: { is: proposalWhere(scope!) } }, select: { status: true, classification: true, requiresPayment: true } }),
+    db.serviceEngagement.findMany({ where: serviceEngagementWhere(scope!), select: { id: true, state: true, engagementType: true, totalPrice: true } }),
+    db.deliverable.findMany({ where: deliverableWhere(scope!), select: { state: true, revisionCount: true, revisionLimit: true } }),
     db.revenue.findMany({
-      where: { revenueSource: { startsWith: 'service' }, revenueBasis: 'ACTUAL' },
+      where: { AND: [revenueWhere(scope!), { revenueSource: { startsWith: 'service' }, revenueBasis: 'ACTUAL' }] },
       select: { grossRevenue: true, currency: true, serviceEngagementId: true },
     }),
     // PHASE 11.7: revenue AND cost per engagement, so MARGIN_OUTCOME can be a
     // real margin instead of a rename of price.
-    db.engagementCost.findMany({ select: { engagementId: true, amountUsd: true, basis: true } }),
-    db.offer.findMany({ where: { status: 'BLOCKED' }, select: { id: true } }),
-    db.offer.findMany({ where: { halalStatus: 'UNVERIFIED' }, select: { id: true } }),
+    db.engagementCost.findMany({ where: { engagement: { is: serviceEngagementWhere(scope!) } }, select: { engagementId: true, amountUsd: true, basis: true } }),
+    db.offer.findMany({ where: { AND: [offerWhere(scope!), { status: 'BLOCKED' }] }, select: { id: true } }),
+    db.offer.findMany({ where: { AND: [offerWhere(scope!), { halalStatus: 'UNVERIFIED' }] }, select: { id: true } }),
   ]);
 
   const signals: CommercialSignal[] = [];
@@ -344,7 +348,7 @@ export async function deriveCommercialSignals(): Promise<CommercialLearningSnaps
   // PHASE 11.7 FIX: this previously hardcoded classifyHalal('HALAL', …) and then
   // stamped the result VERIFIED_DATA, i.e. it asserted a halal verdict out of
   // nothing. It now reports the REAL distribution of persisted offer verdicts.
-  const offerHalalCounts = await db.offer.groupBy({ by: ['halalStatus'], _count: { _all: true } });
+  const offerHalalCounts = await db.offer.groupBy({ where: offerWhere(scope!), by: ['halalStatus'], _count: { _all: true } });
   const halalDistribution: Record<string, number> = {};
   for (const row of offerHalalCounts) halalDistribution[row.halalStatus] = row._count._all;
   const totalOffers = offerHalalCounts.reduce((s, r) => s + r._count._all, 0);

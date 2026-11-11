@@ -5,6 +5,8 @@ import { aggregateUsageForRange, isUsageTimeRange, type UsageTimeRange, type Usa
 import { getEfficiencyViews } from '@/lib/ai/usage-server';
 import type { Metadata } from 'next';
 import { requireAdminPageAccess } from '@/lib/agency/page-guard';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { agentLogWhere } from '@/lib/tenancy/relation-scope';
 
 export const metadata: Metadata = { title: 'AI Usage & Cost — AI Income Lab' };
 
@@ -25,9 +27,14 @@ export default async function AiUsagePage({ searchParams }: AiUsagePageProps) {
   let error: string | null = null;
 
   try {
+    // AI usage/cost is tenant data: aggregate only the caller's partition.
+    const scope = await currentScope('tenant:read', 'page:ai-usage');
+    const usageScope = await agentLogWhere(scope);
     // Metadata columns only — never input/output/reasoning payloads.
     const rows = (await db.agentLog.findMany({
-      where: range !== 'all' ? { createdAt: { gte: rangeStart(range) } } : {},
+      where: range !== 'all'
+        ? { AND: [usageScope, { createdAt: { gte: rangeStart(range) } }] }
+        : usageScope,
       select: {
         agentType: true,
         aiProvider: true,

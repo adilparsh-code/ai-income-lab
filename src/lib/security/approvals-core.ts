@@ -57,6 +57,8 @@ export interface ApprovalGrantRow {
   scopeHash: string;
   approverSessionId: string;
   approverEmail: string;
+  /** Phase 4.2D — tenant the grant is scoped to (null = legacy/global). */
+  tenantId?: string | null;
   expiresAt: Date;
   consumedAt: Date | null;
 }
@@ -67,7 +69,8 @@ export interface ApprovalStore {
   find(tokenHash: string): Promise<ApprovalGrantRow | null>;
   /** ATOMIC: returns 1 only if the row matched every condition and was unconsumed. */
   consume(where: {
-    tokenHash: string; action: string; subjectType: string; subjectId: string; scopeHash: string; now: Date;
+    tokenHash: string; action: string; subjectType: string; subjectId: string; scopeHash: string;
+    tenantId?: string | null; now: Date;
   }, consumedBy: string): Promise<number>;
   sessionLive(sessionId: string): Promise<boolean>;
 }
@@ -154,7 +157,12 @@ function wellFormed(token: unknown): token is string {
 export interface ApproverIdentity { sessionId: string; email: string }
 
 export async function issueApproval(
-  input: { action: ApprovalAction; subjectId: string; scopeHash: string; approver: ApproverIdentity; now?: Date },
+  input: {
+    action: ApprovalAction; subjectId: string; scopeHash: string; approver: ApproverIdentity;
+    /** Authorized tenant of the SUBJECT. Null/omitted = legacy partition. */
+    tenantId?: string | null;
+    now?: Date;
+  },
   store: ApprovalStore,
 ): Promise<{ token: string; expiresAt: Date; grantId: string }> {
   if (!isApprovalAction(input.action)) throw new Error('Unknown approval action.');
@@ -171,6 +179,7 @@ export async function issueApproval(
     scopeHash: input.scopeHash,
     approverSessionId: input.approver.sessionId,
     approverEmail: input.approver.email.slice(0, 120),
+    tenantId: input.tenantId ?? null,
     expiresAt,
   });
   return { token, expiresAt, grantId: id };
@@ -184,8 +193,13 @@ export type ConsumeResult =
   | { ok: true; approval: VerifiedApproval }
   | { ok: false; reason: ApprovalDenial };
 
-function diagnose(row: ApprovalGrantRow, e: { action: string; subjectType: string; subjectId: string; scopeHash: string }, now: Date): ApprovalDenial {
+function diagnose(
+  row: ApprovalGrantRow,
+  e: { action: string; subjectType: string; subjectId: string; scopeHash: string; tenantId?: string | null },
+  now: Date,
+): ApprovalDenial {
   if (row.action !== e.action || row.subjectType !== e.subjectType || row.subjectId !== e.subjectId || row.scopeHash !== e.scopeHash) return 'MISMATCH';
+  if (e.tenantId !== undefined && (row.tenantId ?? null) !== (e.tenantId ?? null)) return 'MISMATCH';
   if (row.consumedAt) return 'CONSUMED';
   if (row.expiresAt.getTime() <= now.getTime()) return 'EXPIRED';
   return 'INVALID';
@@ -193,7 +207,16 @@ function diagnose(row: ApprovalGrantRow, e: { action: string; subjectType: strin
 
 export async function consumeApproval(
   token: unknown,
-  expect: { action: ApprovalAction; subjectId: string; scopeHash: string; surface: string; now?: Date },
+  expect: {
+    action: ApprovalAction; subjectId: string; scopeHash: string; surface: string;
+    /**
+     * Authorized tenant of the subject being acted on. When supplied, the grant
+     * must belong to the SAME tenant, and the atomic consume is tenant-bound.
+     * A grant can therefore never authorize another tenant's subject.
+     */
+    tenantId?: string | null;
+    now?: Date;
+  },
   store: ApprovalStore,
 ): Promise<ConsumeResult> {
   if (token === undefined || token === null || token === '') return { ok: false, reason: 'MISSING' };
@@ -206,7 +229,15 @@ export async function consumeApproval(
     if (!row) return { ok: false, reason: 'INVALID' };
     // The approver must still be a live admin at the moment of use.
     if (!(await store.sessionLive(row.approverSessionId))) return { ok: false, reason: 'APPROVER_SESSION_ENDED' };
-    const match = { tokenHash, action: expect.action, subjectType, subjectId: expect.subjectId, scopeHash: expect.scopeHash, now };
+    const match = {
+      tokenHash,
+      action: expect.action,
+      subjectType,
+      subjectId: expect.subjectId,
+      scopeHash: expect.scopeHash,
+      ...(expect.tenantId !== undefined ? { tenantId: expect.tenantId ?? null } : {}),
+      now,
+    };
     const changed = await store.consume(match, expect.surface);
     if (changed !== 1) return { ok: false, reason: diagnose(row, match, now) };
     return {
@@ -227,7 +258,7 @@ export async function consumeApproval(
  */
 export async function peekApproval(
   token: unknown,
-  expect: { action: ApprovalAction; subjectId: string; scopeHash: string; now?: Date },
+  expect: { action: ApprovalAction; subjectId: string; scopeHash: string; tenantId?: string | null; now?: Date },
   store: ApprovalStore,
 ): Promise<boolean> {
   if (!wellFormed(token) || !isApprovalAction(expect.action)) return false;
@@ -237,6 +268,7 @@ export async function peekApproval(
     if (!row || row.consumedAt || row.expiresAt.getTime() <= now.getTime()) return false;
     if (row.action !== expect.action || row.subjectType !== APPROVAL_ACTIONS[expect.action]
       || row.subjectId !== expect.subjectId || row.scopeHash !== expect.scopeHash) return false;
+    if (expect.tenantId !== undefined && (row.tenantId ?? null) !== (expect.tenantId ?? null)) return false;
     return await store.sessionLive(row.approverSessionId);
   } catch {
     return false;

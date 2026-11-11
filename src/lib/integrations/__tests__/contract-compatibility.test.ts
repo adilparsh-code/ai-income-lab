@@ -196,27 +196,35 @@ async function acceptedHandoff(envelope: AdaptedEnvelope) {
   assert.equal(result.status, 201);
   assert.equal(result.jobRunId, 'job-run-compat');
   assert.equal(compatCalls.length, 1, 'the receiver must dispatch exactly one job');
-  assert.equal(compatCalls[0].jobType, 'RESEARCH', 'accepted OPPORTUNITY_PROPOSED must dispatch a RESEARCH job');
+  assert.equal(
+    compatCalls[0].jobType,
+    'OPPORTUNITY_PIPELINE',
+    'accepted OPPORTUNITY_PROPOSED must dispatch the bounded opportunity pipeline',
+  );
   assert.equal(compatCalls[0].correlationId, envelope.correlationId);
 
-  // The receiver maps envelope.description → researchObjective (handoff-receiver.ts).
-  // Assert the FINAL dispatched payload (not the adapter's raw payload) satisfies
-  // the Job Runner's RESEARCH contract.
+  // The receiver maps envelope.description → objective (and researchObjective,
+  // which the first pipeline stage reads). Assert the FINAL dispatched payload
+  // (not the adapter's raw payload) satisfies the Job Runner's pipeline contract.
   const dispatched = compatCalls[0].payload;
   assert.ok(
-    typeof dispatched.researchObjective === 'string' &&
-      dispatched.researchObjective.length > 0,
-    'dispatched RESEARCH payload must carry a non-empty researchObjective from the receiver mapping',
+    typeof dispatched.objective === 'string' && dispatched.objective.length > 0,
+    'dispatched pipeline payload must carry a non-empty objective from the receiver mapping',
   );
   assert.equal(
-    dispatched.researchObjective,
+    dispatched.objective,
     envelope.description.slice(0, 2000),
-    'researchObjective must be the receiver-mapped description (capped at MAX_FIELD_LENGTH = 2000)',
+    'objective must be the receiver-mapped description (capped at MAX_FIELD_LENGTH = 2000)',
+  );
+  assert.deepEqual(
+    dispatched.stages,
+    ['RESEARCH', 'VALIDATION', 'PRODUCT'],
+    'the pipeline stages are a server constant, never sender-supplied',
   );
   assert.deepEqual(
     compatCalls[0].payloadKeys.sort(),
-    ['businessModel', 'contractId', 'category', 'description', 'monetizationMethod', 'researchObjective', 'source', 'title'].sort(),
-    'dispatched RESEARCH payload must carry exactly the expected Job Runner fields',
+    ['businessModel', 'contractId', 'category', 'description', 'monetizationMethod', 'objective', 'researchObjective', 'source', 'stages', 'title'].sort(),
+    'dispatched pipeline payload must carry exactly the expected Job Runner fields',
   );
 
   const row = fake.rows.get(envelope.idempotencyKey) as Record<string, unknown>;
@@ -551,12 +559,12 @@ describe('HIGH-1 contract compatibility — AIAgent adapter → AIIncomeLab rece
       assert.ok(first.ok, 'the first delivery must be accepted');
       assert.equal(first.jobRunId, 'job-run-first');
 
-      // Prove the first dispatched payload satisfies the real RESEARCH contract.
-      assert.equal(dispatchCalls[0].jobType, 'RESEARCH');
+      // Prove the first dispatched payload satisfies the real pipeline contract.
+      assert.equal(dispatchCalls[0].jobType, 'OPPORTUNITY_PIPELINE');
       assert.ok(
-        typeof dispatchCalls[0].payload.researchObjective === 'string' &&
-          dispatchCalls[0].payload.researchObjective.length > 0,
-        'the first dispatched RESEARCH payload must carry a non-empty researchObjective',
+        typeof dispatchCalls[0].payload.objective === 'string' &&
+          dispatchCalls[0].payload.objective.length > 0,
+        'the first dispatched pipeline payload must carry a non-empty objective',
       );
 
       const second = await receiveHandoff(flat, {

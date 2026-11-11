@@ -83,24 +83,24 @@ describe('dashboard loaders against a pre-0010 Revenue table', () => {
   });
 
   it('getDashboardStats succeeds and reports recorded revenue', async () => {
-    const stats = await getDashboardStats();
+    const stats = await getDashboardStats({ mode: 'legacy' as const, principal: 'test-legacy' });
     assert.equal(stats.totalOpportunities, 1);
     assert.equal(stats.totalRevenue, 90);
   });
 
   it('getRevenueChartData succeeds', async () => {
-    const data = await getRevenueChartData();
+    const data = await getRevenueChartData({ mode: 'legacy' as const, principal: 'test-legacy' });
     assert.equal(data.length, 6);
     assert.equal(data.reduce((sum, m) => sum + m.revenue, 0), 90);
   });
 
   it('getLifecycleOverview succeeds', async () => {
-    const overview = await getLifecycleOverview();
+    const overview = await getLifecycleOverview({ mode: 'legacy' as const, principal: 'test-legacy' });
     assert.equal(overview.opportunities.length, 1);
   });
 
   it('getBusinessIntelligenceSummary loads real data instead of its error fallback', async () => {
-    const summary = await getBusinessIntelligenceSummary();
+    const summary = await getBusinessIntelligenceSummary({ mode: 'legacy' as const, principal: 'test-legacy' });
     assert.equal(summary.error, null);
     assert.equal(summary.hasRevenueData, true);
     assert.equal(summary.overall.recordCount, 1);

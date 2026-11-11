@@ -210,16 +210,20 @@ describe('HIGH-1 receiver', () => {
     assert.equal(result.ok && result.duplicate, false);
     assert.equal(result.ok && result.jobRunId, 'job-run-123');
     // Job Runner handoff used the server-mapped job type, never a sender value.
+    // Phase 4.2C: an accepted proposal runs the bounded opportunity pipeline
+    // (research → validation → product concept), not research alone.
     assert.equal(rec.calls.length, 1);
-    assert.equal(rec.calls[0].jobType, 'RESEARCH');
+    assert.equal(rec.calls[0].jobType, 'OPPORTUNITY_PIPELINE');
     assert.equal(rec.calls[0].correlationId, 'corr-1');
-    // The dispatched payload satisfies the real per-type contract: RESEARCH
-    // requires `researchObjective`, mapped from the envelope description.
+    // The dispatched payload satisfies the real per-type contract: the pipeline
+    // requires a non-empty `objective`, mapped from the envelope description,
+    // and the stages are a server constant the sender cannot influence.
     assert.equal(
-      typeof rec.calls[0].payload.researchObjective === 'string' && rec.calls[0].payload.researchObjective.length > 0,
+      typeof rec.calls[0].payload.objective === 'string' && rec.calls[0].payload.objective.length > 0,
       true,
-      'dispatched RESEARCH payload must carry a non-empty researchObjective',
+      'dispatched pipeline payload must carry a non-empty objective',
     );
+    assert.deepEqual(rec.calls[0].payload.stages, ['RESEARCH', 'VALIDATION', 'PRODUCT']);
     assert.ok(fake.rows.has('idem-1'));
   });
 
@@ -411,7 +415,7 @@ describe('HIGH-1 receiver', () => {
     assert.equal(row.status, 'REJECTED');
     assert.equal(row.eligibility, 'ALLOWED');
     assert.equal(row.halalStatus, 'HALAL');
-    assert.equal(row.jobType, 'RESEARCH');
+    assert.equal(row.jobType, 'OPPORTUNITY_PIPELINE');
     assert.equal(row.jobRunId, null);
     assert.ok(fake.events.some((e) => e.kind === 'HANDOFF_ERROR'), 'an audit error record must be written');
   });
@@ -646,7 +650,7 @@ describe('HIGH-1 envelope contract', () => {
   });
 
   it('maps event type to a fixed job type the sender cannot influence', () => {
-    assert.equal(envelopeModule.jobTypeForEvent('OPPORTUNITY_PROPOSED'), 'RESEARCH');
+    assert.equal(envelopeModule.jobTypeForEvent('OPPORTUNITY_PROPOSED'), 'OPPORTUNITY_PIPELINE');
   });
 
   it('persists an accepted handoff to the real database and deduplicates on replay', async () => {
@@ -655,9 +659,17 @@ describe('HIGH-1 envelope contract', () => {
     // Force a unique idempotency key so reruns never collide across tests.
     const key = `db-idem-${Date.now()}`;
 
+    // Tenant authorization is enforced automatically for a real database: seed
+    // one tenant membership for this principal, then deliver for that tenant.
+    const tenant = await db.tenant.create({ data: { slug: `db-tenant-${Date.now()}`, name: 'DB Test Tenant' } });
+    await db.tenantMembership.create({
+      data: { tenantId: tenant.id, principalFingerprint: 'db-test-sender', role: 'SENDER', status: 'ACTIVE' },
+    });
+
     const first = await receiver.receiveHandoff(validEnvelope({ idempotencyKey: key }), {
       db: db as unknown as HandoffDb,
       senderIdentity: 'db-test-sender',
+      requestedTenantSlug: tenant.slug,
       runJob: realRunJob as HandoffRunJob,
     });
     assert.equal(first.ok, true);
@@ -666,10 +678,19 @@ describe('HIGH-1 envelope contract', () => {
     assert.ok(stored, 'handoff row must be persisted');
     assert.equal(stored?.status, 'ACCEPTED');
     assert.equal(stored?.eventType, 'OPPORTUNITY_PROPOSED');
-    assert.equal(stored?.jobType, 'RESEARCH');
+    assert.equal(stored?.jobType, 'OPPORTUNITY_PIPELINE');
     assert.equal(stored?.halalStatus, 'HALAL');
     // The sender credential is never stored — only its fingerprint identity.
     assert.equal(stored?.senderIdentity, 'db-test-sender');
+    // Phase 4.2C — intake creates a real opportunity the run is traceable to.
+    assert.ok(stored?.opportunityId, 'an accepted handoff must link to a persisted opportunity');
+    const linkedOpportunity = await db.opportunity.findUnique({ where: { id: stored!.opportunityId! } });
+    assert.ok(linkedOpportunity, 'the linked opportunity must exist');
+    assert.equal(linkedOpportunity?.halalStatus, 'HALAL');
+    // The delivery is bound to the authorized tenant, not to a default.
+    assert.equal(stored?.tenantId, tenant.id);
+    assert.equal(linkedOpportunity?.tenantId, tenant.id);
+    assert.ok(stored?.payloadHash, 'the delivered body fingerprint must be recorded');
 
     const auditRow = await db.securityEvent.findFirst({
       where: { surface: 'api:handoff:receive', kind: 'HANDOFF_ACCEPTED' },

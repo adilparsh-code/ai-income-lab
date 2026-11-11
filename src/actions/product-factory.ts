@@ -20,6 +20,17 @@ import { describeVercelConfig } from '@/lib/product-factory/deployment-vercel';
 import { describeRufloIntegration } from '@/lib/ruflo/capability';
 import type { PipelineRunResult } from '@/lib/ruflo/orchestrator';
 import { requireAdminAction } from '@/lib/agency/action-guard';
+import { currentScope } from '@/lib/tenancy/action-scope';
+import { scopeTenantId } from '@/lib/tenancy/scope';
+import {
+  assertOpportunityInScope,
+  opportunityWhere,
+  pipelineRunWhere,
+  productAssetWhere,
+  productBuildWhere,
+  productDeploymentWhere,
+  productWhere,
+} from '@/lib/tenancy/relation-scope';
 
 /**
  * Phase 5.4 — honest capability discovery across every execution boundary.
@@ -70,7 +81,9 @@ export interface FactoryOpportunityOption {
 
 export async function getFactoryOpportunities(): Promise<FactoryOpportunityOption[]> {
   await requireAdminAction();
+  const scope = await currentScope('tenant:read', 'action:getFactoryOpportunities');
   const opportunities = await db.opportunity.findMany({
+    where: opportunityWhere(scope),
     select: {
       id: true,
       title: true,
@@ -96,8 +109,10 @@ export interface FactoryRunSummary {
 
 export async function getRecentFactoryRuns(limit = 5): Promise<FactoryRunSummary[]> {
   await requireAdminAction();
+  const scope = await currentScope('tenant:read', 'action:getRecentFactoryRuns');
   try {
     const runs = await db.pipelineRun.findMany({
+      where: pipelineRunWhere(scope),
       orderBy: { startedAt: 'desc' },
       take: 40,
       include: { opportunity: { select: { title: true } } },
@@ -143,6 +158,8 @@ export async function generateProductConcept(input: {
   constraints?: string[];
 }): Promise<GenerateProductResult> {
   await requireAdminAction();
+  const scope = await currentScope('tenant:write', 'action:generateProductConcept');
+  if (input?.opportunityId) await assertOpportunityInScope(scope, input.opportunityId);
   if (
     (typeof input?.objective !== 'string' || input.objective.trim().length === 0) &&
     (typeof input?.opportunityId !== 'string' || input.opportunityId.trim().length === 0)
@@ -152,7 +169,10 @@ export async function generateProductConcept(input: {
 
   let outcome;
   try {
-    outcome = await runProductFactory(input as ProductFactoryRequest);
+    outcome = await runProductFactory({
+      ...(input as ProductFactoryRequest),
+      tenantId: scopeTenantId(scope) ?? undefined,
+    });
   } catch (error) {
     logger.error('Factory generate action failed', error);
     return { ok: false, error: 'Product generation failed due to an unexpected error. Try again.' };
@@ -180,8 +200,18 @@ export type RehydratedRunResult =
 
 export async function getFactoryRunDetail(runId: string): Promise<RehydratedRunResult> {
   await requireAdminAction();
+  const scope = await currentScope('tenant:read', 'action:getFactoryRunDetail');
   if (typeof runId !== 'string' || runId.trim().length === 0) {
     return { ok: false, error: 'A run id is required.' };
+  }
+
+  // A foreign run id must look absent, never "forbidden".
+  const owned = await db.pipelineRun.findFirst({
+    where: { id: runId, ...pipelineRunWhere(scope) },
+    select: { id: true },
+  });
+  if (!owned) {
+    return { ok: false, error: 'The requested run could not be found or its payload is unreadable.' };
   }
 
   try {
@@ -250,8 +280,10 @@ const LIFECYCLE_ORDER = [
 
 export async function getProductFactorySummary(limit = 12): Promise<ProductFactoryDashboardSummary> {
   await requireAdminAction();
+  const scope = await currentScope('tenant:read', 'action:getProductFactorySummary');
   try {
     const products = await db.product.findMany({
+      where: productWhere(scope),
       orderBy: { updatedAt: 'desc' },
       take: Math.min(50, Math.max(1, limit)),
       include: {
@@ -260,23 +292,39 @@ export async function getProductFactorySummary(limit = 12): Promise<ProductFacto
       },
     });
 
+    const scopedOpportunityIds = (
+      await db.opportunity.findMany({ where: opportunityWhere(scope), select: { id: true } })
+    ).map((o) => o.id);
+    const scopedProductIds = products.map((p) => p.id);
+    const orphanCostClause = scope.mode === 'legacy' ? [{ opportunityId: null, productId: null }] : [];
+
     const [builds, deployments, assets, aiCostGroups] = await Promise.all([
       db.productBuild.findMany({
+        where: productBuildWhere(scope),
         orderBy: { createdAt: 'desc' }, take: 100,
         select: { productId: true, status: true },
       }).catch(() => []),
       db.productDeployment.findMany({
+        where: productDeploymentWhere(scope),
         orderBy: { createdAt: 'desc' }, take: 100,
         select: { productId: true, status: true },
       }).catch(() => []),
       db.productAsset.findMany({
+        where: productAssetWhere(scope),
         orderBy: { createdAt: 'desc' }, take: 100,
         select: { productId: true, publicationStatus: true },
       }).catch(() => []),
       db.agentLog.groupBy({
         by: ['purpose'],
         _sum: { estimatedCostUsd: true },
-        where: { estimatedCostUsd: { not: null } },
+        where: {
+          estimatedCostUsd: { not: null },
+          OR: [
+            { opportunityId: { in: scopedOpportunityIds } },
+            { opportunityId: null, productId: { in: scopedProductIds } },
+            ...orphanCostClause,
+          ],
+        },
       }).catch(() => []),
     ]);
 

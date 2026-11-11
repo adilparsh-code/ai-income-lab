@@ -69,7 +69,7 @@ describe('capability center (pure aggregate)', () => {
 describe('operations summary (real DB aggregates)', () => {
   it('returns honest empty-state labels with no data', async () => {
     const { getOperationsSummary } = await importOps();
-    const summary = await getOperationsSummary();
+    const summary = await getOperationsSummary({ mode: 'legacy' as const, principal: 'test-legacy' });
 
     assert.equal(summary.jobs.today, 0);
     assert.equal(summary.products.length, 0);
@@ -100,7 +100,7 @@ describe('operations summary (real DB aggregates)', () => {
     await mk('BLOCKED', 1);
     await mk('HUMAN_REVIEW', 1);
 
-    const summary = await getOperationsSummary();
+    const summary = await getOperationsSummary({ mode: 'legacy' as const, principal: 'test-legacy' });
     assert.ok(summary.jobs.today >= 5);
     assert.ok(summary.jobs.succeeded24h >= 2);
     assert.ok(summary.jobs.failed24h >= 1);
@@ -135,7 +135,7 @@ describe('operations summary (real DB aggregates)', () => {
       },
     });
 
-    const summary = await getOperationsSummary();
+    const summary = await getOperationsSummary({ mode: 'legacy' as const, principal: 'test-legacy' });
     const row = summary.products.find((p) => p.id === product.id);
     assert.ok(row, 'published product must appear in operations rows');
     assert.equal(row.hasRevenue, true);
@@ -154,7 +154,7 @@ describe('operations summary (real DB aggregates)', () => {
 
   it('never fabricates visitor/conversion metrics that were not recorded', async () => {
     const { getOperationsSummary } = await importOps();
-    const summary = await getOperationsSummary();
+    const summary = await getOperationsSummary({ mode: 'legacy' as const, principal: 'test-legacy' });
     for (const row of summary.products) {
       if (!row.hasRevenue) {
         assert.equal(row.profitLabel, 'INSUFFICIENT_DATA');
